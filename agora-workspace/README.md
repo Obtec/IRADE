@@ -8,7 +8,9 @@ Antigravity의 에이전트 중심 배치, VS Code의 편집기·명령 탐색, 
 
 ## 사용 방법
 
-**Workspace 열기 → 기존 Agora 계정으로 로그인 → workspace 선택**으로 시작합니다. MFA·캔버스 비밀번호가 설정되어 있으면 추가 인증을 요청합니다. 새 workspace를 생성하거나 공유 링크·ID로 접근할 수도 있습니다. 권한과 초대 관리는 기존 Agora 설정을 따릅니다.
+**Workspace 열기 → IRADE ORCID 로그인 페이지 → ORCID 인증 → workspace 선택**으로 시작합니다. 전용 로그인 주소는 **https://frelog.p-e.kr/irade/login** 입니다. 최초 인증 시 연구자 계정이 Agora DB에 등록되며 이메일 공개나 별도 IRADE 비밀번호가 필요하지 않습니다. 기존 Agora workspace·권한을 유지하려면 로그인 페이지의 **기존 Agora 계정에 ORCID 연결하기**에서 해당 계정을 확인한 뒤 연결합니다. 계정에 MFA가 설정되어 있으면 추가 인증을 요청합니다.
+
+Workspace 목록과 검색은 Spring Boot의 `/api/irade/workspaces?q=...`에서 공개 범위·참여 권한을 확인합니다. 새 workspace는 기본 비공개로 생성되며 공유 링크·ID로 접근할 수도 있습니다. 초대·권한 관리는 기존 Agora 설정을 따릅니다. 인증된 ORCID 프로필은 상단 **ORCID · 계정**에서 확인할 수 있습니다.
 
 화면의 작업 단위는 파일·폴더가 아닌 **셀**입니다.
 
@@ -21,7 +23,7 @@ Antigravity의 에이전트 중심 배치, VS Code의 편집기·명령 탐색, 
 
 셀을 만들고 선택하거나 검색·내보내기·삭제할 수 있습니다. `Ctrl K`는 셀 검색, `Alt N`은 새 셀, `Ctrl S`는 저장, `Ctrl Shift F`는 집중 모드입니다. 편집기 글자 크기와 줄 번호를 조절할 수 있으며 작은 화면에 맞춰 패널 배치가 바뀝니다.
 
-계정 없이 **로컬 체험**을 선택하면 예제 셀을 편집할 수 있습니다. 체험 내용은 현재 탭의 `sessionStorage`에만 저장되며 다른 사용자에게 공유되지 않습니다. 실제 계정의 로그인 토큰 역시 탭 세션에 보관하며 비밀번호와 URL에는 저장하지 않습니다.
+계정 없이 **로컬 체험**을 선택하면 예제 셀을 편집할 수 있습니다. 체험 내용은 현재 탭의 `sessionStorage`에만 저장되며 다른 사용자에게 공유되지 않습니다. ORCID 로그인으로 발급한 애플리케이션 토큰은 `irade.orcid.token:<origin>` 키로 현재 탭에만 보관합니다. ORCID 비밀번호는 수집하지 않고, OAuth 코드 교환과 클라이언트 비밀키는 Spring 서버에서 처리합니다. 브라우저 이동 URL에 로그인 토큰을 포함하지 않습니다.
 
 현재 AI 응답 생성과 Python·Lean 4·Rocq 실행 커널은 새 셀 화면에 연결하지 않았습니다. 대화 기록과 소스 편집·동기화·문서 미리보기가 동작하며, 실행 결과나 증명 성공을 생성하지 않습니다.
 
@@ -29,7 +31,7 @@ Antigravity의 에이전트 중심 배치, VS Code의 편집기·명령 탐색, 
 
 ```text
 IRADE workspace + Monaco
-  → 기존 Spring 로그인 / 캔버스 access
+  → ORCID 인증 → Spring / IRADE workspace access
   → Wall 인증 WSS
   → C++ workspace_files
   → VM 관리자 / VSOCK 5003
@@ -70,6 +72,8 @@ corepack pnpm@10.32.1 run test:studio
 corepack pnpm@10.32.1 run test:web
 ```
 
-Studio 테스트는 두 Chrome 세션과 격리된 실제 게스트 파일/Automerge 구현으로 로그인·workspace 선택, 동시 편집 병합, 셀 동시 생성, 새로고침 복원, 권한 변경, 셀 삭제, 문서 미리보기 격리와 모바일 배치를 검증합니다. 인증 게이트웨이는 테스트 fixture이며 운영 계정·DB·VM은 사용하지 않습니다. 기존 `test:web`은 VS Code 가상 파일 확장의 회귀 테스트입니다. 스크린샷은 버전 관리에서 제외한 `.artifacts/`에 생성됩니다.
+Studio 테스트는 두 Chrome 세션과 격리된 실제 게스트 파일/Automerge 구현으로 로그인·workspace 선택, 동시 편집 병합, 셀 동시 생성, 새로고침 복원, 권한 변경, 셀 삭제, 문서 미리보기 격리와 모바일 배치를 검증합니다. ORCID 제공자와 인증 게이트웨이는 테스트 fixture이며 운영 계정·DB·VM은 사용하지 않습니다. 기존 `test:web`은 VS Code 가상 파일 확장의 회귀 테스트입니다. 스크린샷은 버전 관리에서 제외한 `.artifacts/`에 생성됩니다.
 
 프로젝트 아이콘 원본은 `assets/irade-icon-source.png`입니다. [제작 프롬프트](assets/ICON-PROMPT.md)를 보관하며 `python3 scripts/prepare-icons.py`로 파생 아이콘을 생성할 수 있습니다.
+
+ORCID DB 마이그레이션·인증 API·운영 자격 증명 설정은 [Spring ORCID 안내](../../project-agora-BE/docs/IRADE_ORCID.md)를 참고하세요. 서버의 보호된 ORCID 환경 파일은 `/home/steam/.config/irade/orcid.env`이며 저장소에 포함하지 않습니다.

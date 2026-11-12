@@ -13,7 +13,8 @@ export async function applyResearchStudio(app, { studioPath } = {}) {
   }
   const html = files.get('index.html').content.toString();
   app.middleware.unshift(async (context, next) => {
-    const home = context.path === '/';
+    const login = ['/login','/login/'].includes(context.path);
+    const home = context.path === '/' || login;
     const asset = context.path.startsWith('/irade-assets/studio/') ? files.get(context.path.slice('/irade-assets/studio/'.length)) : undefined;
     if ((!home && !asset) || !['GET','HEAD'].includes(context.method)) { return next(); }
     context.set('X-Content-Type-Options', 'nosniff');
@@ -22,7 +23,7 @@ export async function applyResearchStudio(app, { studioPath } = {}) {
     if (home) {
       context.type = 'text/html';
       context.set('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self' wss:; worker-src 'self' blob:; frame-src 'self' about:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'");
-      context.body = html;
+      context.body = login ? files.get('login.html').content.toString() : html;
     } else { context.type = asset.type; context.body = asset.content; }
   });
 }

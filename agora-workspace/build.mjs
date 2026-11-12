@@ -22,3 +22,7 @@ const css = readFileSync('studio/studio.css', 'utf8');
 const { writeFile } = await import('node:fs/promises');
 await writeFile('dist/studio/studio.css', readFileSync('dist/studio/monaco.css', 'utf8') + '\n' + css);
 await copyFile('studio/index.html', 'dist/studio/index.html');
+
+await build({ entryPoints: ['src/studio/login.ts'], outfile: 'dist/studio/login.js', bundle: true, platform: 'browser', format: 'esm', target: 'es2022', minify: true });
+await copyFile('studio/login.html', 'dist/studio/login.html');
+await copyFile('studio/login.css', 'dist/studio/login.css');

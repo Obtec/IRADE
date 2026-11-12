@@ -11,7 +11,7 @@ import { ResearchWorkspace, cellTypes, cellTitle, type Cell, type CellKind } fro
 const $ = <T extends HTMLElement = HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const escape = (value: string): string => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
 const origin = location.origin;
-const tokenKey = `irade.research.token:${origin}`;
+const tokenKey = `irade.orcid.token:${origin}`;
 const demoKey = 'irade.research.scratch';
 let token: string | undefined = sessionStorage.getItem(tokenKey) || undefined;
 let workspace: ResearchWorkspace | undefined;
@@ -62,7 +62,7 @@ function notify(message: string, error = false): void {
 }
 function report(error: unknown): void {
   const raw = error instanceof Error ? error.message : String(error);
-  const labels: Record<string, string> = { TOKEN_EXPIRED: '로그인이 만료되었습니다. 다시 로그인하세요.', TOKEN_REQUIRED: 'Agora 계정으로 로그인하세요.', CANVAS_ACCESS_REVOKED: 'Workspace 접근 권한이 회수되었습니다.', WORKSPACE_ACCESS_DENIED: '이 workspace를 변경할 권한이 없습니다.', ITEM_WRITE_DENIED: '셀 편집 권한이 없습니다.', CANVAS_ACCESS_DENIED: 'Workspace 접근 권한이나 비밀번호를 확인하세요.', FILE_TOO_LARGE: '셀 저장 한도(128 KiB)를 넘었습니다. 내용을 나누어 주세요.', FILE_REPLACED: '셀이 외부에서 교체되었습니다. 현재 내용을 내보내 보관한 후 다시 여세요.' };
+  const labels: Record<string, string> = { TOKEN_EXPIRED: '로그인이 만료되었습니다. 다시 로그인하세요.', TOKEN_REQUIRED: 'ORCID로 IRADE에 로그인하세요.', CANVAS_ACCESS_REVOKED: 'Workspace 접근 권한이 회수되었습니다.', WORKSPACE_ACCESS_DENIED: '이 workspace를 변경할 권한이 없습니다.', ITEM_WRITE_DENIED: '셀 편집 권한이 없습니다.', CANVAS_ACCESS_DENIED: 'Workspace 접근 권한이나 비밀번호를 확인하세요.', FILE_TOO_LARGE: '셀 저장 한도(128 KiB)를 넘었습니다. 내용을 나누어 주세요.', FILE_REPLACED: '셀이 외부에서 교체되었습니다. 현재 내용을 내보내 보관한 후 다시 여세요.' };
   notify(labels[raw] || raw, true);
   $('#cell-save').textContent = '저장 확인 필요';
 }
@@ -82,34 +82,14 @@ async function api<T>(path: string, body?: object): Promise<T> {
   if (!response.ok) { if (response.status === 401) { token = undefined; sessionStorage.removeItem(tokenKey); updateAccount(); } throw new Error(result.message || `요청에 실패했습니다 (${response.status}).`); }
   return result as T;
 }
-function updateAccount(): void { $('#account').textContent = token ? '계정 · 로그아웃' : '로그인 ↗'; }
+function updateAccount(): void { $('#account').textContent = token ? 'ORCID · 계정' : 'ORCID 로그인 ↗'; }
 async function signIn(): Promise<boolean> {
-  return new Promise(resolve => {
-    showModal('연구 workspace에 로그인', '<p class="modal-copy">기존 Agora 계정으로 로그인하고 공동 연구 공간을 연결하세요.</p><form id="login-form"><label class="field">이메일<input name="email" type="email" autocomplete="username" required placeholder="researcher@example.com"></label><label class="field">비밀번호<input name="password" type="password" autocomplete="current-password" required placeholder="Agora 비밀번호"></label><p class="dialog-error" id="login-error" role="alert"></p><div class="form-actions"><button class="button primary" type="submit">로그인 →</button></div></form>');
-    const done = (): void => resolve(false); modal.addEventListener('close', done, { once: true });
-    $('#login-form').addEventListener('submit', event => {
-      event.preventDefault(); const form = event.currentTarget as HTMLFormElement; const button = form.querySelector('button')!;
-      button.disabled = true;
-      void (async () => {
-        try {
-          const data = new FormData(form);
-          let result = await api<{ accessToken?: string; mfaRequired?: boolean; challengeToken?: string }>('/api/auth/login', { email: String(data.get('email')).trim(), password: data.get('password') });
-          (form.elements.namedItem('password') as HTMLInputElement).value = '';
-          while (result.mfaRequired && result.challengeToken) {
-            modal.removeEventListener('close', done);
-            const code = await ask('2단계 인증', '인증 앱 또는 복구 코드', true);
-            if (!code) { resolve(false); return; }
-            try { result = await api('/api/auth/mfa/verify', { challengeToken: result.challengeToken, code: code.trim() }); }
-            catch (error) { report(error); }
-          }
-          if (!result.accessToken) { throw new Error('인증 토큰을 받지 못했습니다.'); }
-          token = result.accessToken; sessionStorage.setItem(tokenKey, token); updateAccount();
-          modal.removeEventListener('close', done); resolve(true); modal.close(); log('Agora 계정에 로그인했습니다.');
-        } catch (error) { if ($('#login-error')) { $('#login-error').textContent = error instanceof Error ? error.message : String(error); } else { report(error); } }
-        finally { button.disabled = false; }
-      })();
-    });
-  });
+  if (workspace?.pending) { await workspace.flush(); }
+  const url = new URL('/irade/login', origin);
+  const id = workspace?.client.config.canvasId || Number(new URL(location.href).searchParams.get('workspace'));
+  if (id) { url.searchParams.set('workspace', String(id)); }
+  location.assign(String(url));
+  return false;
 }
 async function ask(title: string, label: string, password = false): Promise<string | undefined> {
   return new Promise(resolve => {
@@ -121,7 +101,9 @@ async function ask(title: string, label: string, password = false): Promise<stri
 interface Canvas { canvas_id: number; canvas_name: string; description?: string }
 async function openWorkspace(): Promise<void> {
   if (!token && !await signIn()) { return; }
-  const available = await api<Canvas[]>('/api/canvases');
+  let available: Canvas[] = [];
+  const convert = (row: { workspaceId: number; name: string; description?: string }): Canvas => ({ canvas_id: row.workspaceId, canvas_name: row.name, description: row.description });
+  available = (await api<{ workspaceId: number; name: string; description?: string }[]>('/api/irade/workspaces')).map(convert);
   showModal('Workspace 선택', '<p class="modal-copy">Agora 캔버스 하나가 하나의 공유 연구 workspace에 연결됩니다.</p><input class="search-input" id="workspace-search" type="search" aria-label="Workspace 검색" placeholder="Workspace 이름 검색…"><div class="choice-list" id="workspace-choices"></div><div class="form-actions"><button class="button ghost" id="join-workspace">초대 링크 / ID로 열기</button><button class="button primary" id="create-workspace">새 workspace ＋</button></div>');
   const render = (): void => {
     const query = $<HTMLInputElement>('#workspace-search').value.toLowerCase();
@@ -131,7 +113,17 @@ async function openWorkspace(): Promise<void> {
       modal.close(); void connect(canvas.canvas_id, canvas.canvas_name).catch(report);
     }));
   };
-  render(); $('#workspace-search').addEventListener('input', render);
+  render();
+  let searchVersion = 0;
+  let searchTimer: ReturnType<typeof setTimeout>;
+  $('#workspace-search').addEventListener('input', () => {
+    const version = ++searchVersion; clearTimeout(searchTimer);
+    const value = $<HTMLInputElement>('#workspace-search').value;
+    searchTimer = setTimeout(() => { void (async () => {
+      const result = await api<{ workspaceId: number; name: string; description?: string }[]>('/api/irade/workspaces?q=' + encodeURIComponent(value));
+      if (version === searchVersion && modal.open && $('#workspace-choices')) { available = result.map(convert); render(); }
+    })().catch(report); }, 250);
+  });
   $('#join-workspace').addEventListener('click', () => { void (async () => {
     const value = await ask('공유 workspace 열기', 'Workspace ID 또는 공유 링크'); if (!value) { return; }
     let id = Number(value.trim());
@@ -140,7 +132,7 @@ async function openWorkspace(): Promise<void> {
   })().catch(report); });
   $('#create-workspace').addEventListener('click', () => { void (async () => {
     const name = await ask('새 연구 workspace', 'Workspace 이름'); if (!name?.trim()) { return; }
-    const result = await api<Canvas>('/api/canvases', { canvasName: name.trim(), description: 'IRADE 연구 workspace', visibility: 'private' });
+    const result = convert(await api<{ workspaceId: number; name: string; description?: string }>('/api/irade/workspaces', { name: name.trim(), description: 'IRADE 연구 workspace' }));
     await connect(result.canvas_id, result.canvas_name || name.trim());
   })().catch(report); });
 }
@@ -150,7 +142,7 @@ async function connect(id: number, name: string): Promise<void> {
   if (workspace?.pending) { await workspace.flush(); }
   const generation = ++loadGeneration;
   workspace?.dispose(); clearModels(); demo = false; connected = false; selected = undefined; cells = []; workspaceName = name;
-  const client = new AgoraClient({ origin, canvasId: id }, async () => token || (await signIn() ? token : undefined), async () => ask('비공개 workspace', '캔버스 비밀번호', true));
+  const client = new AgoraClient({ origin, canvasId: id, audience: 'irade' }, async () => token || (await signIn() ? token : undefined), async () => ask('비공개 workspace', '캔버스 비밀번호', true));
   const current = new ResearchWorkspace(client); workspace = current;
   current.onError = error => { if (generation === loadGeneration) { report(error); } };
   current.onState = state => {
@@ -281,7 +273,7 @@ async function startDemo(): Promise<void> {
 }
 async function addCell(kind?: CellKind): Promise<void> {
   if (!workspace && !demo) {
-    showModal('연구 공간을 선택하세요', '<p class="modal-copy">Agora workspace에서 실시간으로 협업하거나 로컬 체험으로 셀을 살펴보세요.</p><div class="choice-list"><button class="choice" data-action="open"><span class="type-icon mint">↔</span><span><strong>공유 workspace 열기</strong><small>Agora 계정으로 로그인하고 공동 편집</small></span><span class="choice-arrow">↗</span></button><button class="choice" data-action="demo"><span class="type-icon blue">λ</span><span><strong>로컬 체험 시작</strong><small>계정 없이 현재 탭에서 셀 편집 체험</small></span><span class="choice-arrow">→</span></button></div>'); return;
+    showModal('연구 공간을 선택하세요', '<p class="modal-copy">Agora workspace에서 실시간으로 협업하거나 로컬 체험으로 셀을 살펴보세요.</p><div class="choice-list"><button class="choice" data-action="open"><span class="type-icon mint">↔</span><span><strong>공유 workspace 열기</strong><small>ORCID로 로그인하고 공동 편집</small></span><span class="choice-arrow">↗</span></button><button class="choice" data-action="demo"><span class="type-icon blue">λ</span><span><strong>로컬 체험 시작</strong><small>계정 없이 현재 탭에서 셀 편집 체험</small></span><span class="choice-arrow">→</span></button></div>'); return;
   }
   if (workspace && !workspace.client.canWrite) { notify('이 workspace는 읽기 전용입니다.', true); return; }
   if (!kind) {
@@ -334,17 +326,22 @@ function settings(): void {
 async function share(): Promise<void> {
   if (!workspace) { notify('공유하려면 Agora workspace를 먼저 연결하세요.'); return; }
   const url = new URL(location.pathname, origin); url.searchParams.set('workspace', String(workspace.client.config.canvasId));
-  try { await navigator.clipboard.writeText(String(url)); notify('Workspace 링크를 복사했습니다. 참여자는 자신의 Agora 계정과 접근 권한이 필요합니다.'); }
-  catch { showModal('Workspace 공유 링크', `<p class="modal-copy">참여자는 자신의 Agora 계정과 접근 권한이 필요합니다.</p><label class="field">공유 링크<input readonly value="${escape(String(url))}"></label>`); }
+  try { await navigator.clipboard.writeText(String(url)); notify('Workspace 링크를 복사했습니다. 참여자는 자신의 ORCID 로그인과 접근 권한이 필요합니다.'); }
+  catch { showModal('Workspace 공유 링크', `<p class="modal-copy">참여자는 자신의 ORCID 로그인과 접근 권한이 필요합니다.</p><label class="field">공유 링크<input readonly value="${escape(String(url))}"></label>`); }
 }
 async function action(name: string): Promise<void> {
   if (name === 'open') { await openWorkspace(); }
   else if (name === 'login') {
     if (token) {
+      const profile = await api<{ name: string; orcid: string; issuer: string }>('/api/irade/auth/me');
+      showModal('연구자 계정', `<p class="modal-copy">${escape(profile.name)}</p><a class="orcid-profile" href="${escape(profile.issuer)}/${escape(profile.orcid)}" target="_blank" rel="noopener noreferrer"><img src="/irade-assets/orcid-id.svg" width="24" height="24" alt="ORCID iD"> ${escape(profile.issuer)}/${escape(profile.orcid)}</a><div class="form-actions"><button class="button ghost" data-action="logout">이 탭에서 로그아웃</button></div>`);
+    } else { await signIn(); }
+  }
+  else if (name === 'logout') {
+      modal.close();
       if (workspace?.pending) { await workspace.flush(); }
       ++loadGeneration; workspace?.dispose(); workspace = undefined; token = undefined; sessionStorage.removeItem(tokenKey); updateAccount(); clearModels(); cells = []; selected = undefined; connected = false; workspaceName = '나의 연구 공간'; demo = false;
       const url = new URL(location.href); url.searchParams.delete('workspace'); history.replaceState(null,'',url); overview(); $('#workspace-subtitle').textContent = 'workspace를 연결하세요'; $('#status').textContent = '로그아웃됨'; $('#connection-label').textContent = '연결 대기'; $('#permission-label').textContent = ''; notify('로그아웃했습니다.');
-    } else { if (await signIn()) { await openWorkspace(); } }
   }
   else if (name === 'demo') { modal.close(); await startDemo(); }
   else if (name === 'add') { await addCell(); }
@@ -388,4 +385,11 @@ updateAccount(); renderList(); renderInspector();
 const query = new URL(location.href).searchParams;
 let canvasId = Number(query.get('workspace'));
 if (!canvasId && query.has('folder')) { try { const uri = new URL(query.get('folder')!); if (uri.protocol === 'agora:' && uri.hostname === location.hostname) { canvasId = Number(uri.username); } } catch { /* Ignore unrelated legacy links. */ } }
-if (canvasId) { void (async () => { if (token || await signIn()) { await connect(canvasId, `Workspace ${canvasId}`); } })().catch(report); }
+void (async () => {
+  if (token) {
+    try { await api('/api/irade/auth/me'); }
+    catch { token = undefined; sessionStorage.removeItem(tokenKey); updateAccount(); }
+  }
+  if (canvasId) { if (token) { await connect(canvasId, `Workspace ${canvasId}`); } else { await signIn(); } }
+  else if (token && query.has('workspaces')) { await openWorkspace(); }
+})().catch(report);

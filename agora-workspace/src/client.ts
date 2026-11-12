@@ -2,7 +2,7 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
-export interface Connection { origin: string; canvasId: number }
+export interface Connection { origin: string; canvasId: number; audience?: 'irade' }
 export interface FileRecord {
 	path: string; type: 'file' | 'directory'; size: number; mtime: number; ctime: number;
 	fileId: string; etag: string; document: string | null; content: string;
@@ -36,7 +36,8 @@ export function connection(value: Connection): Connection {
 		throw new Error('Enter an HTTPS origin, for example https://agora.example.com');
 	}
 	if (!Number.isSafeInteger(value.canvasId) || value.canvasId <= 0) { throw new Error('Invalid canvas ID'); }
-	return { origin: origin.origin, canvasId: value.canvasId };
+	if (value.audience !== undefined && value.audience !== 'irade') { throw new Error('Invalid workspace audience'); }
+	return { origin: origin.origin, canvasId: value.canvasId, ...(value.audience ? { audience: value.audience } : {}) };
 }
 
 /** Uses the existing authenticated canvas channel. Exact request IDs survive retries. */
@@ -160,7 +161,7 @@ export class AgoraClient {
 	}
 
 	private access(token: string, body: object): Promise<Response> {
-		return this.transport.fetch(`${this.config.origin}/api/canvases/${this.config.canvasId}/access`, {
+		return this.transport.fetch(`${this.config.origin}/api/${this.config.audience === 'irade' ? 'irade/workspaces' : 'canvases'}/${this.config.canvasId}/access`, {
 			method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
 			body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(15000),
 		});
