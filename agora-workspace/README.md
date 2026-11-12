@@ -72,9 +72,15 @@ CORS_ALLOWED_ORIGIN_PATTERNS=https://*.ide.example.com:8080
 # https://*.ide.example.com:8080
 ```
 
-각 브라우저에서 기존 Agora 계정으로 로그인해 얻은 **일반 access token**을 입력합니다. 토큰은 VS Code SecretStorage에 저장하며 작업 공간 URI에 포함하지 않습니다. 캔버스 토큰은 기존 `/access`에서 따로 발급받습니다. 비밀번호가 있는 캔버스는 최초 연결 때 비밀번호도 묻습니다. 로그인 토큰 만료 후에는 **Agora: Set Access Token**으로 갱신할 수 있습니다.
+각 브라우저에서 **Open Shared Workspace**를 누르고 기존 Agora 계정의 이메일과 비밀번호로 로그인한 뒤 캔버스를 선택합니다. MFA가 설정된 계정은 인증 코드도 입력합니다. 비밀번호가 있는 캔버스는 연결할 때 캔버스 비밀번호를 묻습니다. **Agora: Sign In**으로 다시 로그인할 수 있으며, **Agora: Set Access Token**은 직접 토큰을 입력하는 고급 사용 방법으로 남겨 두었습니다.
 
-명령 팔레트의 **Agora: Open Shared Workspace**에서 Agora HTTPS 주소와 캔버스 ID를 입력해도 됩니다. **Agora: Copy Workspace Link**는 `agora://42@agora.example.com:8443/` 같은 URI를 복사합니다. 다른 사용자는 같은 URI로 작업 공간을 열고 자신의 계정으로 인증합니다. 기존 Agora의 캔버스 초대·공개 여부·그룹 설정이 접속을 결정합니다.
+배포 실행기는 VS Code SecretStorage를 현재 탭의 `sessionStorage`에 연결합니다. 로그인 토큰은 같은 탭의 작업 공간 이동과 새로고침 동안 유지되며 탭을 닫으면 사라집니다. 계정 비밀번호는 저장하지 않고 토큰을 작업 공간 URI에 포함하지 않습니다.
+
+**Agora: Copy Workspace Link**로 작업 공간 URI를 복사할 수 있습니다. 다른 사용자는 같은 캔버스를 자신의 계정으로 열면 됩니다. 기존 Agora의 캔버스 초대·공개 여부·그룹 설정이 접속을 결정합니다.
+
+### 현재 배포
+
+서비스 주소는 **https://frelog.p-e.kr/ide/** 입니다. 같은 출처의 기존 Agora API와 Wall WSS에 연결합니다. `irade-web.service`가 웹 에디터를 자동 시작하고 nginx가 `/ide/`를 내부 HTTPS 서버로 전달합니다. 배포 구성과 갱신 방법은 [DEPLOYMENT.md](DEPLOYMENT.md)를 참고하세요.
 
 TLS 없이 UI만 살펴보려면 `pnpm run serve --port 8080`을 사용할 수 있습니다. 기존 Agora 브로커는 HTTPS 출처를 요구하므로 실제 서비스 연결에는 위 HTTPS 실행 방법을 사용하세요.
 
