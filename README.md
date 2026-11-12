@@ -34,6 +34,7 @@ IRADE/
 │   ├── notebooks/               # 데모 인터랙티브 노트북 (.ipynb)
 │   └── pyproject.toml           # Python 패키지 사양 및 종속성
 │
+├── agora-workspace/             # Agora VM /workspace의 VS Code 웹 공동 편집 확장
 └── .gitignore                   # 모노레포 공통 Git 무시 규칙
 ```
 
@@ -118,6 +119,10 @@ pnpm run watch
 ---
 
 ## 🧪 테스트 실행 (Running Tests)
+
+### Agora 작업 공간 공동 편집
+
+[`agora-workspace`](agora-workspace/README.md)는 기존 Agora 캔버스의 VM `/workspace`를 VS Code 웹 파일 탐색기에 연결합니다. 파일·폴더 관리, Automerge 동시 편집 병합, Wall 실시간 공유와 재접속 처리를 포함합니다. 백엔드·Wall·VM 워커 적용, HTTPS 웹 IDE 실행과 검증 방법은 [설정 안내](agora-workspace/README.md)를 참고하세요.
 
 ### 커널 단위 및 E2E 테스트
 ```bash

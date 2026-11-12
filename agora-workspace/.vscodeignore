@@ -1,0 +1,9 @@
+**
+!package.json
+!package.nls.json
+!assets/irade-icon-128.png
+!README.md
+!LICENSE.txt
+!THIRD_PARTY_NOTICES.md
+!dist/extension.cjs
+!dist/extension.cjs.map

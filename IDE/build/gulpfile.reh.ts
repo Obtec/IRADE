@@ -373,6 +373,10 @@ function packageTask(type: string, platform: string, arch: string, sourceFolderN
 				'resources/server/favicon.ico',
 				'resources/server/code-192.png',
 				'resources/server/code-512.png',
+				'resources/server/irade-favicon.ico',
+				'resources/server/irade-icon-180.png',
+				'resources/server/irade-icon-192.png',
+				'resources/server/irade-icon-512.png',
 				'resources/server/manifest.json'
 			].map(resource => gulp.src(resource, { base: '.' }).pipe(rename(resource)));
 		}

@@ -1,0 +1,67 @@
+{
+  "name": "agora-workspace",
+  "displayName": "Agora Shared Workspace",
+  "icon": "assets/irade-icon-128.png",
+  "description": "Edit and share the canvas VM /workspace through Project Agora and Wall.",
+  "publisher": "irade",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "files": ["dist/extension.cjs", "dist/extension.cjs.map", "assets/irade-icon-128.png", "package.nls.json", "README.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md"],
+  "type": "module",
+  "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "browser": "./dist/extension.cjs",
+  "main": "./dist/extension.cjs",
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onFileSystem:agora"
+  ],
+  "capabilities": {
+    "virtualWorkspaces": true,
+    "untrustedWorkspaces": {
+      "supported": true
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "agora.openWorkspace",
+        "title": "Open Shared Workspace",
+        "category": "Agora"
+      },
+      {
+        "command": "agora.setToken",
+        "title": "Set Access Token",
+        "category": "Agora"
+      },
+      {
+        "command": "agora.copyWorkspaceLink",
+        "title": "Copy Workspace Link",
+        "category": "Agora"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "tsc --noEmit",
+    "test": "node test/run.mjs",
+    "serve": "node scripts/serve.mjs",
+    "serve:https": "node scripts/serve-https.mjs",
+    "test:web": "node test/web.mjs"
+  },
+  "dependencies": {
+    "@automerge/automerge": "3.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.0",
+    "@vscode/test-web": "0.0.81",
+    "esbuild": "0.28.1",
+    "typescript": "5.9.3",
+    "ws": "8.19.0"
+  }
+}

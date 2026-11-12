@@ -1,20 +1,23 @@
 {
-	"name": "Code - OSS",
-	"short_name": "Code- OSS",
+	"name": "IRADE Web Editor",
+	"short_name": "IRADE",
 	"start_url": "/",
 	"lang": "en-US",
 	"display": "standalone",
 	"display_override": ["window-controls-overlay"],
+	"background_color": "#020925",
+	"theme_color": "#020925",
 	"icons": [
 		{
-			"src": "code-192.png",
+			"src": "irade-icon-192.png",
 			"type": "image/png",
 			"sizes": "192x192"
 		},
 		{
-			"src": "code-512.png",
+			"src": "irade-icon-512.png",
 			"type": "image/png",
-			"sizes": "512x512"
+			"sizes": "512x512",
+			"purpose": "any maskable"
 		}
 	]
 }
