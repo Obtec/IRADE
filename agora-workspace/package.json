@@ -7,7 +7,15 @@
   "version": "0.1.0",
   "license": "MIT",
   "private": true,
-  "files": ["dist/extension.cjs", "dist/extension.cjs.map", "assets/irade-icon-128.png", "package.nls.json", "README.md", "LICENSE.txt", "THIRD_PARTY_NOTICES.md"],
+  "files": [
+    "dist/extension.cjs",
+    "dist/extension.cjs.map",
+    "assets/irade-icon-128.png",
+    "package.nls.json",
+    "README.md",
+    "LICENSE.txt",
+    "THIRD_PARTY_NOTICES.md"
+  ],
   "type": "module",
   "packageManager": "pnpm@10.32.1",
   "engines": {
@@ -29,14 +37,30 @@
     }
   },
   "contributes": {
-    "walkthroughs": [{
-      "id": "agoraWorkspaceWelcome",
-      "title": "IRADE Shared Workspace",
-      "description": "Sign in to Agora and collaborate on the files in your workspace.",
-      "steps": [{ "id": "open", "title": "Open a Shared Workspace", "description": "Choose an Agora canvas to edit its VM workspace together.\n[Open Shared Workspace](command:agora.openWorkspace)", "media": { "image": "assets/irade-icon-128.png", "altText": "IRADE" } }]
-    }],
+    "walkthroughs": [
+      {
+        "id": "agoraWorkspaceWelcome",
+        "title": "IRADE Shared Workspace",
+        "description": "Sign in to Agora and collaborate on the files in your workspace.",
+        "steps": [
+          {
+            "id": "open",
+            "title": "Open a Shared Workspace",
+            "description": "Choose an Agora canvas to edit its VM workspace together.\n[Open Shared Workspace](command:agora.openWorkspace)",
+            "media": {
+              "image": "assets/irade-icon-128.png",
+              "altText": "IRADE"
+            }
+          }
+        ]
+      }
+    ],
     "commands": [
-      { "command": "agora.signIn", "title": "Sign In", "category": "Agora" },
+      {
+        "command": "agora.signIn",
+        "title": "Sign In",
+        "category": "Agora"
+      },
       {
         "command": "agora.openWorkspace",
         "title": "Open Shared Workspace",
@@ -60,10 +84,15 @@
     "test": "node test/run.mjs",
     "serve": "node scripts/serve.mjs",
     "serve:https": "node scripts/serve-https.mjs",
-    "test:web": "node test/web.mjs"
+    "test:web": "node test/web.mjs",
+    "test:studio": "node test/studio.mjs"
   },
   "dependencies": {
-    "@automerge/automerge": "3.5.0"
+    "@automerge/automerge": "3.5.0",
+    "dompurify": "3.4.17",
+    "koa": "^3.3.0",
+    "marked": "18.2.0",
+    "monaco-editor": "0.52.2"
   },
   "devDependencies": {
     "@types/node": "22.19.0",

@@ -1,26 +1,23 @@
-# 현재 서버 배포
+# 운영 배포
 
-공개 주소: https://frelog.p-e.kr/ide/
+공개 주소: **https://frelog.p-e.kr/irade/**. `/ide`와 `/ide/`는 workspace 쿼리를 보존해 새 주소로 308 리다이렉트합니다.
 
-## 실행 구성
+## 구성
 
-- systemd: `/etc/systemd/system/irade-web.service`, 사용자 `steam`, 내부 주소 `https://127.0.0.1:8090`.
-- nginx: `/etc/nginx/sites-available/frelog.conf`에서 `/etc/nginx/snippets/irade-web.conf`를 포함합니다. `/ide/`는 접두사를 제거해 전달하고 `/static/`, `/irade-assets/`, `/callback`도 웹 서버로 전달합니다. 기존 Agora API와 Wall 경로는 유지합니다.
-- 외부 인증서는 기존 frelog Let's Encrypt 인증서, 내부 연결은 기존 Agora 인증서와 CA 검증을 사용합니다.
-- 확장은 `/opt/irade-web/releases/20261113-workspace/`의 최소 배포 파일을 사용합니다. 소스 저장소와 테스트 산출물 전체를 공개하지 않습니다.
-- VS Code 빌드는 `--build-path`로 고정합니다. 서비스의 실제 경로는 `systemctl cat irade-web.service`에서 확인합니다.
+- systemd: `/etc/systemd/system/irade-web.service`, 사용자 `steam`, 내부 HTTPS `127.0.0.1:8090`.
+- nginx: 기존 `frelog.conf`에서 `/etc/nginx/snippets/irade-web.conf`를 포함합니다. `/irade/`는 접두사를 제거해 프록시하며 `/irade-assets/`는 그대로 전달합니다. API와 Wall WSS는 기존 라우팅을 유지합니다.
+- 외부는 기존 Let's Encrypt 인증서, 내부는 기존 Agora 인증서와 CA 검증을 사용합니다.
+- 운영 UI: `/opt/irade-web/releases/20261113-research-r2/studio/`. `--studio-path`가 빌드 결과 디렉터리를 고정합니다. 서버는 시작 시 파일을 메모리에 읽으며 소스·개발 파일을 공개하지 않습니다.
+- 외부 마켓플레이스, VS Code 다운로드와 워크벤치 경로를 운영 서버에서 제공하지 않습니다. Monaco와 worker, WASM은 번들에 포함됩니다. 와일드카드 DNS·인증서가 필요하지 않습니다.
 
-실행 옵션은 `--base-path /ide/ --worker-origin https://frelog.p-e.kr --extension-path <확장 배포 경로> --build-path <VS Code 빌드 경로>`입니다. 이 구성은 확장 worker를 같은 HTTPS 출처에서 실행하므로 worker용 와일드카드 DNS/인증서가 필요하지 않습니다. 임의의 웹뷰에 대한 와일드카드 호스팅까지 구성하지는 않습니다.
+서버 자체 NAT loopback 문제에 대한 `/etc/hosts`의 해당 도메인→`127.0.0.1` 매핑은 유지합니다. 외부 DNS는 변경하지 않았습니다.
 
-서버 자체의 NAT loopback 문제 때문에 `/etc/hosts`에서 이 도메인만 `127.0.0.1`로 연결합니다. 외부 DNS는 변경하지 않았습니다.
+## 갱신
 
-## 갱신과 확인
+1. README의 빌드와 테스트를 실행합니다.
+2. `dist/studio/`를 새 `/opt/irade-web/releases/<릴리스>/studio/`로 복사합니다. 소스와 테스트 데이터는 제외합니다.
+3. [서비스 템플릿](deploy/irade-web.service)의 경로·인증서·사용자를 서버에 맞추고 `--studio-path`를 새 릴리스로 변경합니다. `systemctl daemon-reload`, `systemctl restart irade-web.service`를 실행합니다.
+4. [nginx 템플릿](deploy/irade-web.conf)을 적용하고 `nginx -t` 성공 후 reload합니다. 프록시 CA 설정은 기존 `irade-web-proxy.conf`를 사용합니다.
+5. `systemctl is-active irade-web.service agora-runtime-manager.service`, 공개 `/irade/`의 HTTP 200, `/ide/`의 308·쿼리 보존, manifest의 `/irade/` scope, 실제 브라우저 로딩과 네트워크 요청을 확인합니다.
 
-1. README의 순서로 BE, Wall, 하이퍼바이저와 확장을 빌드합니다. 실행 중인 기존 VM의 에이전트 갱신은 유지보수 절차를 따릅니다.
-2. 새로운 확장 배포 디렉터리에 `package.json`, `package.nls.json`, `dist/`, 아이콘과 라이선스 문서를 복사합니다. 개발 파일과 테스트 데이터는 제외합니다.
-3. 서비스의 `--extension-path`를 새 릴리스로 변경하고 `systemctl daemon-reload`, `systemctl restart irade-web.service`를 실행합니다. 호스트 스크립트 변경도 서비스 재시작이 필요합니다.
-4. `nginx -t`, `systemctl is-active irade-web.service agora-runtime-manager.service`, `curl -I https://frelog.p-e.kr/ide/`로 확인합니다. nginx 설정을 변경한 경우 검증 후 reload합니다.
-
-최초 배포의 설정 백업과 검증 기록은 서버의 `/var/lib/irade/deployments/20261112T145658Z/`에 보관합니다. 자격 증명이 포함될 수 있는 백업은 공개하거나 저장소에 추가하지 않습니다.
-
-실제 두 계정·두 브라우저로 동시 편집 병합, 한글 동기화, VM 재시작 후 내용 유지, 실시간 권한 회수, 파일 이름 변경과 삭제를 검증했습니다. 검증용 캔버스와 계정은 정상 API로 삭제했습니다.
+BE·Wall·하이퍼바이저 프로토콜은 이전 배포를 그대로 사용하며 스키마 변경은 없습니다. 기존 VM과 파일은 보존합니다. 이전 설정과 릴리스 디렉터리를 보관해 서비스 경로와 nginx 설정을 되돌릴 수 있습니다. 인증 정보가 있을 수 있는 서버 백업은 저장소에 추가하지 않습니다.

@@ -7,8 +7,8 @@
   "scope": "/",
   "display": "standalone",
   "display_override": ["window-controls-overlay"],
-  "background_color": "#020925",
-  "theme_color": "#020925",
+  "background_color": "#151719",
+  "theme_color": "#101315",
   "icons": [
     { "src": "irade-icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
     { "src": "irade-icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any maskable" }

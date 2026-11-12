@@ -6,7 +6,8 @@ import { createServer } from 'node:https';
 import { createInterface } from 'node:readline';
 import { WebSocketServer } from 'ws';
 
-export async function fixture() {
+export async function fixture({ studio } = {}) {
+	let writable = true;
 	const temporary = await mkdtemp(join(tmpdir(), 'agora-web-fixture-'));
 	await mkdir(join(temporary, 'workspace'));
 	execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(temporary, 'key.pem'),
@@ -16,11 +17,24 @@ export async function fixture() {
 		resolve(hypervisor, 'runtime/guest/workspace.py'), join(temporary, 'workspace'), join(temporary, 'state')], { stdio: ['pipe', 'pipe', 'inherit'] });
 	const responses = createInterface({ input: python.stdout })[Symbol.asyncIterator]();
 	const server = createServer({ key: await readFile(join(temporary, 'key.pem')), cert: await readFile(join(temporary, 'cert.pem')) }, (request, response) => {
+		if (studio && !request.url.startsWith('/api/') && !request.url.startsWith('/wss/')) { studio(request, response); return; }
 		const origin = request.headers.origin || '';
 		if (/^http:\/\/(?:v--[a-z0-9]+\.)?localhost:8096$/.test(origin)) { response.setHeader('Access-Control-Allow-Origin', origin); }
 		response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
 		response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
 		if (request.method === 'OPTIONS') { response.writeHead(204).end(); return; }
+		if (studio && request.url === '/api/auth/login' && request.method === 'POST') {
+			let body = ''; request.on('data', chunk => body += chunk); request.on('end', () => {
+				const data = JSON.parse(body);
+				response.setHeader('Content-Type', 'application/json');
+				if (data.password === 'fixture-password') { response.end(JSON.stringify(data.email === 'mfa@example.invalid' ? { mfaRequired: true, challengeToken: 'fixture-challenge' } : { accessToken: 'fixture-writer' })); }
+				else { response.writeHead(401).end(JSON.stringify({ message: 'Wrong fixture password' })); }
+			}); return;
+		}
+		if (studio && request.url === '/api/auth/mfa/verify' && request.method === 'POST') {
+			let body = ''; request.on('data', chunk => body += chunk); request.on('end', () => { const data = JSON.parse(body); response.setHeader('Content-Type', 'application/json'); if (data.code === '123456' && data.challengeToken === 'fixture-challenge') { response.end(JSON.stringify({ accessToken: 'fixture-writer' })); } else { response.writeHead(400).end(JSON.stringify({ message: '잘못된 인증 코드' })); } }); return;
+		}
+		if (studio && request.url === '/api/canvases' && request.method === 'GET' && request.headers.authorization === 'Bearer fixture-writer') { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify([{ canvas_id: 42, canvas_name: '공동 연구 workspace' }])); return; }
 		if (request.url !== '/api/canvases/42/access' || request.headers.authorization !== 'Bearer fixture-writer') { response.writeHead(403).end(); return; }
 		response.setHeader('Content-Type', 'application/json');
 		response.end(JSON.stringify({ ws_port: '8002', canvas_access_token: 'fixture-canvas' }));
@@ -28,12 +42,13 @@ export async function fixture() {
 	const sockets = new WebSocketServer({ server });
 	let queue = Promise.resolve();
 	sockets.on('connection', socket => {
-		socket.send(JSON.stringify({ type: 'init_items', is_admin: false, groups: ['default'], write_groups: ['default'] }));
+		socket.send(JSON.stringify({ type: 'init_items', is_admin: false, groups: ['default'], write_groups: writable ? ['default'] : [] }));
 		socket.on('message', data => {
 			queue = queue.then(async () => {
 				const event = JSON.parse(String(data));
 				if (event.type !== 'workspace_files') { return; }
 				const { type, request_id, ...request } = event;
+				if (!writable && !['read','stat','list'].includes(request.operation)) { socket.send(JSON.stringify({ type: 'workspace_files_result', request_id, ok: false, code: 'WORKSPACE_ACCESS_DENIED' })); return; }
 				python.stdin.write(JSON.stringify({ ...request, requestId: `7:${request_id}` }) + '\n');
 				const { value, done } = await responses.next();
 				if (done) { throw new Error('Guest fixture exited'); }
@@ -48,10 +63,12 @@ export async function fixture() {
 		});
 	});
 	await new Promise(resolve => server.listen(9449, resolve));
-	return async () => {
+	const cleanup = async () => {
 		for (const socket of sockets.clients) { socket.terminate(); }
 		sockets.close(); server.close(); python.stdin.end();
 		await new Promise(resolve => python.once('exit', resolve));
 		await rm(temporary, { recursive: true, force: true });
 	};
+	cleanup.setWritable = value => { writable = value; for (const socket of sockets.clients) { socket.send(JSON.stringify({ type: 'canvas_access_changed', is_admin: false, write_groups: value ? ['default'] : [] })); } };
+	return cleanup;
 }

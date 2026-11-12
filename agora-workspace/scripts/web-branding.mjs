@@ -6,6 +6,7 @@ const types = new Map([
 	['irade-icon-180.png', 'image/png'],
 	['irade-icon-192.png', 'image/png'],
 	['irade-icon-512.png', 'image/png'],
+	['irade-icon-source.png', 'image/png'],
 	['manifest.webmanifest', 'application/manifest+json'],
 ]);
 

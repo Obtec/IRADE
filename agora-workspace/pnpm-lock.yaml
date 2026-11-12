@@ -11,6 +11,18 @@ importers:
       '@automerge/automerge':
         specifier: 3.5.0
         version: 3.5.0
+      dompurify:
+        specifier: 3.4.17
+        version: 3.4.17
+      koa:
+        specifier: ^3.3.0
+        version: 3.3.0
+      marked:
+        specifier: 18.2.0
+        version: 18.2.0
+      monaco-editor:
+        specifier: 0.52.2
+        version: 0.52.2
     devDependencies:
       '@types/node':
         specifier: 22.19.0
@@ -206,6 +218,9 @@ packages:
   '@types/node@22.19.0':
     resolution: {integrity: sha512-xpr/lmLPQEj+TUnHmR+Ab91/glhJvsqcjB+yY0Ix9GO70H6Lb4FHH5GeqdOE5btAx7eIMwuHkp4H2MSkLcqWbA==}
 
+  '@types/trusted-types@2.0.7':
+    resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
+
   '@vscode/test-web@0.0.81':
     resolution: {integrity: sha512-qAYNX1mf4hE0L3T/186J8AH+Z7Inm81OHMACkkyKE2J6HJZlXou0OgABkSvd8gt0BiPjI+V+xkduAaQ8Kcjexg==}
     engines: {node: '>=20'}
@@ -340,6 +355,9 @@ packages:
     resolution: {integrity: sha512-2sJGJTaXIIaR1w4iJSNoN0hnMY7Gpc/n8D4qSCJw8QqFWXf7cuAgnEHxBpweaVcPevC2l3KpjYCx3NypQQgaJg==}
     engines: {node: '>= 0.8', npm: 1.2.8000 || >= 1.4.16}
 
+  dompurify@3.4.17:
+    resolution: {integrity: sha512-B/pSlYVHQ58kqISD/yDjuJ1yfzI34m1gF4lAod2bwSRhiN4K5Cl3H8Af7hqB2PmTL911tdEudnnXn5FnhRoz0w==}
+
   duplexify@3.7.1:
     resolution: {integrity: sha512-07z8uv2wMyS51kKhD1KsdXJg5WQ6t93RneqRxUHnskXVtlYYkLqM0gqStQZ3pj073g687jPCHrqNfCzawLYh5g==}
 
@@ -450,6 +468,11 @@ packages:
     resolution: {integrity: sha512-NdsWJYxVzUuYt718DtEQRhUXqqsAPA4VlaUGrlidjh/T2TP/4OQXqQg4ouUHfHD9f+tgmwLZWPm+JQLgqM9YbA==}
     engines: {node: '>= 18'}
 
+  marked@18.2.0:
+    resolution: {integrity: sha512-KaeL+tAbtvI930q7HE2PN5lYXYdT8EiSmxHlN6F3rsfb57wd5mp5W5TLazpdj4inTQBJdgjYwbs40W/0VUGU+Q==}
+    engines: {node: '>= 20'}
+    hasBin: true
+
   media-typer@1.1.1:
     resolution: {integrity: sha512-yz3xRaG20c6/BOzvYoDaGtPmGscs7YivItZEEqe6GbwNfHuxu9YNmvnEkMzKldAGY4/80pRcQRZSEnhquk9XuQ==}
     engines: {node: '>= 0.8'}
@@ -472,6 +495,9 @@ packages:
 
   minimist@1.2.8:
     resolution: {integrity: sha512-2yyAR8qBkN3YuheJanUpWC5U3bb5osDywNB8RzDVlDwDHbocAJveqqj1u8+SVD7jkWT4yvsHCpWqqWqAxb0zCA==}
+
+  monaco-editor@0.52.2:
+    resolution: {integrity: sha512-GEQWEZmfkOGLdd3XK8ryrfWz3AIP8YymVXiPHEdewrUq7mh0qrKrfHLNCXcbB6sTnMLnOZ3ztSiKcciFUkIJwQ==}
 
   morgan@1.12.1:
     resolution: {integrity: sha512-tljKC0ex20AjO58Ob/eZ53JloycbVswbVNCHx6V6VLGzqt/w8dIynVGL0G8qVjNKwiA7sYSogCrN6QtJ82IV+g==}
@@ -755,6 +781,9 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
+  '@types/trusted-types@2.0.7':
+    optional: true
+
   '@vscode/test-web@0.0.81(bare-buffer@3.7.1)':
     dependencies:
       '@koa/cors': 5.0.0
@@ -867,6 +896,10 @@ snapshots:
   depd@2.0.0: {}
 
   destroy@1.2.0: {}
+
+  dompurify@3.4.17:
+    optionalDependencies:
+      '@types/trusted-types': 2.0.7
 
   duplexify@3.7.1:
     dependencies:
@@ -1048,6 +1081,8 @@ snapshots:
       type-is: 2.1.0
       vary: 1.1.2
 
+  marked@18.2.0: {}
+
   media-typer@1.1.1: {}
 
   mime-db@1.52.0: {}
@@ -1063,6 +1098,8 @@ snapshots:
       mime-db: 1.54.0
 
   minimist@1.2.8: {}
+
+  monaco-editor@0.52.2: {}
 
   morgan@1.12.1:
     dependencies:
