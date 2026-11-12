@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>∀ Lean 4 Proof Studio — Visual Studio Code R&amp;D Workbench</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="vscode-shell">
+    <!-- Top VS Code Title Bar -->
+    <header class="vscode-titlebar">
+      <div class="vscode-titlebar-left">
+        <span class="vscode-app-icon">∀</span>
+        <nav class="vscode-menubar" aria-label="Menu">
+          <button type="button" class="vscode-menu-item" id="menu-new-nb" title="새 Workspace 생성">File</button>
+          <button type="button" class="vscode-menu-item" id="menu-close-workspace" title="현재 Workspace 탭 닫기 및 Redis 언마운트">Workspace</button>
+          <button type="button" class="vscode-menu-item" id="menu-toggle-sidebar" title="사이드바 토글 (Ctrl+B)">View</button>
+          <button type="button" class="vscode-menu-item" id="menu-run-all" title="현재 Workspace의 모든 셀 실행">Run</button>
+          <button type="button" class="vscode-menu-item" id="menu-reset-kernel" title="Lean 4 & Python 커널 재시작">Kernel</button>
+          <button type="button" class="vscode-menu-item" id="menu-open-agora-modal" title="Project-Agora 계정 및 캔버스 설정">Project-Agora</button>
+        </nav>
+      </div>
+
+      <div class="vscode-titlebar-center">
+        <div class="vscode-command-center">
+          <span class="vscode-codicon">🔎</span>
+          <input
+            type="text"
+            id="notebook-title-input"
+            class="vscode-title-input"
+            value=""
+            placeholder="Select or Create a Workspace..."
+            aria-label="Workspace Title"
+            title="클릭하여 활성 Workspace 이름 편집"
+          />
+          <span id="save-status-indicator" class="vscode-dirty-badge">No Workspace</span>
+        </div>
+      </div>
+
+      <div class="vscode-titlebar-right">
+        <span id="redis-lifecycle-pill" class="vscode-pill vscode-pill-redis" title="Project-Agora 캔버스와 동일한 Redis HOT/COLD 생명주기 상태">
+          💾 Redis Standby
+        </span>
+        <span id="realtime-sync-pill" class="vscode-pill vscode-pill-ok" title="실시간 다중 사용자 동기화 및 캔버스 자동 저장 상태">
+          ⚡ Live Sync · 👥 1 Online
+        </span>
+        <span id="linked-canvas-pill" class="vscode-pill vscode-pill-canvas" style="display:none;"></span>
+        <span id="agora-health-pill" class="vscode-pill">Agora Checking...</span>
+        <a id="link-open-agora" href="https://127.0.0.1:8444" target="_blank" rel="noopener noreferrer" class="vscode-title-link" title="Project-Agora 캔버스 플랫폼 열기">
+          ↗ Project-Agora
+        </a>
+      </div>
+    </header>
+
+    <!-- Main Workbench (Activity Bar + Primary Side Bar + Editor Group) -->
+    <div class="vscode-workbench" id="vscode-workbench">
+      <!-- VS Code Activity Bar (Left 48px Icon Strip) -->
+      <aside class="vscode-activitybar" aria-label="Activity Bar">
+        <div class="vscode-activity-top">
+          <button type="button" class="vscode-activity-btn active" data-panel="explorer" title="탐색기: Workspaces (Explorer)">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7v11a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-6l-2-2H5a2 2 0 0 0-2 2Z"/></svg>
+          </button>
+          <button type="button" class="vscode-activity-btn" data-panel="agora" title="Project-Agora 협업 캔버스 브리지 (Canvas R&D Bridge)">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+          </button>
+          <button type="button" class="vscode-activity-btn" data-panel="symbols" title="Lean 4 유니코드 기호 & 커널 매직 팔레트 (∀ Symbols & Magics)">
+            <span class="vscode-activity-glyph">∀</span>
+          </button>
+        </div>
+        <div class="vscode-activity-bottom">
+          <button type="button" id="btn-open-auth-modal" class="vscode-activity-btn" title="Project-Agora 계정 및 연구자 세션 설정">
+            <div class="vscode-avatar-circle" id="user-avatar">R</div>
+          </button>
+        </div>
+      </aside>
+
+      <!-- VS Code Primary Side Bar -->
+      <aside class="vscode-sidebar" id="vscode-sidebar">
+        <!-- Explorer Header -->
+        <div class="vscode-sidebar-title">
+          <span id="sidebar-header-text">EXPLORER: WORKSPACES</span>
+          <div class="vscode-sidebar-actions">
+            <button type="button" id="btn-new-notebook" class="vscode-icon-btn" title="새 Workspace 생성 (+ New Workspace)">＋</button>
+            <button type="button" id="btn-import-ipynb" class="vscode-icon-btn" title=".ipynb 파일 열기">📂</button>
+            <input type="file" id="input-import-ipynb" accept=".ipynb,application/json" style="display:none;" />
+          </div>
+        </div>
+
+        <div class="vscode-sidebar-scroll">
+          <!-- Section 0: Open Editors (Mounted in Redis HOT) -->
+          <details class="vscode-pane-section" id="sec-open-editors" open>
+            <summary class="vscode-pane-header">
+              <span>OPEN WORKSPACES (REDIS HOT)</span>
+              <span id="open-workspaces-count" class="vscode-count-pill">0</span>
+            </summary>
+            <div class="vscode-pane-body">
+              <div id="open-workspaces-list" class="vscode-tree-list"></div>
+            </div>
+          </details>
+
+          <!-- Section 1: All Workspaces (Explorer) -->
+          <details class="vscode-pane-section" id="sec-explorer" open>
+            <summary class="vscode-pane-header">
+              <span>ALL WORKSPACES</span>
+            </summary>
+            <div class="vscode-pane-body">
+              <div id="notebook-list" class="vscode-tree-list"></div>
+            </div>
+          </details>
+
+          <!-- Section 2: Project-Agora Canvas R&D Bridge -->
+          <details class="vscode-pane-section" id="sec-agora" open>
+            <summary class="vscode-pane-header">
+              <span>PROJECT-AGORA CANVAS BRIDGE</span>
+              <button type="button" id="btn-refresh-canvases" class="vscode-inline-btn" title="캔버스 목록 새로고침">↻</button>
+            </summary>
+            <div class="vscode-pane-body vscode-bridge-box">
+              <div class="vscode-user-summary">
+                <div class="vscode-user-title" id="user-display-name">Local Researcher</div>
+                <div class="vscode-user-subtitle" id="user-display-sub">Local Kernel Workspace</div>
+                <button type="button" id="btn-sidebar-auth" class="vscode-btn vscode-btn-secondary vscode-btn-block">
+                  🔐 Agora 계정 로그인 / 토큰 설정
+                </button>
+              </div>
+
+              <label class="vscode-field-label">연동할 Project-Agora 캔버스</label>
+              <select id="select-agora-canvas" class="vscode-select">
+                <option value="">— 캔버스 선택 또는 아래 ID 입력 —</option>
+              </select>
+
+              <div class="vscode-inline-row">
+                <input type="text" id="input-canvas-id" class="vscode-input" placeholder="Canvas UUID 또는 새 캔버스 제목" />
+                <button type="button" id="btn-create-canvas" class="vscode-btn vscode-btn-secondary" title="새 협업 캔버스 생성">+ 생성</button>
+              </div>
+
+              <div class="vscode-btn-grid">
+                <button type="button" id="btn-export-canvas" class="vscode-btn vscode-btn-primary" title="현재 Workspace와 정리 요약을 Project-Agora 캔버스로 내보내기">
+                  ⬆ 캔버스로 내보내기
+                </button>
+                <button type="button" id="btn-import-canvas" class="vscode-btn vscode-btn-secondary" title="선택한 캔버스의 노트북/코드/텍스트 카드를 새 Workspace로 가져오기">
+                  ⬇ 캔버스에서 가져오기
+                </button>
+              </div>
+              <div id="canvas-bridge-status" class="vscode-bridge-status"></div>
+            </div>
+          </details>
+
+          <!-- Section 3: Lean 4 Symbols & Kernel Magics -->
+          <details class="vscode-pane-section" id="sec-symbols" open>
+            <summary class="vscode-pane-header">
+              <span>LEAN 4 SYMBOLS &amp; MAGICS</span>
+            </summary>
+            <div class="vscode-pane-body">
+              <div class="vscode-pane-hint">클릭 시 활성 셀 커서에 삽입 · 에디터에서 <code>\기호</code> + <code>Tab</code></div>
+              <div id="unicode-palette" class="vscode-unicode-grid"></div>
+              <div class="vscode-sub-label">Kernel Magic Commands</div>
+              <div id="magic-palette" class="vscode-magic-wrap"></div>
+            </div>
+          </details>
+        </div>
+      </aside>
+
+      <!-- VS Code Main Editor Group -->
+      <div class="vscode-editor-group">
+        <!-- Editor Multi-Workspace Tabs Row -->
+        <div class="vscode-tabs-bar">
+          <div id="editor-tabs-list" class="vscode-tabs-list" role="tablist" aria-label="Open Workspaces"></div>
+          <div class="vscode-tabs-actions">
+            <button type="button" id="btn-unmount-workspace" class="vscode-tab-action-btn" title="현재 Workspace를 Redis에서 내리고 디스크(COLD)로 플러시">⬇ Unmount (COLD)</button>
+            <button type="button" id="btn-save-notebook" class="vscode-tab-action-btn" title="Workspace 저장 (Ctrl+S)">💾 Save</button>
+            <button type="button" id="btn-export-ipynb" class="vscode-tab-action-btn" title="Jupyter .ipynb 다운로드">⬇ .ipynb</button>
+            <button type="button" id="btn-export-lean" class="vscode-tab-action-btn" title="Lean 4 .lean 파일 다운로드">⬇ .lean</button>
+          </div>
+        </div>
+
+        <!-- VS Code Notebook Sticky Action Toolbar -->
+        <div class="vscode-notebook-toolbar" id="notebook-toolbar">
+          <div class="vscode-nb-toolbar-left">
+            <button type="button" id="btn-add-code-cell" class="vscode-toolbar-btn" title="새 Lean 4 형식 증명 셀 추가">
+              <span class="vscode-plus">＋</span> ∀ Proof (Lean 4)
+            </button>
+            <button type="button" id="btn-add-python-cell" class="vscode-toolbar-btn" title="새 Python 3 코드 셀 추가">
+              <span class="vscode-plus">＋</span> 🐍 Code (Python)
+            </button>
+            <button type="button" id="btn-add-md-cell" class="vscode-toolbar-btn" title="새 마크다운/수식 텍스트 셀 추가">
+              <span class="vscode-plus">＋</span> ¶ Markdown
+            </button>
+
+            <span class="vscode-toolbar-sep"></span>
+
+            <button type="button" id="btn-run-all" class="vscode-toolbar-btn vscode-toolbar-btn-run" title="현재 Workspace의 모든 증명/코드 셀 순차 실행">
+              ▶▶ Run All
+            </button>
+            <button type="button" id="btn-interrupt-kernel" class="vscode-toolbar-btn" title="실행 중인 증명/코드 중단">
+              ⏹ Interrupt
+            </button>
+            <button type="button" id="btn-reset-kernel" class="vscode-toolbar-btn" title="Lean 4 & Python 커널 환경 재시작 (Restart)">
+              ↻ Restart Kernels
+            </button>
+            <button type="button" id="btn-clear-outputs" class="vscode-toolbar-btn" title="모든 셀 출력 지우기">
+              🧹 Clear Outputs
+            </button>
+          </div>
+
+          <div class="vscode-nb-toolbar-right">
+            <div id="kernel-status-badge" class="vscode-kernel-picker" title="Active Jupyter Kernels: Lean 4 (repl) + Python 3 (ipykernel)">
+              <span class="vscode-kernel-dot" id="kernel-status-dot"></span>
+              <span id="kernel-status-text">∀ Lean 4 · 🐍 Python 3 · Idle</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Workspace Editor Scrollable Surface (or VS Code Welcome Picker when no workspace tab is open) -->
+        <main id="cells-container" class="vscode-notebook-viewport" aria-label="Workspace Editor"></main>
+      </div>
+    </div>
+
+    <!-- Bottom VS Code Status Bar -->
+    <footer class="vscode-statusbar">
+      <div class="vscode-status-left">
+        <span class="vscode-status-item vscode-status-remote" id="status-remote-label">
+          ⇄ Project-Agora R&amp;D
+        </span>
+        <span class="vscode-status-item" id="status-redis-lifecycle">
+          Redis: COLD
+        </span>
+        <span class="vscode-status-item" id="status-notebook-summary">
+          No workspace open
+        </span>
+        <span class="vscode-status-item" id="status-shortcut-hint">
+          Shift+Enter: 셀 실행 · \기호+Tab: 유니코드 변환 · Shift+Tab: 타입/심볼 조회 · 상단 탭 클릭: Workspace 전환
+        </span>
+      </div>
+      <div class="vscode-status-right">
+        <span class="vscode-status-item" id="status-cursor-pos">Ln 1, Col 0</span>
+        <span class="vscode-status-item">UTF-8</span>
+        <span class="vscode-status-item">∀ Lean 4 + 🐍 Python 3</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Floating Autocomplete / Symbol Inspection Popover -->
+  <div id="editor-popover" class="vscode-popover" style="display:none;"></div>
+
+  <!-- Project-Agora Authentication & Researcher Session Modal -->
+  <div id="auth-modal-backdrop" class="vscode-modal-backdrop" style="display:none;">
+    <div class="vscode-modal">
+      <div class="vscode-modal-header">
+        <h2>🔐 Project-Agora 연동 및 연구자 세션 설정</h2>
+        <button type="button" id="btn-close-auth-modal" class="vscode-modal-close">&times;</button>
+      </div>
+      <div class="vscode-modal-body">
+        <p class="vscode-modal-desc">
+          Project-Agora 계정으로 로그인하거나 JWT Access Token을 연결하면, 검증된 Lean 4 증명과 Python 실험이 담긴 Workspace를
+          Project-Agora 협업 캔버스(<code>notebook</code> / <code>text</code> 객체)로 바로 내보내거나 가져올 수 있습니다.
+        </p>
+
+        <div class="vscode-tabs">
+          <button type="button" class="vscode-modal-tab active" data-tab="login">이메일 로그인</button>
+          <button type="button" class="vscode-modal-tab" data-tab="token">JWT 토큰 직접 입력</button>
+          <button type="button" class="vscode-modal-tab" data-tab="local">로컬 연구자 세션</button>
+        </div>
+
+        <!-- Tab 1: Email/Password Login -->
+        <div class="vscode-tab-panel" id="tab-panel-login">
+          <label class="vscode-field-label">Project-Agora 이메일</label>
+          <input type="email" id="agora-login-email" class="vscode-input" placeholder="researcher@example.com" />
+          <label class="vscode-field-label">비밀번호</label>
+          <input type="password" id="agora-login-password" class="vscode-input" placeholder="••••••••" />
+          <div id="agora-mfa-box" style="display:none;">
+            <label class="vscode-field-label">MFA 인증 코드 (6자리)</label>
+            <input type="text" id="agora-login-mfa" class="vscode-input" placeholder="123456" />
+          </div>
+          <div class="vscode-modal-actions">
+            <button type="button" id="btn-submit-agora-login" class="vscode-btn vscode-btn-primary">
+              Project-Agora 로그인
+            </button>
+          </div>
+        </div>
+
+        <!-- Tab 2: Direct JWT Bearer Token -->
+        <div class="vscode-tab-panel" id="tab-panel-token" style="display:none;">
+          <label class="vscode-field-label">Project-Agora Access Token (Bearer JWT)</label>
+          <textarea id="agora-jwt-input" class="vscode-textarea" rows="3" placeholder="eyJhbGciOiJIUzI1NiIs..."></textarea>
+          <div class="vscode-modal-actions">
+            <button type="button" id="btn-save-jwt-token" class="vscode-btn vscode-btn-primary">
+              토큰 적용
+            </button>
+            <button type="button" id="btn-clear-jwt-token" class="vscode-btn vscode-btn-secondary">
+              연동 해제
+            </button>
+          </div>
+        </div>
+
+        <!-- Tab 3: Local Researcher ID -->
+        <div class="vscode-tab-panel" id="tab-panel-local" style="display:none;">
+          <label class="vscode-field-label">로컬 연구자 식별자 (독립 커널/Workspace 분리용)</label>
+          <input type="text" id="local-researcher-input" class="vscode-input" placeholder="local-researcher" />
+          <div class="vscode-modal-actions">
+            <button type="button" id="btn-save-local-user" class="vscode-btn vscode-btn-primary">
+              로컬 세션 전환
+            </button>
+          </div>
+        </div>
+
+        <div id="auth-modal-feedback" class="vscode-modal-feedback"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast-container" class="vscode-toast-container"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
