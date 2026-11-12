@@ -10,15 +10,20 @@ const types = new Map([
 ]);
 
 /** Apply the same icons to downloaded VS Code builds and source builds. */
-export async function applyWebBranding(app) {
+export async function applyWebBranding(app, { basePath = '/', workerOrigin, sourceBuild = false } = {}) {
 	const assets = new Map(await Promise.all([...types.keys()].map(async name => [name, await readFile(new URL(`../assets/${name}`, import.meta.url))])));
+	const secrets = await readFile(new URL('session-secrets.js', import.meta.url), 'utf8');
 	app.middleware.unshift(async (context, next) => {
 		if (context.path.startsWith(prefix)) {
 			const name = context.path.slice(prefix.length);
 			if (assets.has(name) && ['GET', 'HEAD'].includes(context.method)) {
 				context.type = types.get(name);
 				context.set('Cache-Control', name === 'manifest.webmanifest' ? 'no-cache' : 'public, max-age=86400');
-				context.body = assets.get(name);
+				if (name === 'manifest.webmanifest') {
+					const manifest = JSON.parse(assets.get(name).toString());
+					Object.assign(manifest, { id: basePath, start_url: basePath, scope: basePath });
+					context.body = JSON.stringify(manifest);
+				} else { context.body = assets.get(name); }
 				return;
 			}
 		}
@@ -28,7 +33,17 @@ export async function applyWebBranding(app) {
 			context.body = context.body
 				.replace(/<link\b[^>]*\brel\s*=\s*["'](?:icon|shortcut icon|apple-touch-icon|manifest)["'][^>]*>/gi, '')
 				.replace(/<meta\b[^>]*\bname\s*=\s*["'](?:theme-color|apple-mobile-web-app-title)["'][^>]*>/gi, '')
-				.replace(/<\/head>/i, `<meta name="apple-mobile-web-app-title" content="IRADE">\n${links}\n</head>`);
+				.replace(/<\/head>/i, `<meta name="apple-mobile-web-app-title" content="IRADE">\n${links}\n<script>${secrets}</script>\n</head>`)
+				.replace(/workspaceProvider:\s*WorkspaceProvider\.create\(config\),/, 'secretStorageProvider: globalThis.__iradeSecretStorage,\n        workspaceProvider: WorkspaceProvider.create(config),');
+			if (workerOrigin) {
+				// Explicit hosting option for an existing HTTPS origin without wildcard DNS/certificates.
+				context.body = context.body.replace(/(<meta\b[^>]*id="vscode-workbench-web-configuration"[^>]*data-settings=")([^"]*)(")/i,
+					(_, start, encoded, end) => {
+						const configuration = JSON.parse(encoded.replaceAll('&quot;', '"'));
+						configuration.productConfiguration.webEndpointUrlTemplate = `${workerOrigin}/static/${sourceBuild ? 'sources' : 'build'}`;
+						return start + JSON.stringify(configuration).replaceAll('"', '&quot;') + end;
+					});
+			}
 		}
 	});
 }

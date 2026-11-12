@@ -19,7 +19,8 @@
     "ui"
   ],
   "activationEvents": [
-    "onFileSystem:agora"
+    "onFileSystem:agora",
+    "onStartupFinished"
   ],
   "capabilities": {
     "virtualWorkspaces": true,
@@ -28,7 +29,14 @@
     }
   },
   "contributes": {
+    "walkthroughs": [{
+      "id": "agoraWorkspaceWelcome",
+      "title": "IRADE Shared Workspace",
+      "description": "Sign in to Agora and collaborate on the files in your workspace.",
+      "steps": [{ "id": "open", "title": "Open a Shared Workspace", "description": "Choose an Agora canvas to edit its VM workspace together.\n[Open Shared Workspace](command:agora.openWorkspace)", "media": { "image": "assets/irade-icon-128.png", "altText": "IRADE" } }]
+    }],
     "commands": [
+      { "command": "agora.signIn", "title": "Sign In", "category": "Agora" },
       {
         "command": "agora.openWorkspace",
         "title": "Open Shared Workspace",

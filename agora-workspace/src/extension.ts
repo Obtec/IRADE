@@ -5,6 +5,7 @@
 import * as vscode from 'vscode';
 import { AgoraClient, AgoraError, connection, type Connection, type FileChange, type FileRecord, type FileRequest } from './client.ts';
 import { SharedDocument, decode, encode, replacement } from './document.ts';
+import { accessToken, defaultOrigin, signIn } from './auth.ts';
 
 interface OpenFile {
 	uri: vscode.Uri; record: FileRecord; replica: SharedDocument; view: SharedDocument;
@@ -71,14 +72,7 @@ class WorkspaceFiles implements vscode.FileSystemProvider, vscode.Disposable {
 		if (!client) {
 			const value = config(uri);
 			client = new AgoraClient(value, async () => {
-				const key = `agora.token:${value.origin}`;
-				let token = await this.context.secrets.get(key);
-				if (!token) {
-					token = await vscode.window.showInputBox({ password: true, ignoreFocusOut: true,
-						prompt: vscode.l10n.t('Agora access token for {0}', value.origin) });
-					if (token) { await this.context.secrets.store(key, token); }
-				}
-				return token;
+				return accessToken(this.context, value.origin);
 			}, async () => vscode.window.showInputBox({ password: true, ignoreFocusOut: true, prompt: vscode.l10n.t('Canvas Password') }));
 			const current = client;
 			client.onChange = change => this.invalidate(current, change);
@@ -328,22 +322,40 @@ export function activate(context: vscode.ExtensionContext): void {
 	const provider = new WorkspaceFiles(context);
 	context.subscriptions.push(provider, vscode.workspace.registerFileSystemProvider('agora', provider, { isCaseSensitive: true }),
 		vscode.commands.registerCommand('agora.openWorkspace', async () => {
-			const input = await vscode.window.showInputBox({ prompt: vscode.l10n.t('Agora HTTPS origin or shared agora:// workspace URI'), value: 'https://localhost:8443' });
+			const input = await vscode.window.showInputBox({ prompt: vscode.l10n.t('Agora HTTPS origin or shared agora:// workspace URI'), value: defaultOrigin(context) });
 			if (!input) { return; }
 			try {
 				let uri: vscode.Uri;
 				if (input.startsWith('agora://')) { uri = workspaceUri(config(vscode.Uri.parse(input))); }
 				else {
-					const canvasId = await vscode.window.showInputBox({ prompt: vscode.l10n.t('Agora Canvas ID') });
+					const origin = connection({ origin: input, canvasId: 1 }).origin;
+					const token = await accessToken(context, origin);
+					if (!token) { return; }
+					const response = await fetch(origin + '/api/canvases', { headers: { Authorization: `Bearer ${token}` }, redirect: 'error', signal: AbortSignal.timeout(15000) });
+					if (!response.ok) { throw new Error(vscode.l10n.t('Could not list workspaces. Use Agora: Sign In to renew your session.')); }
+					const canvases = await response.json() as { canvas_id: number; canvas_name: string; description?: string }[];
+					const choices = canvases.map(canvas => ({ label: canvas.canvas_name, description: `#${canvas.canvas_id}`, detail: canvas.description, canvasId: canvas.canvas_id }));
+					choices.push({ label: vscode.l10n.t('Enter Canvas ID…'), description: '', detail: undefined, canvasId: 0 });
+					const selected = await vscode.window.showQuickPick(choices, { title: vscode.l10n.t('Open Shared Workspace'), matchOnDescription: true });
+					if (!selected) { return; }
+					const canvasId = selected.canvasId || Number(await vscode.window.showInputBox({ prompt: vscode.l10n.t('Agora Canvas ID') }));
 					if (!canvasId) { return; }
-					uri = workspaceUri(connection({ origin: input, canvasId: Number(canvasId) }));
+					await context.globalState.update('agora.lastOrigin', origin);
+					uri = workspaceUri(connection({ origin, canvasId }));
 				}
 				await vscode.commands.executeCommand('vscode.openFolder', uri);
 			} catch (error) { void vscode.window.showErrorMessage(String(error)); }
 		}),
+		vscode.commands.registerCommand('agora.signIn', async () => {
+			try {
+				const folder = vscode.workspace.workspaceFolders?.find(folder => folder.uri.scheme === 'agora');
+				const origin = folder ? config(folder.uri).origin : defaultOrigin(context);
+				if (await signIn(context, origin)) { provider.reconnect(origin); void vscode.window.showInformationMessage(vscode.l10n.t('Signed in to Agora')); }
+			} catch (error) { void vscode.window.showErrorMessage(String(error)); }
+		}),
 		vscode.commands.registerCommand('agora.setToken', async (options?: { origin: string; token?: string }) => {
 			const folder = vscode.workspace.workspaceFolders?.find(folder => folder.uri.scheme === 'agora');
-			const origin = options?.origin || (folder ? config(folder.uri).origin : await vscode.window.showInputBox({ prompt: vscode.l10n.t('Agora HTTPS Origin'), value: 'https://localhost:8443' }));
+			const origin = options?.origin || (folder ? config(folder.uri).origin : await vscode.window.showInputBox({ prompt: vscode.l10n.t('Agora HTTPS Origin'), value: defaultOrigin(context) }));
 			if (!origin) { return; }
 			const validated = connection({ origin, canvasId: 1 }).origin;
 			const token = options?.token || await vscode.window.showInputBox({ password: true, ignoreFocusOut: true, prompt: vscode.l10n.t('Agora Access Token') });
@@ -353,4 +365,8 @@ export function activate(context: vscode.ExtensionContext): void {
 			const folder = vscode.workspace.workspaceFolders?.find(folder => folder.uri.scheme === 'agora');
 			if (folder) { await vscode.env.clipboard.writeText(folder.uri.toString()); }
 		}));
+	if (context.extensionMode !== vscode.ExtensionMode.Test && !vscode.workspace.workspaceFolders?.length && !context.globalState.get('agora.welcomeSeen')) {
+		void context.globalState.update('agora.welcomeSeen', true);
+		void vscode.commands.executeCommand('workbench.action.openWalkthrough', 'irade.agora-workspace#agoraWorkspaceWelcome', false);
+	}
 }
