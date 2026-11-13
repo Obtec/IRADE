@@ -1,4 +1,4 @@
-import { AgoraClient, type FileRecord } from '../client.ts';
+import { AgoraClient, type FileChange, type FileRecord } from '../client.ts';
 import { SharedDocument, encode } from '../document.ts';
 
 export const cellTypes = {
@@ -11,7 +11,7 @@ export const cellTypes = {
 } as const;
 export type CellKind = keyof typeof cellTypes;
 export interface Cell { id: string; kind: CellKind; path: string; text: string; title: string }
-interface Replica { cell: Cell; document: SharedDocument; version: number; sent: number; resourceId: string; timer?: ReturnType<typeof setTimeout>; flight?: Promise<void> }
+interface Replica { cell: Cell; document: SharedDocument; version: number; sent: number; resourceId: string; epoch: number; timer?: ReturnType<typeof setTimeout>; flight?: Promise<void> }
 export const cellDirectory = '/.irade/cells';
 export function cellTitle(kind: CellKind, text: string): string {
   if (kind === 'html') {
@@ -26,6 +26,15 @@ export function parseCell(name: string): { id: string; kind: CellKind } | undefi
   const kind = (Object.keys(cellTypes) as CellKind[]).find(kind => cellTypes[kind].extension === match[2])!;
   return { id: match[1], kind };
 }
+async function sha256Hex(text: string): Promise<string | undefined> {
+  if (!globalThis.crypto?.subtle) { return undefined; }
+  try {
+    const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return undefined;
+  }
+}
 
 /** Each cell is a separate durable CRDT, so concurrent additions never rewrite a shared JSON index. */
 export class ResearchWorkspace {
@@ -34,16 +43,102 @@ export class ResearchWorkspace {
   onText: (cell: Cell) => void = () => {};
   onState: (state: string) => void = () => {};
   onError: (error: unknown) => void = () => {};
-  private poll: ReturnType<typeof setInterval>;
+  private poll?: ReturnType<typeof setInterval>;
   private refresh?: Promise<void>;
+  private dirPromise?: Promise<void>;
   private closed = false;
-  constructor(readonly client: AgoraClient) {
+  private dirsReady = false;
+  private listEpoch = 0;
+  private activeAdds = 0;
+  private creatingPaths = new Set<string>();
+  private deletingPaths = new Set<string>();
+  constructor(readonly client: AgoraClient, pollMs = 20000) {
     client.onState = state => this.onState(state);
-    client.onChange = () => { void this.load().catch(this.onError); };
-    this.poll = setInterval(() => { void this.load().catch(this.onError); }, 5000);
+    client.onChange = change => { void this.handleChange(change).catch(this.onError); };
+    if (pollMs > 0) {
+      this.poll = setInterval(() => {
+        if (!this.refresh && this.activeAdds === 0 && !this.pending) {
+          void this.load().catch(this.onError);
+        }
+      }, pollMs);
+    }
   }
   get cells(): Cell[] { return [...this.replicas.values()].map(replica => replica.cell).sort((a, b) => a.id.localeCompare(b.id)); }
   get pending(): boolean { return [...this.replicas.values()].some(replica => replica.sent < replica.version); }
+  private parseCellPath(path: string): { id: string; kind: CellKind } | undefined {
+    if (!path.startsWith(`${cellDirectory}/`)) { return undefined; }
+    return parseCell(path.slice(cellDirectory.length + 1));
+  }
+  private applyRecord(parsed: { id: string; kind: CellKind }, path: string, record: FileRecord, epoch: number): 'added' | 'updated' | 'unchanged' | 'skip' {
+    if (!record.document) { return 'skip'; }
+    let replica = this.replicas.get(parsed.id);
+    if (!replica) {
+      const document = new SharedDocument(record.document);
+      const cell: Cell = { ...parsed, path, text: document.text, title: cellTitle(parsed.kind, document.text) };
+      replica = { cell, document, version: 0, sent: 0, resourceId: record.resourceId, epoch };
+      this.replicas.set(parsed.id, replica);
+      return 'added';
+    }
+    replica.document.merge(record.document);
+    replica.resourceId = record.resourceId;
+    replica.epoch = Math.max(replica.epoch, epoch);
+    if (replica.cell.text !== replica.document.text) {
+      replica.cell.text = replica.document.text;
+      replica.cell.title = cellTitle(replica.cell.kind, replica.cell.text);
+      this.onText(replica.cell);
+      return 'updated';
+    }
+    return 'unchanged';
+  }
+  private async handleChange(change: FileChange): Promise<void> {
+    if (this.closed) { return; }
+    // Self-initiated mutations already update replicas directly and verify etags against concurrent merges.
+    if (change.self) { return; }
+    const parsed = this.parseCellPath(change.path);
+    if (change.operation === 'delete') {
+      if (change.path === cellDirectory || change.path === '/.irade') {
+        this.dirsReady = false;
+        await this.load();
+        return;
+      }
+      if (this.deletingPaths.has(change.path)) { return; }
+      if (parsed) {
+        const replica = this.replicas.get(parsed.id);
+        if (replica) {
+          if (replica.version > replica.sent) { this.onError(new Error('다른 참여자가 이 셀을 삭제했습니다. 현재 탭에서 내용을 복사해 보관하세요.')); }
+          clearTimeout(replica.timer); this.replicas.delete(parsed.id);
+          this.onCells();
+        }
+        return;
+      }
+    }
+    if ((change.operation === 'write' || change.created === true) && parsed) {
+      if (this.creatingPaths.has(change.path)) { return; }
+      await this.loadCell(change.path, true);
+      return;
+    }
+    if (change.operation === 'mkdir' && (change.path === '/.irade' || change.path === cellDirectory)) {
+      if (change.path === cellDirectory) { this.dirsReady = true; }
+      if (!this.replicas.size) { await this.load(); }
+      return;
+    }
+    await this.load();
+  }
+  private async loadCell(path: string, notify: boolean, minEpoch?: number): Promise<Cell | undefined> {
+    const parsed = this.parseCellPath(path);
+    if (!parsed) { return undefined; }
+    const epoch = minEpoch ?? this.listEpoch;
+    let record: FileRecord;
+    try {
+      record = await this.client.request<FileRecord>({ operation: 'read', path });
+    } catch (error) {
+      if (error instanceof Error && error.message === 'FILE_NOT_FOUND') { return undefined; }
+      throw error;
+    }
+    const outcome = this.applyRecord(parsed, path, record, epoch);
+    if (notify && (outcome === 'added' || outcome === 'updated')) { this.onCells(); }
+    return this.replicas.get(parsed.id)?.cell;
+  }
   async load(): Promise<void> {
     if (this.closed) { return; }
     if (this.refresh) { return this.refresh; }
@@ -51,6 +146,7 @@ export class ResearchWorkspace {
     return this.refresh;
   }
   private async readCells(): Promise<void> {
+    const startedEpoch = this.listEpoch;
     const entries: [string, string][] = [];
     let cursor: number | null = 0;
     try {
@@ -58,39 +154,36 @@ export class ResearchWorkspace {
         const page: { entries: [string, string][]; cursor: number | null } = await this.client.request({ operation: 'list', path: cellDirectory, cursor });
         entries.push(...page.entries); cursor = page.cursor;
       } while (cursor !== null);
+      this.dirsReady = true;
     } catch (error) {
-      if (error instanceof Error && error.message === 'FILE_NOT_FOUND') { this.onCells(); return; }
+      if (error instanceof Error && error.message === 'FILE_NOT_FOUND') { this.dirsReady = false; this.onCells(); return; }
       throw error;
     }
-    const alive = new Set<string>();
-    // Keep the broker queue bounded even for large workspaces.
+    const targets: { parsed: { id: string; kind: CellKind }; path: string }[] = [];
     for (const [name, type] of entries) {
       const parsed = parseCell(name);
-      if (type !== 'file' || !parsed) { continue; }
-      alive.add(parsed.id);
-      const path = `${cellDirectory}/${name}`;
-      let record: FileRecord;
-      try { record = await this.client.request<FileRecord>({ operation: 'read', path }); }
-      catch (error) { if (error instanceof Error && error.message === 'FILE_NOT_FOUND') { alive.delete(parsed.id); continue; } throw error; }
-      if (!record.document) { continue; }
-      let replica = this.replicas.get(parsed.id);
-      if (!replica) {
-        const document = new SharedDocument(record.document);
-        const cell: Cell = { ...parsed, path, text: document.text, title: cellTitle(parsed.kind, document.text) };
-        replica = { cell, document, version: 0, sent: 0, resourceId: record.resourceId };
-        this.replicas.set(parsed.id, replica);
-      } else {
-        replica.document.merge(record.document);
-        replica.resourceId = record.resourceId;
-        if (replica.cell.text !== replica.document.text) {
-          replica.cell.text = replica.document.text;
-          replica.cell.title = cellTitle(replica.cell.kind, replica.cell.text);
-          this.onText(replica.cell);
-        }
+      if (type === 'file' && parsed) { targets.push({ parsed, path: `${cellDirectory}/${name}` }); }
+    }
+    const records = new Array<FileRecord | undefined>(targets.length);
+    let next = 0;
+    const concurrency = Math.min(4, targets.length);
+    await Promise.all(Array.from({ length: concurrency }, async () => {
+      while (next < targets.length && !this.closed) {
+        const index = next++;
+        try { records[index] = await this.client.request<FileRecord>({ operation: 'read', path: targets[index].path }); }
+        catch (error) { if (error instanceof Error && error.message === 'FILE_NOT_FOUND') { continue; } throw error; }
       }
+    }));
+    const alive = new Set<string>();
+    for (let index = 0; index < targets.length; index++) {
+      const record = records[index];
+      if (!record?.document) { continue; }
+      const { parsed, path } = targets[index];
+      alive.add(parsed.id);
+      this.applyRecord(parsed, path, record, startedEpoch);
     }
     for (const [id, replica] of this.replicas) {
-      if (!alive.has(id)) {
+      if (!alive.has(id) && replica.epoch <= startedEpoch && !this.creatingPaths.has(replica.cell.path)) {
         if (replica.version > replica.sent) { this.onError(new Error('다른 참여자가 이 셀을 삭제했습니다. 현재 탭에서 내용을 복사해 보관하세요.')); }
         clearTimeout(replica.timer); this.replicas.delete(id);
       }
@@ -113,35 +206,78 @@ export class ResearchWorkspace {
     replica.flight = (async () => {
       while (replica.sent < replica.version && !this.closed) {
         const version = replica.version;
-        await this.client.request({ operation: 'write', path: replica.cell.path, document: replica.document.snapshot, fileId: replica.document.fileId, overwrite: true });
+        const sentText = replica.cell.text;
+        const result = await this.client.request<{ etag?: string }>({
+          operation: 'write',
+          path: replica.cell.path,
+          document: replica.document.snapshot,
+          fileId: replica.document.fileId,
+          overwrite: true,
+        });
         replica.sent = version;
+        const sentDigest = await sha256Hex(sentText);
+        if (!sentDigest || !result.etag || result.etag !== sentDigest) {
+          await this.loadCell(replica.cell.path, false);
+        }
       }
       if (!this.pending) { this.onState('Connected'); }
     })().finally(() => { replica.flight = undefined; });
     return replica.flight;
   }
   async flush(): Promise<void> { for (const replica of this.replicas.values()) { await this.flushCell(replica); } }
+  private async ensureDirs(): Promise<void> {
+    if (this.dirsReady) { return; }
+    if (this.dirPromise) { return this.dirPromise; }
+    this.dirPromise = (async () => {
+      for (const path of ['/.irade', cellDirectory]) {
+        try { await this.client.request({ operation: 'mkdir', path }); }
+        catch (error) { if (!(error instanceof Error) || error.message !== 'FILE_EXISTS') { throw error; } }
+      }
+      this.dirsReady = true;
+    })().finally(() => { this.dirPromise = undefined; });
+    return this.dirPromise;
+  }
   async add(kind: CellKind, text = ''): Promise<Cell> {
-    for (const path of ['/.irade', cellDirectory]) {
-      try { await this.client.request({ operation: 'mkdir', path }); }
-      catch (error) { if (!(error instanceof Error) || error.message !== 'FILE_EXISTS') { throw error; } }
-    }
+    this.activeAdds++;
     const id = `${Date.now()}-${crypto.randomUUID()}`;
     const path = `${cellDirectory}/${id}.${cellTypes[kind].extension}`;
-    await this.client.request({ operation: 'write', path, content: encode(new TextEncoder().encode(text)), create: true, overwrite: false });
-    // A concurrent invalidation may already be loading an older directory listing.
-    await this.load(); await this.load();
-    const cell = this.replicas.get(id)?.cell;
-    if (!cell) { throw new Error('셀을 다시 불러오지 못했습니다.'); }
-    return cell;
+    this.creatingPaths.add(path);
+    try {
+      await this.ensureDirs();
+      const writeEpoch = ++this.listEpoch;
+      const payload = { operation: 'write', path, content: encode(new TextEncoder().encode(text)), create: true, overwrite: false } as const;
+      try {
+        await this.client.request(payload);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'FILE_NOT_FOUND') {
+          this.dirsReady = false;
+          await this.ensureDirs();
+          await this.client.request(payload);
+        } else {
+          throw error;
+        }
+      }
+      const cell = await this.loadCell(path, true, writeEpoch);
+      if (!cell) { throw new Error('셀을 다시 불러오지 못했습니다.'); }
+      return cell;
+    } finally {
+      this.creatingPaths.delete(path);
+      this.activeAdds--;
+    }
   }
   async delete(id: string): Promise<void> {
     const replica = this.replicas.get(id);
     if (!replica) { return; }
-    await this.flushCell(replica);
-    const current = await this.client.request<FileRecord>({ operation: 'stat', path: replica.cell.path });
-    await this.client.request({ operation: 'delete', path: replica.cell.path, resourceId: current.resourceId, recursive: false });
-    this.replicas.delete(id); this.onCells();
+    this.deletingPaths.add(replica.cell.path);
+    this.listEpoch++;
+    try {
+      await this.flushCell(replica);
+      const current = await this.client.request<FileRecord>({ operation: 'stat', path: replica.cell.path });
+      await this.client.request({ operation: 'delete', path: replica.cell.path, resourceId: current.resourceId, recursive: false });
+      this.replicas.delete(id); this.onCells();
+    } finally {
+      this.deletingPaths.delete(replica.cell.path);
+    }
   }
   dispose(): void { this.closed = true; clearInterval(this.poll); for (const replica of this.replicas.values()) { clearTimeout(replica.timer); } this.client.dispose(); }
 }

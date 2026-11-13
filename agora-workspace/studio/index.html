@@ -13,7 +13,7 @@
   <header class="topbar">
     <a class="wordmark" href="./" aria-label="IRADE 홈"><img src="/irade-assets/irade-icon-192.png" alt=""><b>IRADE</b><span>RESEARCH ENVIRONMENT</span></a>
     <button class="command-trigger" data-action="search"><span class="search-symbol">⌕</span><span>workspace와 셀 검색</span><kbd>Ctrl K</kbd></button>
-    <div class="top-actions"><button class="icon-button" data-action="focus" title="집중 모드 (Ctrl Shift F)" aria-label="집중 모드">⛶</button><button class="button subtle" id="account" data-action="login">ORCID 로그인 <span>↗</span></button></div>
+    <div class="top-actions"><button class="icon-button" id="theme-toggle" data-action="theme" title="테마 전환 (Dark / Light)" aria-label="테마 전환">☀</button><button class="icon-button" data-action="inspector" title="컨텍스트 패널 토글" aria-label="컨텍스트 패널 토글">◫</button><button class="icon-button" data-action="focus" title="집중 모드 (Ctrl Shift F)" aria-label="집중 모드">⛶</button><button class="button subtle" id="account" data-action="login">ORCID 로그인 <span>↗</span></button></div>
   </header>
   <div class="body-grid">
     <nav class="activitybar" aria-label="연구 도구">
@@ -33,7 +33,7 @@
       <div class="sidebar-footer"><div class="tiny-label">CONNECTED THINKING</div><p>대화에서 아이디어로.<br>코드에서 증명으로.</p><div class="sidebar-brand"><img src="/irade-assets/irade-icon-192.png" alt="IRADE"><span>하나의 workspace,<br>끊김 없는 연구.</span></div></div>
     </aside>
     <main id="main" class="main" tabindex="-1">
-      <div class="tabbar" role="tablist" aria-label="열린 셀"><button id="overview-tab" class="tab selected" role="tab" aria-selected="true" data-action="overview"><span class="tab-icon">▦</span> Overview</button><div id="cell-tabs"></div><button class="tab-add" data-action="add" aria-label="새 셀">＋</button><div class="tabbar-end"><span class="live-dot"></span><span id="connection-label">연결 대기</span></div></div>
+      <div class="tabbar" role="tablist" aria-label="열린 문서"><button id="overview-tab" class="tab selected" role="tab" aria-selected="true" data-action="overview"><span class="tab-icon">▦</span><span>Overview</span><span class="tab-close" data-action="close-overview" role="button" aria-label="Overview 닫기">×</span></button><div id="cell-tabs"></div><button class="tab-add" data-action="add" aria-label="새 셀">＋</button><div class="tabbar-end"><span class="live-dot"></span><span id="connection-label">연결 대기</span></div></div>
       <section id="overview" class="overview">
         <div class="overview-topline"><span class="eyebrow"><i></i> YOUR INTEGRATED RESEARCH SPACE</span><span class="version-label">IRADE / 01</span></div>
         <div class="hero"><div class="hero-content"><span class="hero-kicker">THINK. PROVE. BUILD.</span><h1>생각의 다음 단계,<br><em>하나의 workspace.</em></h1><p>에이전트와 나눈 대화, 한 줄의 증명, 실행할 코드.<br>연구의 모든 맥락을 하나의 공간에서 이어가세요.</p><div class="hero-actions"><button class="button primary" data-action="open">Workspace 열기 <span>↗</span></button><button class="button ghost" data-action="demo">로컬 체험 <span>→</span></button></div></div><div class="hero-art"><img src="/irade-assets/irade-icon-source.png" alt="IRADE 프로젝트 심볼"><span class="art-caption">IDEAS → REASONING → DISCOVERY</span></div></div>
@@ -41,12 +41,34 @@
         <div id="type-cards" class="type-cards"></div>
         <div class="workspace-bottom"><div class="workspace-note"><span class="note-symbol">↔</span><div><h3>함께 생각하고, 같은 맥락을 공유하세요.</h3><p>Agora에 연결하면 같은 workspace의 셀을 실시간으로 함께 편집합니다.</p></div><button class="text-button" data-action="share">공유하기 ↗</button></div><div class="shortcut-note"><span><kbd>Ctrl K</kbd> 빠른 이동</span><span><kbd>Alt N</kbd> 새 셀</span><span><kbd>Ctrl S</kbd> 저장</span></div></div>
       </section>
-      <section id="cell-view" class="cell-view" hidden>
-        <div class="cell-heading"><div class="cell-breadcrumb"><span id="cell-category"></span><span class="breadcrumb-slash">/</span><span id="cell-number"></span></div><div class="cell-heading-actions"><button id="preview-button" class="button tiny" data-action="preview">미리보기</button><button class="icon-button" data-action="export" title="셀 내보내기" aria-label="셀 내보내기">↧</button><button class="icon-button danger" data-action="delete" title="셀 삭제" aria-label="셀 삭제">⋯</button></div></div>
-        <div class="cell-title-row"><span id="cell-type-icon" class="type-icon"></span><div><span id="cell-kind" class="eyebrow"></span><h1 id="cell-title"></h1></div><span id="cell-save" class="save-label">저장됨</span></div>
-        <div id="chat-tools" class="chat-tools" hidden><span>대화 기록</span><p>질문과 에이전트 응답을 연구 맥락으로 보관하세요.</p><button class="text-button" data-action="message">＋ 메시지 기록</button></div>
-        <div id="editor-layout" class="editor-layout"><div class="editor-panel"><div class="editor-toolbar"><span id="editor-language"></span><span>UTF-8 <span class="toolbar-separator">|</span> <span id="cursor-position">Ln 1, Col 1</span></span></div><div id="editor" aria-label="셀 코드 편집기"></div></div><div id="preview-panel" class="preview-panel" hidden><div class="editor-toolbar"><span>DOCUMENT PREVIEW</span><button class="icon-button" data-action="preview" aria-label="미리보기 닫기">×</button></div><iframe id="document-preview" title="문서 미리보기" sandbox="" referrerpolicy="no-referrer"></iframe></div></div>
-        <div id="cell-context" class="cell-context"></div>
+      <section id="cell-view" class="cell-view notebook-view" hidden>
+        <div class="notebook-toolbar">
+          <div class="notebook-title-group">
+            <span class="notebook-file-icon">▤</span>
+            <div>
+              <span class="eyebrow" id="notebook-kind">RESEARCH NOTEBOOK</span>
+              <h1 id="notebook-title">나의 연구 공간</h1>
+            </div>
+          </div>
+          <div class="notebook-actions">
+            <span id="cell-save" class="save-label">저장됨</span>
+            <button class="button tiny" data-action="run-all">▶ 전체 실행</button>
+            <button class="button tiny" data-action="add">＋ 셀 추가</button>
+            <button class="button tiny" data-action="share">공유 ↗</button>
+          </div>
+        </div>
+        <div id="notebook-scroll" class="notebook-scroll">
+          <div id="notebook-cells" class="notebook-cells"></div>
+          <div class="notebook-add-bar" aria-label="빠른 셀 추가">
+            <span class="add-bar-label">셀 추가</span>
+            <button class="add-chip" data-quick-add="agent"><span class="mint">✧</span> 에이전트</button>
+            <button class="add-chip" data-quick-add="lean"><span class="purple">∀</span> Lean 4</button>
+            <button class="add-chip" data-quick-add="rocq"><span class="purple">⊢</span> Rocq</button>
+            <button class="add-chip" data-quick-add="python"><span class="blue">λ</span> Python</button>
+            <button class="add-chip" data-quick-add="markdown"><span class="sand">≡</span> Markdown</button>
+            <button class="add-chip" data-quick-add="html"><span class="sand">⟨⟩</span> HTML</button>
+          </div>
+        </div>
       </section>
     </main>
     <aside class="inspector" aria-label="연구 컨텍스트"><div class="inspector-tabs"><button class="selected" data-action="context">컨텍스트</button><button data-action="activity">활동</button><button class="icon-button" data-action="inspector" title="패널 닫기" aria-label="컨텍스트 패널 닫기">⊣</button></div><div id="inspector-content"></div><div class="inspector-bottom"><span class="live-dot"></span><div><strong>Powered by Agora</strong><small id="sync-description">실시간 협업을 위한 연구 공간</small></div></div></aside>

@@ -21,23 +21,53 @@ let selected: string | undefined;
 let demo = false;
 let connected = false;
 let filter = 'all';
-let preview = false;
+let overviewOpen = true;
+let viewMode: 'overview' | 'notebook' = 'overview';
 let deletingCellId: string | undefined;
 let editingRemote = false;
-let editor: monaco.editor.IStandaloneCodeEditor | undefined;
 let inspectorTab = 'context';
 let loadGeneration = 0;
 let toastTimer: ReturnType<typeof setTimeout>;
+interface ExecutionOutput {
+  running?: boolean;
+  ok: boolean;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+  status: 'running' | 'success' | 'verified' | 'error' | 'timeout';
+  runtime?: 'agora-vm' | 'host';
+}
 const models = new Map<string, monaco.editor.ITextModel>();
+const cellEditors = new Map<string, monaco.editor.IStandaloneCodeEditor>();
+const previewCells = new Set<string>();
+const cellOutputs = new Map<string, ExecutionOutput>();
 const activities: { message: string; time: string }[] = [];
 const modal = $<HTMLDialogElement>('#modal');
 const starters: Record<CellKind, string> = {
   agent: '# 연구 대화\n\n## 사용자\n연구할 질문과 배경을 기록하세요.\n\n## 에이전트\n에이전트와 나눈 응답을 여기에 보관하세요.\n',
-  lean: '-- 새로운 정리\n\ntheorem add_zero_identity (n : Nat) : n + 0 = n := by\n  rfl\n',
+  lean: '-- 새로운 정리\n\ntheorem add_zero_identity (n : Nat) : n + 0 = n := by\n  rfl\n\n#check add_zero_identity\n',
   rocq: '(* 새로운 증명 *)\n\nTheorem add_zero_identity : forall n : nat, n + 0 = n.\nProof.\n  intros n.\n  induction n; simpl; auto.\nQed.\n',
-  python: '# 새로운 실험\n\ndef square(n):\n    return n * n\n\nvalues = [square(n) for n in range(6)]\nprint(values)\n',
+  python: '# 새로운 실험\n\ndef square(n):\n    return n * n\n\nvalues = [square(n) for n in range(6)]\nprint("Squares:", values)\n',
   markdown: '# 연구 노트\n\n## 연구 질문\n여기에 연구할 질문을 적어 보세요.\n\n## 관찰과 기록\n- 가설과 실험 결과를 연결하세요.\n- 증명과 코드의 의미를 문서로 남기세요.\n',
-  html: '<article>\n  <h1>연구 문서</h1>\n  <p>아이디어를 구조화하고 공유하세요.</p>\n</article>\n',
+  html: `<style>
+  .card { padding: 16px; border-radius: 10px; border: 1px solid #3f3f46; background: #18181b; color: #f4f4f5; font-family: system-ui, sans-serif; }
+  .btn { margin-top: 10px; padding: 6px 12px; border-radius: 6px; border: 1px solid #34d399; background: transparent; color: #34d399; cursor: pointer; }
+</style>
+<article class="card">
+  <h2>인터랙티브 HTML 연구 문서</h2>
+  <p id="status">버튼을 눌러 JavaScript 동작을 확인하세요.</p>
+  <button class="btn" id="ping">실행 확인 (0)</button>
+</article>
+<script>
+  let count = 0;
+  document.getElementById('ping').addEventListener('click', (e) => {
+    count++;
+    e.target.textContent = '실행 확인 (' + count + ')';
+    document.getElementById('status').textContent = 'CSS와 JavaScript가 정상 반영되었습니다.';
+  });
+</script>
+`,
 };
 
 (globalThis as typeof globalThis & { MonacoEnvironment: unknown }).MonacoEnvironment = {
@@ -50,20 +80,54 @@ for (const language of ['lean4', 'rocq']) {
     tokenizer: { root: [[/--.*$/, 'comment'], [/\(\*/, 'comment', '@comment'], [/"(?:[^"\\]|\\.)*"/, 'string'], [/\b\d+\b/, 'number'], [/[a-zA-Z_][\w']*/, { cases: { '@keywords': 'keyword', '@default': 'identifier' } }], [/[∀∃⊢→←↔λ:=+*<>]+/, 'operator']], comment: [[/[^(*]+/, 'comment'], [/\*\)/, 'comment', '@pop'], [/[(*]/, 'comment']] },
   });
 }
-monaco.editor.defineTheme('irade', {
+monaco.editor.defineTheme('irade-dark', {
   base: 'vs-dark', inherit: true,
-  rules: [{ token: 'comment', foreground: '718B79', fontStyle: 'italic' }, { token: 'keyword', foreground: 'C4B1E7' }, { token: 'string', foreground: 'B7D3A4' }, { token: 'number', foreground: 'E3B78C' }, { token: 'operator', foreground: '9CCBB4' }],
-  colors: { 'editor.background': '#1B1E20', 'editor.foreground': '#D0DDD4', 'editorLineNumber.foreground': '#4B6353', 'editorLineNumber.activeForeground': '#A2BCA9', 'editorCursor.foreground': '#B1E6D0', 'editor.selectionBackground': '#B1E6D025', 'editor.lineHighlightBackground': '#B1E6D005', 'editorIndentGuide.background1': '#2A3830', 'editorWidget.background': '#25332A', 'editorWidget.border': '#4D6555', 'editorSuggestWidget.background': '#202A24', 'editorSuggestWidget.border': '#496150', 'focusBorder': '#8AAF98', 'scrollbarSlider.background': '#708C7730' },
+  rules: [{ token: 'comment', foreground: '71717A', fontStyle: 'italic' }, { token: 'keyword', foreground: 'C4B5FD' }, { token: 'string', foreground: '6EE7B7' }, { token: 'number', foreground: 'FCD34D' }, { token: 'operator', foreground: 'A1A1AA' }],
+  colors: { 'editor.background': '#1B1B1F', 'editor.foreground': '#D4D4D8', 'editorLineNumber.foreground': '#52525B', 'editorLineNumber.activeForeground': '#A1A1AA', 'editorCursor.foreground': '#34D399', 'editor.selectionBackground': '#34D39928', 'editor.lineHighlightBackground': '#FFFFFF06', 'editorIndentGuide.background1': '#27272A', 'editorWidget.background': '#18181B', 'editorWidget.border': '#3F3F46', 'editorSuggestWidget.background': '#18181B', 'editorSuggestWidget.border': '#3F3F46', 'focusBorder': '#34D399', 'scrollbarSlider.background': '#52525B40' },
 });
+monaco.editor.defineTheme('irade-light', {
+  base: 'vs', inherit: true,
+  rules: [{ token: 'comment', foreground: '78716C', fontStyle: 'italic' }, { token: 'keyword', foreground: '6D28D9' }, { token: 'string', foreground: '047857' }, { token: 'number', foreground: 'B45309' }, { token: 'operator', foreground: '52525B' }],
+  colors: { 'editor.background': '#FFFFFF', 'editor.foreground': '#27272A', 'editorLineNumber.foreground': '#A8A29E', 'editorLineNumber.activeForeground': '#57534E', 'editorCursor.foreground': '#059669', 'editor.selectionBackground': '#05966920', 'editor.lineHighlightBackground': '#00000005', 'editorIndentGuide.background1': '#E7E5E4', 'editorWidget.background': '#FAF9F6', 'editorWidget.border': '#D6D3D1', 'editorSuggestWidget.background': '#FAF9F6', 'editorSuggestWidget.border': '#D6D3D1', 'focusBorder': '#059669', 'scrollbarSlider.background': '#A8A29E40' },
+});
+const themeKey = 'irade-theme';
+function currentTheme(): 'dark' | 'light' { return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark'; }
+function applyTheme(next: 'dark' | 'light'): void {
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem(themeKey, next);
+  monaco.editor.setTheme(next === 'light' ? 'irade-light' : 'irade-dark');
+  const toggle = document.querySelector<HTMLButtonElement>('#theme-toggle');
+  if (toggle) { toggle.textContent = next === 'light' ? '☾' : '☀'; }
+  for (const id of previewCells) { renderCellPreview(id); }
+}
+applyTheme(localStorage.getItem(themeKey) === 'light' ? 'light' : 'dark');
 function notify(message: string, error = false): void {
   clearTimeout(toastTimer); const toast = $('#toast');
   toast.textContent = message; toast.classList.toggle('error', error); toast.hidden = false;
   toastTimer = setTimeout(() => { toast.hidden = true; }, error ? 10000 : 4500);
 }
+const errorLabels: Record<string, string> = {
+  TOKEN_EXPIRED: '로그인이 만료되었습니다. 다시 로그인하세요.',
+  TOKEN_REQUIRED: 'ORCID로 IRADE에 로그인하세요.',
+  CANVAS_ACCESS_REVOKED: 'Workspace 접근 권한이 회수되었습니다.',
+  WORKSPACE_ACCESS_DENIED: '이 workspace를 변경할 권한이 없습니다.',
+  ITEM_WRITE_DENIED: '셀 편집 권한이 없습니다.',
+  CANVAS_ACCESS_DENIED: 'Workspace 접근 권한이나 비밀번호를 확인하세요.',
+  FILE_TOO_LARGE: '셀 저장 한도(128 KiB)를 넘었습니다. 내용을 나누어 주세요.',
+  FILE_REPLACED: '셀이 외부에서 교체되었습니다. 현재 내용을 내보내 보관한 후 다시 여세요.',
+  RUNTIME_EXECUTION_DENIED: '이 workspace에서 코드/증명을 실행할 권한이 없습니다.',
+  RUNTIME_NOT_CONNECTED: 'Agora Wall 브로커에 연결되지 않았습니다. 연결 상태를 확인하세요.',
+  RUNTIME_TIMEOUT: 'Agora VM 실행 시간이 초과되었습니다.',
+  RUNTIME_VM_UNAVAILABLE: 'Agora VM 런타임 서버에 연결할 수 없습니다.',
+  RUNTIME_UNSUPPORTED_LANGUAGE: 'Agora VM에서 지원하지 않는 실행 언어입니다.',
+  RUNTIME_CODE_TOO_LARGE: '실행할 코드 크기가 한도를 초과했습니다.',
+};
+function formatErrorLabel(raw: string): string {
+  return errorLabels[raw] || raw;
+}
 function report(error: unknown): void {
   const raw = error instanceof Error ? error.message : String(error);
-  const labels: Record<string, string> = { TOKEN_EXPIRED: '로그인이 만료되었습니다. 다시 로그인하세요.', TOKEN_REQUIRED: 'ORCID로 IRADE에 로그인하세요.', CANVAS_ACCESS_REVOKED: 'Workspace 접근 권한이 회수되었습니다.', WORKSPACE_ACCESS_DENIED: '이 workspace를 변경할 권한이 없습니다.', ITEM_WRITE_DENIED: '셀 편집 권한이 없습니다.', CANVAS_ACCESS_DENIED: 'Workspace 접근 권한이나 비밀번호를 확인하세요.', FILE_TOO_LARGE: '셀 저장 한도(128 KiB)를 넘었습니다. 내용을 나누어 주세요.', FILE_REPLACED: '셀이 외부에서 교체되었습니다. 현재 내용을 내보내 보관한 후 다시 여세요.' };
-  notify(labels[raw] || raw, true);
+  notify(formatErrorLabel(raw), true);
   $('#cell-save').textContent = '저장 확인 필요';
 }
 function log(message: string): void {
@@ -93,9 +157,35 @@ async function signIn(): Promise<boolean> {
 }
 async function ask(title: string, label: string, password = false): Promise<string | undefined> {
   return new Promise(resolve => {
-    showModal(title, `<form id="ask-form"><label class="field">${escape(label)}<input name="value" type="${password ? 'password' : 'text'}" required autocomplete="off"></label><div class="form-actions"><button class="button primary">확인 →</button></div></form>`);
-    const close = (): void => resolve(undefined); modal.addEventListener('close', close, { once: true });
-    $('#ask-form').addEventListener('submit', event => { event.preventDefault(); const result = String(new FormData(event.currentTarget as HTMLFormElement).get('value')); modal.removeEventListener('close', close); resolve(result); modal.close(); });
+    const headerNote = password
+      ? `<div class="ask-security-banner"><span class="ask-lock-icon">🔒</span><div><strong>비공개 연구 공간</strong><small>접근 권한 확인을 위해 캔버스 비밀번호를 입력하세요.</small></div></div>`
+      : '';
+    const inputControl = password
+      ? `<div class="password-field"><input name="value" type="password" required autocomplete="current-password" placeholder="비밀번호 입력…"><button type="button" class="password-toggle" id="toggle-password" aria-label="비밀번호 표시">표시</button></div>`
+      : `<input name="value" type="text" required autocomplete="off">`;
+    showModal(title, `<form id="ask-form" class="ask-form">${headerNote}<label class="field"><span>${escape(label)}</span>${inputControl}</label><div class="form-actions"><button type="button" class="button ghost" id="ask-cancel">취소</button><button type="submit" class="button primary">${password ? '입장하기 →' : '확인 →'}</button></div></form>`);
+    const form = $<HTMLFormElement>('#ask-form');
+    const input = form.querySelector<HTMLInputElement>('input[name="value"]')!;
+    const close = (): void => resolve(undefined);
+    modal.addEventListener('close', close, { once: true });
+    $('#ask-cancel').addEventListener('click', () => modal.close());
+    if (password) {
+      const toggle = $<HTMLButtonElement>('#toggle-password');
+      toggle.addEventListener('click', () => {
+        const show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        toggle.textContent = show ? '숨김' : '표시';
+        input.focus();
+      });
+    }
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      const result = String(new FormData(event.currentTarget as HTMLFormElement).get('value'));
+      modal.removeEventListener('close', close);
+      resolve(result);
+      modal.close();
+    });
+    requestAnimationFrame(() => input.focus());
   });
 }
 interface Canvas { canvas_id: number; canvas_name: string; description?: string }
@@ -136,7 +226,14 @@ async function openWorkspace(): Promise<void> {
     await connect(result.canvas_id, result.canvas_name || name.trim());
   })().catch(report); });
 }
-function clearModels(): void { editor?.setModel(null); for (const model of models.values()) { model.dispose(); } models.clear(); }
+function clearModels(): void {
+  for (const ed of cellEditors.values()) { ed.setModel(null); ed.dispose(); }
+  cellEditors.clear();
+  previewCells.clear();
+  cellOutputs.clear();
+  for (const model of models.values()) { model.dispose(); }
+  models.clear();
+}
 async function connect(id: number, name: string): Promise<void> {
   if (!Number.isSafeInteger(id) || id <= 0) { throw new Error('올바른 workspace ID를 입력하세요.'); }
   if (workspace?.pending) { await workspace.flush(); }
@@ -153,7 +250,7 @@ async function connect(id: number, name: string): Promise<void> {
     $('#connection-label').textContent = state === 'Saving' ? '동기화 중' : connected ? 'LIVE SYNC' : '연결 중';
     $('#cell-save').textContent = state === 'Saving' ? '저장 중…' : connected ? '모든 변경 저장됨' : '로컬 변경 유지';
     $('#permission-label').textContent = connected ? client.canWrite ? '편집 가능' : '읽기 전용' : '';
-    editor?.updateOptions({ readOnly: !client.canWrite });
+    for (const ed of cellEditors.values()) { ed.updateOptions({ readOnly: !client.canWrite }); }
     if (state === 'Connected' && current.pending) { void current.flush().catch(report); }
     if (!['Connected','Saving','Connecting','Reconnecting'].includes(state)) { report(new Error(state)); }
   };
@@ -168,9 +265,10 @@ async function connect(id: number, name: string): Promise<void> {
         $<HTMLTextAreaElement>('#recovery-text').value = value;
         $('#recover-cell').addEventListener('click', () => download(value, 'recovered-cell.txt'));
       }
-      overview();
+      if (viewMode === 'notebook') { renderNotebook(); }
     }
     renderList(); renderInspector();
+    if (viewMode === 'notebook') { renderNotebook(); }
   };
   current.onText = cell => {
     const model = models.get(cell.id);
@@ -180,15 +278,18 @@ async function connect(id: number, name: string): Promise<void> {
         // Apply a minimal range; preserve selection, undo stack and scroll position.
         const edit = replacement(model.getValue(), cell.text);
         const from = model.getPositionAt(edit.start), to = model.getPositionAt(edit.end);
-        const selection = selected === cell.id ? editor?.getSelections() : undefined;
+        const ed = cellEditors.get(cell.id);
+        const selection = ed?.getSelections();
         model.pushEditOperations(selection || null, [{ range: new monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column), text: edit.text }], () => selection || null);
       } finally { editingRemote = false; }
-      if (selected === cell.id) { updateCellHeading(); renderPreview(); }
+      updateCellCardMeta(cell.id);
+      renderList();
+      if (previewCells.has(cell.id)) { renderCellPreview(cell.id); }
       log(`${cellTypes[cell.kind].short} 셀의 공유 변경을 반영했습니다.`);
     }
   };
   const url = new URL(location.href); url.searchParams.delete('folder'); url.searchParams.set('workspace', String(id)); history.replaceState(null, '', url);
-  overview(); renderList();
+  openNotebook(); renderList();
   await current.load();
   if (generation !== loadGeneration) { return; }
   sessionStorage.setItem('irade.research.lastWorkspace', JSON.stringify({ id, name }));
@@ -196,61 +297,385 @@ async function connect(id: number, name: string): Promise<void> {
   $('#workspace-mode').textContent = 'Agora Workspace'; $('#sync-description').textContent = '변경 내용은 같은 workspace에 실시간 공유';
   log(`${name} workspace를 연결했습니다.`); notify('공유 workspace에 연결했습니다.');
 }
+function visibleCells(): Cell[] {
+  return cells.filter(cell => filter === 'all' || cell.kind === filter || filter === 'proof' && ['lean','rocq'].includes(cell.kind) || filter === 'document' && ['markdown','html'].includes(cell.kind));
+}
 function renderList(): void {
   $('#workspace-name').textContent = workspaceName;
   $('#cell-count').textContent = String(cells.length); $('#status-cell-count').textContent = `${cells.length} cells`;
   $('#cell-list-label').textContent = filter === 'all' ? '연구 셀' : filter === 'agent' ? '에이전트 대화' : filter === 'proof' ? '증명 셀' : filter === 'python' ? '코드 셀' : '문서 셀';
-  const visible = cells.filter(cell => filter === 'all' || cell.kind === filter || filter === 'proof' && ['lean','rocq'].includes(cell.kind) || filter === 'document' && ['markdown','html'].includes(cell.kind));
+  const visible = visibleCells();
   $('#cell-list').innerHTML = visible.map(cell => `<button class="cell-list-item ${cell.id === selected ? 'selected' : ''}" data-cell="${escape(cell.id)}"><span class="mini-type ${cellTypes[cell.kind].color}">${cellTypes[cell.kind].icon}</span><span><strong>${escape(cell.title)}</strong><small>${cellTypes[cell.kind].short} · ${String(cells.indexOf(cell) + 1).padStart(2, '0')}</small></span></button>`).join('') || `<p class="empty-list">${workspace || demo ? '아직 셀이 없습니다.<br>새 셀로 연구를 시작하세요.' : '대화, 증명, 코드, 문서.<br>연구의 맥락이 여기에 모입니다.'}</p>`;
-  $('#cell-tabs').innerHTML = cells.filter(cell => models.has(cell.id)).map(cell => `<button class="tab ${cell.id === selected ? 'selected' : ''}" role="tab" aria-selected="${cell.id === selected}" data-cell="${escape(cell.id)}"><span class="${cellTypes[cell.kind].color}">${cellTypes[cell.kind].icon}</span>${escape(cell.title.slice(0, 22))}</button>`).join('');
+  const hasWorkspaceTab = Boolean(workspace || demo);
+  $('#cell-tabs').innerHTML = hasWorkspaceTab
+    ? `<button class="tab ${viewMode === 'notebook' ? 'selected' : ''}" role="tab" aria-selected="${viewMode === 'notebook'}" data-action="notebook"><span class="mint">▤</span><span>${escape(workspaceName)}</span></button>`
+    : '';
   document.querySelectorAll<HTMLButtonElement>('[data-cell]').forEach(button => button.addEventListener('click', () => selectCell(button.dataset.cell!)));
-  $('#overview-tab').classList.toggle('selected', !selected); $('#overview-tab').setAttribute('aria-selected', String(!selected));
+  $('#overview-tab').hidden = !overviewOpen;
+  $('#overview-tab').classList.toggle('selected', viewMode === 'overview');
+  $('#overview-tab').setAttribute('aria-selected', String(viewMode === 'overview'));
 }
-function ensureEditor(): monaco.editor.IStandaloneCodeEditor {
-  if (!editor) {
-    editor = monaco.editor.create($('#editor'), { theme: 'irade', automaticLayout: true, model: null, fontSize: Number(localStorage.getItem('irade.fontSize') || 14), fontFamily: "'SFMono-Regular', Consolas, 'Liberation Mono', monospace", lineHeight: 25, minimap: { enabled: false }, scrollBeyondLastLine: false, padding: { top: 20, bottom: 20 }, smoothScrolling: true, renderLineHighlight: 'gutter', lineNumbersMinChars: 3, wordWrap: 'on', tabSize: 4, readOnly: workspace ? !workspace.client.canWrite : false, fixedOverflowWidgets: true });
-    editor.onDidChangeCursorPosition(event => { $('#cursor-position').textContent = `Ln ${event.position.lineNumber}, Col ${event.position.column}`; });
-  }
-  return editor;
-}
-function selectCell(id: string): void {
-  const cell = cells.find(cell => cell.id === id); if (!cell) { return; }
-  selected = id; $('#overview').hidden = true; $('#cell-view').hidden = false;
-  let model = models.get(id);
+function ensureModel(cell: Cell): monaco.editor.ITextModel {
+  let model = models.get(cell.id);
   if (!model) {
     model = monaco.editor.createModel(cell.text, cellTypes[cell.kind].language, monaco.Uri.parse(`irade://cell/${cell.id}.${cellTypes[cell.kind].extension}`));
-    models.set(id, model);
+    models.set(cell.id, model);
     model.onDidChangeContent(() => {
       if (editingRemote) { return; }
       try {
         const text = model!.getValue();
-        if (workspace) { workspace.edit(id, text); } else { cell.text = text; cell.title = cellTitle(cell.kind, text); persistScratch(); }
-        updateCellHeading(); renderList(); renderPreview();
+        if (workspace) { workspace.edit(cell.id, text); } else { cell.text = text; cell.title = cellTitle(cell.kind, text); persistScratch(); }
+        updateCellCardMeta(cell.id); renderList();
+        if (previewCells.has(cell.id)) { renderCellPreview(cell.id); }
       } catch (error) { report(error); }
     });
   }
-  ensureEditor().setModel(model); updateCellHeading(); renderList(); renderInspector(); renderPreview();
+  return model;
 }
-function updateCellHeading(): void {
-  const cell = cells.find(cell => cell.id === selected); if (!cell) { return; }
-  const type = cellTypes[cell.kind];
-  $('#cell-category').textContent = workspaceName; $('#cell-number').textContent = `Cell ${String(cells.indexOf(cell) + 1).padStart(2, '0')}`;
-  $('#cell-kind').textContent = type.label.toUpperCase(); $('#cell-title').textContent = cell.title;
-  $('#cell-type-icon').textContent = type.icon; $('#cell-type-icon').className = `type-icon ${type.color}`;
-  $('#editor-language').textContent = type.short.toUpperCase(); $('#chat-tools').hidden = cell.kind !== 'agent';
-  $('#preview-button').hidden = !['markdown','html','agent'].includes(cell.kind);
-  $('#preview-button').textContent = preview ? '편집만 보기' : '미리보기';
-  $('#cell-context').innerHTML = ['lean','rocq'].includes(cell.kind) ? '<span class="purple">⊢</span><span><b>Proof context</b> · 증명 소스를 편집하고 공유합니다. 증명 커널 연결 전에는 검증 완료로 표시하지 않습니다.</span>' : cell.kind === 'python' ? '<span class="blue">λ</span><span><b>Python context</b> · 코드와 연구 맥락을 함께 보관합니다. 현재 화면은 셀 편집·동기화를 지원하며 실행 커널은 연결되어 있지 않습니다.</span>' : cell.kind === 'agent' ? '<span class="mint">✧</span><span><b>Conversation context</b> · 대화 기록 셀입니다. 사용자와 에이전트 메시지를 기록하며 AI 응답을 자동 생성하지 않습니다.</span>' : '<span class="sand">≡</span><span><b>Document context</b> · 미리보기에서 문서를 확인하세요. HTML은 스크립트 실행 없이 격리된 화면으로 표시됩니다.</span>';
+function updateCellCardMeta(id: string): void {
+  const cell = cells.find(item => item.id === id);
+  const card = document.querySelector<HTMLElement>(`[data-nb-cell="${CSS.escape(id)}"]`);
+  if (!cell || !card) { return; }
+  const titleEl = card.querySelector('.nb-cell-title');
+  if (titleEl) { titleEl.textContent = cell.title; }
 }
-function overview(): void { selected = undefined; $('#overview').hidden = false; $('#cell-view').hidden = true; renderList(); renderInspector(); }
-function renderPreview(): void {
-  const cell = cells.find(cell => cell.id === selected);
-  const visible = preview && !!cell && ['markdown','html','agent'].includes(cell.kind);
-  $('#preview-panel').hidden = !visible;
-  if (!visible || !cell) { return; }
-  const source = cell.kind === 'html' ? cell.text : marked.parse(cell.text, { async: false });
+function isExecutable(kind: CellKind): boolean {
+  return kind === 'python' || kind === 'lean' || kind === 'rocq';
+}
+function renderCellOutput(id: string): void {
+  const card = document.querySelector<HTMLElement>(`[data-nb-cell="${CSS.escape(id)}"]`);
+  if (!card) { return; }
+  const container = card.querySelector<HTMLElement>(`[data-nb-output="${CSS.escape(id)}"]`);
+  if (!container) { return; }
+  const out = cellOutputs.get(id);
+  if (!out) {
+    container.hidden = true;
+    container.classList.remove('error');
+    container.innerHTML = '';
+    return;
+  }
+  container.hidden = false;
+  container.classList.toggle('error', !out.ok && !out.running);
+  if (out.running) {
+    const streamPre = out.stdout ? `<pre class="nb-output-pre">${escape(out.stdout)}</pre>` : '';
+    const envNote = out.runtime === 'agora-vm' ? '<span>Agora VM · Broker/C++ 스트리밍…</span>' : '';
+    container.innerHTML = `<div class="nb-output-head"><span class="nb-output-badge">⟳ 실행 중…</span>${envNote}</div>${streamPre}`;
+    return;
+  }
+  const badge = out.status === 'verified' ? '✓ Proof Verified' : out.ok ? '✓ Executed' : out.status === 'timeout' ? '⏱ Timeout' : `✕ Error (exit ${out.exitCode ?? '?'})`;
+  const envLabel = out.runtime === 'agora-vm' ? 'Agora VM · ' : out.runtime === 'host' ? 'Host Runner · ' : '';
+  const combined = [out.stdout, out.stderr].filter(part => part && part.trim().length > 0).join('\n').trim() || '(출력 없음)';
+  container.innerHTML = `<div class="nb-output-head"><span class="nb-output-badge ${out.ok ? 'ok' : 'err'}">${badge}</span><span>${envLabel}${out.durationMs}ms · <button type="button" class="text-button" data-clear-output="${escape(id)}">지우기</button></span></div><pre class="nb-output-pre">${escape(combined)}</pre>`;
+  container.querySelector(`[data-clear-output="${CSS.escape(id)}"]`)?.addEventListener('click', e => {
+    e.stopPropagation();
+    cellOutputs.delete(id);
+    renderCellOutput(id);
+    renderInspector();
+  });
+}
+async function executeOnHost(kind: CellKind, code: string): Promise<ExecutionOutput> {
+  const endpoint = location.pathname.startsWith('/irade') ? '/irade/api/execute' : '/api/execute';
+  const response = await fetch(origin + endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind, code }),
+    signal: AbortSignal.timeout(25000),
+  });
+  const contentType = response.headers.get('content-type') || '';
+  if (!response.ok || !contentType.includes('application/json')) {
+    throw new Error(`로컬 실행 엔드포인트를 사용할 수 없습니다 (${response.status}). Workspace에 연결해 Agora VM으로 실행하세요.`);
+  }
+  const result = await response.json() as ExecutionOutput;
+  return { ...result, runtime: 'host' };
+}
+async function executeInAgoraVm(id: string, kind: 'python' | 'lean' | 'rocq', code: string): Promise<ExecutionOutput> {
+  const active = workspace!;
+  const started = Date.now();
+  const marker = `__IRADE_${crypto.randomUUID().replace(/-/g, '')}__`;
+  let language: 'python' | 'bash' = 'python';
+  let payloadCode = code;
+  if (kind === 'lean') {
+    language = 'bash';
+    payloadCode = `LEAN_BIN=$(command -v lean || ([ -x "$HOME/.elan/bin/lean" ] && echo "$HOME/.elan/bin/lean") || ([ -x "/root/.elan/bin/lean" ] && echo "/root/.elan/bin/lean") || true)\n[ -n "$LEAN_BIN" ] || exit 127\n"$LEAN_BIN" --stdin << '${marker}'\n${code}\n${marker}\n`;
+  } else if (kind === 'rocq') {
+    language = 'bash';
+    payloadCode = `COQC_BIN=$(command -v coqc || true)\n[ -n "$COQC_BIN" ] || exit 127\nTMP_DIR=$(mktemp -d)\ntrap 'rm -rf "$TMP_DIR"' EXIT\ncat << '${marker}' > "$TMP_DIR/Cell.v"\n${code}\n${marker}\n"$COQC_BIN" "$TMP_DIR/Cell.v"\n`;
+  }
+  let streamed = '';
+  let data;
+  try {
+    data = await active.client.executeRuntime(language, payloadCode, chunk => {
+      streamed += chunk;
+      cellOutputs.set(id, {
+        running: true,
+        ok: true,
+        exitCode: null,
+        stdout: streamed,
+        stderr: '',
+        durationMs: Date.now() - started,
+        status: 'running',
+        runtime: 'agora-vm',
+      });
+      renderCellOutput(id);
+    });
+  } catch (error) {
+    const raw = error instanceof Error ? error.message : String(error);
+    throw new Error(formatErrorLabel(raw));
+  }
+  if (data.error && typeof data.exitCode !== 'number') {
+    throw new Error(data.message || formatErrorLabel(data.error));
+  }
+  const exitCode = typeof data.exitCode === 'number' ? data.exitCode : 1;
+  if ((kind === 'lean' || kind === 'rocq') && exitCode === 127) {
+    try {
+      return await executeOnHost(kind, code);
+    } catch {
+      const binName = kind === 'lean' ? 'Lean 4 (lean)' : 'Rocq (coqc)';
+      return {
+        ok: false,
+        exitCode: 127,
+        stdout: '',
+        stderr: `Agora VM(${binName})에 해당 증명 도구가 설치되어 있지 않습니다 (exit 127). VM 이미지에 ${binName} 설치가 필요합니다.`,
+        durationMs: Date.now() - started,
+        status: 'error',
+        runtime: 'agora-vm',
+      };
+    }
+  }
+  const durationMs = Date.now() - started;
+  const outputText = String(data.output ?? streamed ?? '');
+  const ok = !data.timedOut && !data.error && exitCode === 0;
+  const isProof = kind === 'lean' || kind === 'rocq';
+  return {
+    ok,
+    exitCode,
+    stdout: ok ? (outputText || (isProof ? '✓ Proof verified in Agora VM (0 errors)' : '')) : '',
+    stderr: ok ? '' : (outputText || data.message || (data.error ? formatErrorLabel(data.error) : '실행 중 오류가 발생했습니다.')),
+    durationMs,
+    status: data.timedOut ? 'timeout' : ok ? (isProof ? 'verified' : 'success') : 'error',
+    runtime: 'agora-vm',
+  };
+}
+async function runCell(id: string): Promise<void> {
+  const cell = cells.find(item => item.id === id);
+  if (!cell || !isExecutable(cell.kind)) { return; }
+  const code = models.get(id)?.getValue() ?? cell.text;
+  const runBtn = document.querySelector<HTMLButtonElement>(`[data-cell-run="${CSS.escape(id)}"]`);
+  if (runBtn) { runBtn.disabled = true; }
+  cellOutputs.set(id, { running: true, ok: true, exitCode: null, stdout: '', stderr: '', durationMs: 0, status: 'running', runtime: workspace ? 'agora-vm' : 'host' });
+  renderCellOutput(id);
+  try {
+    const result = workspace
+      ? await executeInAgoraVm(id, cell.kind as 'python' | 'lean' | 'rocq', code)
+      : await executeOnHost(cell.kind, code);
+    cellOutputs.set(id, result);
+    log(`${cellTypes[cell.kind].short} 셀을 ${result.runtime === 'agora-vm' ? 'Agora VM(Broker·C++ WS)에서 ' : ''}${result.ok ? '실행/검증' : '실행(오류)'}했습니다 (${result.durationMs}ms).`);
+  } catch (error) {
+    cellOutputs.set(id, {
+      ok: false,
+      exitCode: 1,
+      stdout: '',
+      stderr: error instanceof Error ? error.message : String(error),
+      durationMs: 0,
+      status: 'error',
+    });
+  } finally {
+    if (runBtn) { runBtn.disabled = false; }
+    renderCellOutput(id);
+    renderInspector();
+  }
+}
+async function runAllCells(): Promise<void> {
+  const targets = visibleCells().filter(cell => isExecutable(cell.kind));
+  if (!targets.length) { notify('실행할 수 있는 Python, Lean 4 또는 Rocq 셀이 없습니다.'); return; }
+  for (const cell of targets) {
+    await runCell(cell.id);
+  }
+  notify(`${targets.length}개 셀 실행을 완료했습니다.`);
+}
+function renderCellPreview(id: string): void {
+  const cell = cells.find(item => item.id === id);
+  const frame = document.querySelector<HTMLIFrameElement>(`[data-nb-preview="${CSS.escape(id)}"]`);
+  if (!cell || !frame) { return; }
+  const visible = previewCells.has(id) && ['markdown','html','agent'].includes(cell.kind);
+  frame.hidden = !visible;
+  if (!visible) { return; }
+  const light = currentTheme() === 'light';
+  if (cell.kind === 'html') {
+    frame.setAttribute('sandbox', 'allow-scripts');
+    const raw = models.get(id)?.getValue() ?? cell.text;
+    const isFullDoc = /<!doctype|<html[\s>]/i.test(raw);
+    const baseStyle = light
+      ? '<style>html,body{margin:0;padding:16px;font-family:system-ui,-apple-system,sans-serif;color:#18181b;background:#ffffff;box-sizing:border-box}*,*::before,*::after{box-sizing:border-box}</style>'
+      : '<style>html,body{margin:0;padding:16px;font-family:system-ui,-apple-system,sans-serif;color:#f4f4f5;background:#1b1b1f;box-sizing:border-box}*,*::before,*::after{box-sizing:border-box}</style>';
+    frame.srcdoc = isFullDoc ? raw : `<!doctype html><html lang="ko"><head><meta charset="UTF-8"><meta name="color-scheme" content="${light ? 'light' : 'dark'}">${baseStyle}</head><body>${raw}</body></html>`;
+    return;
+  }
+  frame.setAttribute('sandbox', '');
+  const source = marked.parse(models.get(id)?.getValue() ?? cell.text, { async: false });
   const safe = DOMPurify.sanitize(source, { FORBID_TAGS: ['script','style','form','iframe','object','embed','base','link','meta'], FORBID_ATTR: ['style','srcset'] });
-  $<HTMLIFrameElement>('#document-preview').srcdoc = `<!doctype html><html lang="ko"><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"><meta name="color-scheme" content="dark"><style>body{font:13px/1.9 system-ui,sans-serif;color:#cbded0;background:#1b1e20;padding:20px;overflow-wrap:anywhere}h1,h2,h3{font-weight:550;line-height:1.5;color:#e3eee5}h1{font-size:24px}h2{font-size:19px;border-bottom:1px solid #344239;padding-bottom:10px;margin-top:28px}a{color:#b1e6d0}code{background:#b1e6d00d;padding:3px 6px;border-radius:3px}pre{padding:16px;background:#121a15;border:1px solid #344239;overflow:auto}pre code{padding:0;background:none}blockquote{border-left:2px solid #8eb39c;padding-left:15px;color:#8ca995}table{border-collapse:collapse;width:100%}th,td{border:1px solid #3b4d40;padding:7px 10px}img{max-width:100%}</style></head><body>${safe}</body></html>`;
+  const css = light
+    ? 'body{font:13.5px/1.8 system-ui,sans-serif;color:#27272a;background:#ffffff;padding:18px 22px;margin:0;overflow-wrap:anywhere}h1,h2,h3{font-weight:600;line-height:1.4;color:#18181b}h1{font-size:20px}h2{font-size:17px;border-bottom:1px solid #e7e5e4;padding-bottom:6px;margin-top:20px}a{color:#059669}code{background:#f3f2ee;padding:2px 6px;border-radius:4px}pre{padding:12px;background:#faf9f6;border:1px solid #e7e5e4;border-radius:8px;overflow:auto}pre code{padding:0;background:none}blockquote{border-left:2px solid #059669;padding-left:14px;color:#78716c}table{border-collapse:collapse;width:100%}th,td{border:1px solid #e7e5e4;padding:6px 10px}img{max-width:100%}'
+    : 'body{font:13.5px/1.8 system-ui,sans-serif;color:#d4d4d8;background:#1b1b1f;padding:18px 22px;margin:0;overflow-wrap:anywhere}h1,h2,h3{font-weight:600;line-height:1.4;color:#f4f4f5}h1{font-size:20px}h2{font-size:17px;border-bottom:1px solid #27272a;padding-bottom:6px;margin-top:20px}a{color:#34d399}code{background:#27272a;padding:2px 6px;border-radius:4px}pre{padding:12px;background:#141417;border:1px solid #27272a;border-radius:8px;overflow:auto}pre code{padding:0;background:none}blockquote{border-left:2px solid #34d399;padding-left:14px;color:#a1a1aa}table{border-collapse:collapse;width:100%}th,td{border:1px solid #3f3f46;padding:6px 10px}img{max-width:100%}';
+  frame.srcdoc = `<!doctype html><html lang="ko"><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"><meta name="color-scheme" content="${light ? 'light' : 'dark'}"><style>${css}</style></head><body>${safe}</body></html>`;
+}
+function renderNotebook(): void {
+  if (viewMode !== 'notebook') { return; }
+  $('#notebook-title').textContent = workspaceName;
+  $('#notebook-kind').textContent = demo ? 'LOCAL PLAYGROUND NOTEBOOK' : connected ? 'AGORA LIVE NOTEBOOK' : 'RESEARCH NOTEBOOK';
+  const container = $('#notebook-cells');
+  const visible = visibleCells();
+  const visibleIds = new Set(visible.map(c => c.id));
+  for (const [id, ed] of cellEditors.entries()) {
+    if (!visibleIds.has(id)) {
+      ed.setModel(null); ed.dispose(); cellEditors.delete(id);
+    }
+  }
+  if (!visible.length) {
+    container.innerHTML = `<div class="nb-empty"><h2>${workspace || demo ? '아직 셀이 없습니다' : '연구 공간을 선택하세요'}</h2><p>${workspace || demo ? '아래 셀 추가 버튼으로 증명, 코드, 문서, 에이전트 셀을 만들어 보세요.' : '상단 또는 사이드바에서 Workspace를 열거나 로컬 체험을 시작하세요.'}</p></div>`;
+    return;
+  }
+  const existing = new Map<string, HTMLElement>();
+  container.querySelectorAll<HTMLElement>('[data-nb-cell]').forEach(el => {
+    const id = el.dataset.nbCell!;
+    if (visibleIds.has(id)) { existing.set(id, el); } else { el.remove(); }
+  });
+  const emptyEl = container.querySelector('.nb-empty');
+  if (emptyEl) { emptyEl.remove(); }
+
+  const fontSize = Number(localStorage.getItem('irade.fontSize') || 14);
+  const lineNumbers = localStorage.getItem('irade.lineNumbers') === 'off' ? 'off' : 'on';
+
+  for (const cell of visible) {
+    const type = cellTypes[cell.kind];
+    const indexLabel = `[${String(cells.indexOf(cell) + 1).padStart(2, '0')}]`;
+    let card = existing.get(cell.id);
+    if (!card) {
+      card = document.createElement('article');
+      card.className = 'nb-cell';
+      card.dataset.nbCell = cell.id;
+      card.id = `nb-cell-${cell.id}`;
+      const canPreview = ['markdown', 'html', 'agent'].includes(cell.kind);
+      const canRun = isExecutable(cell.kind);
+      if (cell.kind === 'html' && !previewCells.has(cell.id)) { previewCells.add(cell.id); }
+      const previewLabel = previewCells.has(cell.id) ? '미리보기 닫기' : '미리보기';
+      const runLabel = cell.kind === 'python' ? '▶ 실행' : '▶ 검증';
+      card.innerHTML = `<header class="nb-cell-header"><span class="nb-cell-index">${indexLabel}</span><span class="nb-cell-kind"><span class="${type.color}">${type.icon}</span>${type.short}</span><span class="nb-cell-title">${escape(cell.title)}</span><div class="nb-cell-tools">${canRun ? `<button class="nb-run-btn" data-cell-run="${escape(cell.id)}">${runLabel}</button>` : ''}${cell.kind === 'agent' ? `<button class="button tiny" data-cell-msg="${escape(cell.id)}">＋ 메시지</button>` : ''}${canPreview ? `<button class="button tiny" data-cell-preview="${escape(cell.id)}">${previewLabel}</button>` : ''}<button class="icon-button" data-cell-export="${escape(cell.id)}" title="셀 내보내기" aria-label="셀 내보내기">↧</button><button class="icon-button danger" data-cell-delete="${escape(cell.id)}" title="셀 삭제" aria-label="셀 삭제">×</button></div></header><div class="nb-cell-body"><div class="nb-editor-host"></div><iframe class="nb-preview-frame" data-nb-preview="${escape(cell.id)}" title="셀 미리보기" sandbox="${cell.kind === 'html' ? 'allow-scripts' : ''}" referrerpolicy="no-referrer" hidden></iframe><div class="nb-cell-output" data-nb-output="${escape(cell.id)}" hidden></div></div><footer class="nb-cell-footer"><span>${type.label}${canRun ? ' · Shift+Enter 실행' : ''}</span><span data-nb-cursor="${escape(cell.id)}">Ln 1, Col 1</span></footer>`;
+      container.appendChild(card);
+
+      const host = card.querySelector<HTMLElement>('.nb-editor-host')!;
+      const model = ensureModel(cell);
+      const ed = monaco.editor.create(host, {
+        theme: currentTheme() === 'light' ? 'irade-light' : 'irade-dark',
+        automaticLayout: true,
+        model,
+        fontSize,
+        lineNumbers,
+        fontFamily: "'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
+        lineHeight: 22,
+        minimap: { enabled: false },
+        scrollBeyondLastLine: false,
+        scrollbar: { vertical: 'hidden', handleMouseWheel: false },
+        padding: { top: 12, bottom: 12 },
+        smoothScrolling: true,
+        renderLineHighlight: 'gutter',
+        lineNumbersMinChars: 3,
+        wordWrap: 'on',
+        tabSize: 4,
+        readOnly: workspace ? !workspace.client.canWrite : false,
+        fixedOverflowWidgets: true,
+      });
+      if (canRun) {
+        ed.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Enter, () => { void runCell(cell.id); });
+      }
+      const updateHeight = (): void => {
+        const h = Math.min(520, Math.max(96, ed.getContentHeight()));
+        host.style.height = `${h}px`;
+        ed.layout();
+      };
+      ed.onDidContentSizeChange(updateHeight);
+      updateHeight();
+      ed.onDidFocusEditorText(() => {
+        if (selected !== cell.id) {
+          selected = cell.id;
+          syncActiveCellCard();
+          renderList();
+          renderInspector();
+        }
+      });
+      ed.onDidChangeCursorPosition(event => {
+        const cursorEl = card!.querySelector(`[data-nb-cursor="${CSS.escape(cell.id)}"]`);
+        if (cursorEl) { cursorEl.textContent = `Ln ${event.position.lineNumber}, Col ${event.position.column}`; }
+      });
+      cellEditors.set(cell.id, ed);
+
+      card.addEventListener('click', () => {
+        if (selected !== cell.id) {
+          selected = cell.id;
+          syncActiveCellCard();
+          renderList();
+          renderInspector();
+        }
+      });
+      card.querySelector(`[data-cell-run="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
+        e.stopPropagation(); selected = cell.id; void runCell(cell.id);
+      });
+      card.querySelector(`[data-cell-preview="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
+        e.stopPropagation();
+        if (previewCells.has(cell.id)) { previewCells.delete(cell.id); } else { previewCells.add(cell.id); }
+        const btn = e.currentTarget as HTMLButtonElement;
+        btn.textContent = previewCells.has(cell.id) ? '미리보기 닫기' : '미리보기';
+        renderCellPreview(cell.id);
+      });
+      card.querySelector(`[data-cell-msg="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
+        e.stopPropagation(); selected = cell.id; message();
+      });
+      card.querySelector(`[data-cell-export="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
+        e.stopPropagation(); selected = cell.id; exportCell();
+      });
+      card.querySelector(`[data-cell-delete="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
+        e.stopPropagation(); selected = cell.id; void deleteCell().catch(report);
+      });
+      if (previewCells.has(cell.id)) { renderCellPreview(cell.id); }
+      renderCellOutput(cell.id);
+    } else {
+      container.appendChild(card);
+      const idxEl = card.querySelector('.nb-cell-index');
+      if (idxEl) { idxEl.textContent = indexLabel; }
+    }
+  }
+  syncActiveCellCard();
+}
+function syncActiveCellCard(): void {
+  document.querySelectorAll<HTMLElement>('[data-nb-cell]').forEach(el => {
+    el.classList.toggle('active', el.dataset.nbCell === selected);
+  });
+}
+function openNotebook(): void {
+  viewMode = 'notebook';
+  $('#overview').hidden = true;
+  $('#cell-view').hidden = false;
+  renderNotebook();
+  renderList();
+  renderInspector();
+}
+function selectCell(id: string): void {
+  const cell = cells.find(cell => cell.id === id); if (!cell) { return; }
+  selected = id;
+  openNotebook();
+  requestAnimationFrame(() => {
+    const card = document.querySelector<HTMLElement>(`[data-nb-cell="${CSS.escape(id)}"]`);
+    card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    cellEditors.get(id)?.focus();
+  });
+}
+function overview(): void {
+  overviewOpen = true;
+  viewMode = 'overview';
+  $('#overview').hidden = false;
+  $('#cell-view').hidden = true;
+  renderList();
+  renderInspector();
 }
 function renderInspector(): void {
   document.querySelectorAll('.inspector-tabs>button').forEach(button => button.classList.toggle('selected', button.getAttribute('data-action') === inspectorTab));
@@ -258,8 +683,18 @@ function renderInspector(): void {
     $('#inspector-content').innerHTML = '<h3 class="context-heading">WORKSPACE ACTIVITY</h3>' + (activities.length ? activities.map(event => `<div class="activity-event">${escape(event.message)}<small>${event.time}</small></div>`).join('') : '<p class="context-copy">이 탭에서 연결하고 편집한 기록이 여기에 표시됩니다.</p>'); return;
   }
   const cell = cells.find(cell => cell.id === selected);
+  const cellOut = cell ? cellOutputs.get(cell.id) : undefined;
+  const proofStateHtml = cell && ['lean','rocq'].includes(cell.kind)
+    ? cellOut?.running
+      ? '<div class="context-block"><h3 class="context-heading">PROOF STATE</h3><p class="context-copy">증명을 검증하고 있습니다…</p><span class="context-tag">VERIFYING</span></div>'
+      : cellOut?.status === 'verified'
+        ? `<div class="context-block"><h3 class="context-heading">PROOF STATE</h3><p class="context-copy">증명 검증이 완료되었습니다 (${cellOut.durationMs}ms).</p><span class="context-tag">VERIFIED</span></div>`
+        : cellOut && !cellOut.ok
+          ? '<div class="context-block"><h3 class="context-heading">PROOF STATE</h3><p class="context-copy">증명 오류가 발생했습니다. 셀 출력 영역을 확인하세요.</p><span class="context-tag">ERROR</span></div>'
+          : '<div class="context-block"><h3 class="context-heading">PROOF STATE</h3><p class="context-copy">▶ 검증 버튼 또는 Shift+Enter로<br>증명을 실행해 검증할 수 있습니다.</p><span class="context-tag">NOT VERIFIED</span></div>'
+    : '';
   const typeCounts = { agent: cells.filter(cell => cell.kind === 'agent').length, proof: cells.filter(cell => ['lean','rocq'].includes(cell.kind)).length, code: cells.filter(cell => cell.kind === 'python').length, document: cells.filter(cell => ['markdown','html'].includes(cell.kind)).length };
-  $('#inspector-content').innerHTML = `<h3 class="context-heading">${cell ? 'CELL CONTEXT' : 'WORKSPACE CONTEXT'}</h3><h2 class="context-title">${escape(cell ? cellTypes[cell.kind].label : '연구의 흐름을\n하나로 연결하세요.').replace('\n','<br>')}</h2><p class="context-copy">${cell ? escape(cellTypes[cell.kind].description) : '아이디어를 탐색하고, 가설을 증명하고,<br>결과를 코드와 문서로 남기는 공간.'}</p>${cell && ['lean','rocq'].includes(cell.kind) ? '<div class="context-block"><h3 class="context-heading">PROOF STATE</h3><p class="context-copy">아직 검증 결과가 없습니다.<br>증명 커널 연결이 필요합니다.</p><span class="context-tag">NOT VERIFIED</span></div>' : ''}<div class="context-flow"><div class="flow-step"><span class="step-icon mint">✧</span><span>탐색하고 대화하기<small>AGENT CONVERSATIONS</small></span></div><div class="flow-step"><span class="step-icon purple">∀</span><span>논리로 증명하기<small>LEAN 4 / ROCQ PROOFS</small></span></div><div class="flow-step"><span class="step-icon blue">λ</span><span>코드로 실험하기<small>PYTHON CELLS</small></span></div><div class="flow-step"><span class="step-icon sand">≡</span><span>지식으로 정리하기<small>MARKDOWN / HTML</small></span></div></div><div class="context-block"><h3 class="context-heading">${cell ? 'THIS WORKSPACE' : 'WORKSPACE OVERVIEW'}</h3><div class="context-stat"><span>대화 기록</span><b>${String(typeCounts.agent).padStart(2,'0')}</b></div><div class="context-stat"><span>형식 증명</span><b>${String(typeCounts.proof).padStart(2,'0')}</b></div><div class="context-stat"><span>Python 코드</span><b>${String(typeCounts.code).padStart(2,'0')}</b></div><div class="context-stat"><span>연구 문서</span><b>${String(typeCounts.document).padStart(2,'0')}</b></div></div><div class="context-block"><h3 class="context-heading">COLLABORATION</h3><p class="context-copy">${demo ? '로컬 체험 모드입니다.<br>내용은 현재 브라우저 탭에만 저장됩니다.' : connected ? '같은 workspace를 연 참여자에게<br>변경 내용이 실시간으로 공유됩니다.' : 'Agora workspace를 연결하면<br>함께 셀을 편집할 수 있습니다.'}</p><span class="context-tag">${demo ? 'LOCAL SESSION' : connected ? 'LIVE SYNC' : 'AGORA WORKSPACE'}</span></div>`;
+  $('#inspector-content').innerHTML = `<h3 class="context-heading">${cell ? 'CELL CONTEXT' : 'WORKSPACE CONTEXT'}</h3><h2 class="context-title">${escape(cell ? cellTypes[cell.kind].label : '연구의 흐름을\n하나로 연결하세요.').replace('\n','<br>')}</h2><p class="context-copy">${cell ? escape(cellTypes[cell.kind].description) : '아이디어를 탐색하고, 가설을 증명하고,<br>결과를 코드와 문서로 남기는 공간.'}</p>${proofStateHtml}<div class="context-flow"><div class="flow-step"><span class="step-icon mint">✧</span><span>탐색하고 대화하기<small>AGENT CONVERSATIONS</small></span></div><div class="flow-step"><span class="step-icon purple">∀</span><span>논리로 증명하기<small>LEAN 4 / ROCQ PROOFS</small></span></div><div class="flow-step"><span class="step-icon blue">λ</span><span>코드로 실험하기<small>PYTHON CELLS</small></span></div><div class="flow-step"><span class="step-icon sand">≡</span><span>지식으로 정리하기<small>MARKDOWN / HTML</small></span></div></div><div class="context-block"><h3 class="context-heading">${cell ? 'THIS WORKSPACE' : 'WORKSPACE OVERVIEW'}</h3><div class="context-stat"><span>대화 기록</span><b>${String(typeCounts.agent).padStart(2,'0')}</b></div><div class="context-stat"><span>형식 증명</span><b>${String(typeCounts.proof).padStart(2,'0')}</b></div><div class="context-stat"><span>Python 코드</span><b>${String(typeCounts.code).padStart(2,'0')}</b></div><div class="context-stat"><span>연구 문서</span><b>${String(typeCounts.document).padStart(2,'0')}</b></div></div><div class="context-block"><h3 class="context-heading">COLLABORATION</h3><p class="context-copy">${demo ? '로컬 체험 모드입니다.<br>내용은 현재 브라우저 탭에만 저장됩니다.' : connected ? '같은 workspace를 연 참여자에게<br>변경 내용이 실시간으로 공유됩니다.' : 'Agora workspace를 연결하면<br>함께 셀을 편집할 수 있습니다.'}</p><span class="context-tag">${demo ? 'LOCAL SESSION' : connected ? 'LIVE SYNC' : 'AGORA WORKSPACE'}</span></div>`;
 }
 function persistScratch(): void { sessionStorage.setItem(demoKey, JSON.stringify(cells)); $('#cell-save').textContent = '현재 탭에 저장됨'; }
 async function startDemo(): Promise<void> {
@@ -269,8 +704,9 @@ async function startDemo(): Promise<void> {
   cells = cached ? JSON.parse(cached) as Cell[] : (['markdown','agent','lean','rocq','python','html'] as CellKind[]).map((kind, index) => ({ id: `${Date.now() + index}-${crypto.randomUUID()}`, kind, path: '', text: starters[kind], title: cellTitle(kind, starters[kind]) }));
   persistScratch(); const url = new URL(location.href); url.searchParams.delete('workspace'); url.searchParams.delete('folder'); history.replaceState(null,'',url);
   $('#workspace-subtitle').textContent = '로컬 체험 · 현재 탭에만 저장'; $('#workspace-mode').textContent = 'Local Playground'; $('#status').textContent = '로컬 체험 · 공유되지 않음'; $('#connection-label').textContent = 'LOCAL SESSION'; $('#sync-description').textContent = '체험 내용은 현재 탭에만 저장'; $('#permission-label').textContent = '로컬 편집';
-  overview(); log('로컬 체험 workspace를 열었습니다.'); notify('로컬 체험입니다. 공동 편집하려면 Agora workspace를 연결하세요.');
+  openNotebook(); log('로컬 체험 workspace를 열었습니다.'); notify('로컬 체험입니다. 공동 편집하려면 Agora workspace를 연결하세요.');
 }
+let addingCell = false;
 async function addCell(kind?: CellKind): Promise<void> {
   if (!workspace && !demo) {
     showModal('연구 공간을 선택하세요', '<p class="modal-copy">Agora workspace에서 실시간으로 협업하거나 로컬 체험으로 셀을 살펴보세요.</p><div class="choice-list"><button class="choice" data-action="open"><span class="type-icon mint">↔</span><span><strong>공유 workspace 열기</strong><small>ORCID로 로그인하고 공동 편집</small></span><span class="choice-arrow">↗</span></button><button class="choice" data-action="demo"><span class="type-icon blue">λ</span><span><strong>로컬 체험 시작</strong><small>계정 없이 현재 탭에서 셀 편집 체험</small></span><span class="choice-arrow">→</span></button></div>'); return;
@@ -280,9 +716,26 @@ async function addCell(kind?: CellKind): Promise<void> {
     showModal('새로운 연구 셀', '<p class="modal-copy">다음 아이디어에 맞는 셀을 선택하세요.</p><div class="choice-list">' + (Object.keys(cellTypes) as CellKind[]).map(kind => `<button class="choice" data-add-kind="${kind}"><span class="type-icon ${cellTypes[kind].color}">${cellTypes[kind].icon}</span><span><strong>${cellTypes[kind].label}</strong><small>${cellTypes[kind].description}</small></span><span class="choice-arrow">＋</span></button>`).join('') + '</div>');
     document.querySelectorAll<HTMLButtonElement>('[data-add-kind]').forEach(button => button.addEventListener('click', () => { modal.close(); void addCell(button.dataset.addKind as CellKind).catch(report); })); return;
   }
+  if (addingCell) { return; }
   let cell: Cell;
-  if (workspace) { cell = await workspace.add(kind, starters[kind]); cells = workspace.cells; }
-  else { cell = { id: `${Date.now()}-${crypto.randomUUID()}`, kind, path: '', text: starters[kind], title: cellTitle(kind, starters[kind]) }; cells.push(cell); persistScratch(); }
+  if (workspace) {
+    addingCell = true;
+    const buttons = document.querySelectorAll<HTMLButtonElement>('[data-quick-add], [data-action="add"]');
+    buttons.forEach(button => { button.disabled = true; });
+    $('#cell-save').textContent = '새 셀 생성 중…';
+    try {
+      cell = await workspace.add(kind, starters[kind]);
+      cells = workspace.cells;
+    } finally {
+      addingCell = false;
+      buttons.forEach(button => { button.disabled = false; });
+      if (!workspace.pending) { $('#cell-save').textContent = connected ? '모든 변경 저장됨' : '로컬 변경 유지'; }
+    }
+  } else {
+    cell = { id: `${Date.now()}-${crypto.randomUUID()}`, kind, path: '', text: starters[kind], title: cellTitle(kind, starters[kind]) };
+    cells.push(cell);
+    persistScratch();
+  }
   log(`${cellTypes[kind].label} 셀을 만들었습니다.`); selectCell(cell.id);
 }
 function search(): void {
@@ -300,7 +753,15 @@ async function deleteCell(): Promise<void> {
   $('#cancel-delete').addEventListener('click', () => modal.close());
   $('#confirm-delete').addEventListener('click', event => { (event.currentTarget as HTMLButtonElement).disabled = true; void (async () => {
     if (workspace) { deletingCellId = cell.id; try { await workspace.delete(cell.id); cells = workspace.cells; } finally { deletingCellId = undefined; } } else { cells = cells.filter(item => item.id !== cell.id); persistScratch(); }
-    if (editor?.getModel() === models.get(cell.id)) { editor?.setModel(null); } models.get(cell.id)?.dispose(); models.delete(cell.id); overview(); modal.close(); log('셀을 삭제했습니다.');
+    const ed = cellEditors.get(cell.id);
+    if (ed) { ed.setModel(null); ed.dispose(); cellEditors.delete(cell.id); }
+    previewCells.delete(cell.id);
+    cellOutputs.delete(cell.id);
+    models.get(cell.id)?.dispose(); models.delete(cell.id);
+    if (selected === cell.id) { selected = cells[0]?.id; }
+    renderList(); renderInspector();
+    if (viewMode === 'notebook') { renderNotebook(); }
+    modal.close(); log('셀을 삭제했습니다.');
   })().catch(error => { report(error); (event.target as HTMLButtonElement).disabled = false; }); });
 }
 function exportCell(): void {
@@ -320,8 +781,9 @@ function message(): void {
 }
 function help(): void { showModal('연결된 연구를 시작하세요', '<div class="help-grid"><p><b>Workspace</b>는 공동 연구 공간입니다. 같은 Agora 캔버스를 열면 같은 셀을 편집하고 변경을 실시간으로 공유합니다.</p><p><b>에이전트 대화</b>는 질문과 응답을 기록합니다.<br><b>Lean 4 / Rocq</b>는 형식 증명 소스를 다룹니다.<br><b>Python</b>은 실험 코드를 작성합니다.<br><b>Markdown / HTML</b>은 문서와 미리보기를 제공합니다.</p><p>현재 셀 편집과 동기화를 지원합니다. AI 응답과 코드·증명 실행 커널은 아직 연결되지 않았습니다. 기존 workspace 데이터는 보존됩니다.</p><p><kbd>Ctrl K</kbd> 검색 · <kbd>Alt N</kbd> 새 셀<br><kbd>Ctrl S</kbd> 저장 · <kbd>Ctrl Shift F</kbd> 집중 모드</p></div>'); }
 function settings(): void {
-  showModal('연구 환경 설정', `<p class="modal-copy">설정은 이 브라우저에 적용됩니다.</p><label class="settings-row">편집기 글자 크기<select id="font-size">${[12,14,16,18,20].map(size => `<option value="${size}" ${Number(localStorage.getItem('irade.fontSize') || 14) === size ? 'selected' : ''}>${size}px</option>`).join('')}</select></label><label class="settings-row">편집기 줄 번호<select id="line-numbers"><option value="on">표시</option><option value="off">숨기기</option></select></label><div class="form-actions"><button class="button ghost" data-action="help">사용 안내</button><button class="button primary" id="save-settings">적용</button></div>`);
-  $('#save-settings').addEventListener('click', () => { const size = Number($<HTMLSelectElement>('#font-size').value); const lines = $<HTMLSelectElement>('#line-numbers').value as 'on' | 'off'; localStorage.setItem('irade.fontSize', String(size)); editor?.updateOptions({ fontSize: size, lineNumbers: lines }); modal.close(); notify('편집기 설정을 적용했습니다.'); });
+  const savedLines = localStorage.getItem('irade.lineNumbers') === 'off' ? 'off' : 'on';
+  showModal('연구 환경 설정', `<p class="modal-copy">설정은 이 브라우저에 적용됩니다.</p><label class="settings-row">편집기 글자 크기<select id="font-size">${[12,14,16,18,20].map(size => `<option value="${size}" ${Number(localStorage.getItem('irade.fontSize') || 14) === size ? 'selected' : ''}>${size}px</option>`).join('')}</select></label><label class="settings-row">편집기 줄 번호<select id="line-numbers"><option value="on" ${savedLines === 'on' ? 'selected' : ''}>표시</option><option value="off" ${savedLines === 'off' ? 'selected' : ''}>숨기기</option></select></label><div class="form-actions"><button class="button ghost" data-action="help">사용 안내</button><button class="button primary" id="save-settings">적용</button></div>`);
+  $('#save-settings').addEventListener('click', () => { const size = Number($<HTMLSelectElement>('#font-size').value); const lines = $<HTMLSelectElement>('#line-numbers').value as 'on' | 'off'; localStorage.setItem('irade.fontSize', String(size)); localStorage.setItem('irade.lineNumbers', lines); for (const ed of cellEditors.values()) { ed.updateOptions({ fontSize: size, lineNumbers: lines }); } modal.close(); notify('편집기 설정을 적용했습니다.'); });
 }
 async function share(): Promise<void> {
   if (!workspace) { notify('공유하려면 Agora workspace를 먼저 연결하세요.'); return; }
@@ -344,12 +806,19 @@ async function action(name: string): Promise<void> {
       const url = new URL(location.href); url.searchParams.delete('workspace'); history.replaceState(null,'',url); overview(); $('#workspace-subtitle').textContent = 'workspace를 연결하세요'; $('#status').textContent = '로그아웃됨'; $('#connection-label').textContent = '연결 대기'; $('#permission-label').textContent = ''; notify('로그아웃했습니다.');
   }
   else if (name === 'demo') { modal.close(); await startDemo(); }
+  else if (name === 'run-all') { await runAllCells(); }
   else if (name === 'add') { await addCell(); }
   else if (name === 'overview') { overview(); }
+  else if (name === 'notebook') { openNotebook(); }
+  else if (name === 'close-overview') {
+    overviewOpen = false;
+    if (workspace || demo) { openNotebook(); }
+    else { $('#overview').hidden = true; $('#cell-view').hidden = false; renderNotebook(); renderList(); }
+  }
   else if (name === 'search') { search(); }
   else if (name === 'focus') { document.body.classList.toggle('focus'); }
+  else if (name === 'theme') { applyTheme(currentTheme() === 'light' ? 'dark' : 'light'); }
   else if (name === 'inspector') { document.body.classList.toggle('inspector-hidden'); }
-  else if (name === 'preview') { preview = !preview; updateCellHeading(); renderPreview(); }
   else if (name === 'delete') { await deleteCell(); }
   else if (name === 'export') { exportCell(); }
   else if (name === 'message') { message(); }
@@ -359,11 +828,22 @@ async function action(name: string): Promise<void> {
   else if (name === 'context' || name === 'activity') { inspectorTab = name; renderInspector(); }
   else if (name === 'workspace' || name.startsWith('filter-')) {
     filter = name === 'workspace' ? 'all' : name.slice(7);
-    document.querySelectorAll('.rail-button').forEach(button => button.classList.toggle('active', button.getAttribute('data-action') === name)); renderList();
+    document.querySelectorAll('.rail-button').forEach(button => button.classList.toggle('active', button.getAttribute('data-action') === name));
+    renderList();
+    if (viewMode === 'notebook') { renderNotebook(); }
     if (window.innerWidth <= 760) { search(); }
   }
 }
-document.addEventListener('click', event => { const button = (event.target as Element).closest<HTMLButtonElement>('button[data-action]'); if (button) { void action(button.dataset.action!).catch(report); } });
+document.addEventListener('click', event => {
+  const target = event.target as Element;
+  const quickAdd = target.closest<HTMLButtonElement>('button[data-quick-add]');
+  if (quickAdd) { void addCell(quickAdd.dataset.quickAdd as CellKind).catch(report); return; }
+  const actionEl = target.closest<HTMLElement>('[data-action]');
+  if (actionEl) {
+    if (actionEl.dataset.action === 'close-overview') { event.stopPropagation(); }
+    void action(actionEl.dataset.action!).catch(report);
+  }
+});
 document.addEventListener('keydown', event => {
   if (modal.open) { return; }
   const mod = event.ctrlKey || event.metaKey;
