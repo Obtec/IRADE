@@ -2,6 +2,17 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+import {
+	itemPermissionGroups,
+	type CanvasCommitMessage,
+	type CanvasIdentity,
+	type CanvasItem,
+	type CanvasSnapshotMessage,
+	type CanvasWatermarkMessage,
+	type PeerProfile,
+	type RemoteEditorPresence,
+} from './canvasSync.ts';
+
 export interface Connection { origin: string; canvasId: number; audience?: 'irade' }
 export interface FileRecord {
 	path: string; type: 'file' | 'directory'; size: number; mtime: number; ctime: number;
@@ -38,8 +49,22 @@ interface RuntimePending {
 	reject: (error: Error) => void;
 	onOutput?: (chunk: string) => void;
 }
-const transient = new Set(['BROKER_BUSY', 'BROKER_BACKEND_UNAVAILABLE', 'BROKER_QUEUE_FULL', 'RATE_LIMITED',
-	'QUERY_OUTCOME_UNKNOWN', 'QUERY_UNAVAILABLE', 'STORAGE_UNAVAILABLE', 'CANVAS_NOT_READY', 'RUNTIME_MANAGER_UNAVAILABLE', 'RUNTIME_VM_UNAVAILABLE', 'WORKSPACE_UNAVAILABLE']);
+interface ConnectWaiter {
+	resolve: () => void;
+	reject: (error: Error) => void;
+}
+export interface InitItemsMeta {
+	revision: number;
+	acceptedCount: number;
+	identity: CanvasIdentity;
+	canvasName?: string;
+}
+
+const transient = new Set([
+	'BROKER_BUSY', 'BROKER_BACKEND_UNAVAILABLE', 'BROKER_QUEUE_FULL', 'RATE_LIMITED',
+	'QUERY_OUTCOME_UNKNOWN', 'QUERY_UNAVAILABLE', 'STORAGE_UNAVAILABLE', 'CANVAS_NOT_READY',
+	'RUNTIME_MANAGER_UNAVAILABLE', 'RUNTIME_VM_UNAVAILABLE', 'WORKSPACE_UNAVAILABLE',
+]);
 
 export class AgoraError extends Error {
 	constructor(public readonly code: string) { super(code); }
@@ -55,9 +80,41 @@ export function connection(value: Connection): Connection {
 	return { origin: origin.origin, canvasId: value.canvasId, ...(value.audience ? { audience: value.audience } : {}) };
 }
 
-/** Uses the existing authenticated canvas channel. Exact request IDs survive retries. */
+function stringList(value: unknown): string[] {
+	return Array.isArray(value)
+		? value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+		: [];
+}
+
+function parseGroupBits(value: unknown): Record<string, number> | undefined {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) { return undefined; }
+	const bits: Record<string, number> = {};
+	for (const [key, bit] of Object.entries(value)) {
+		if (typeof bit === 'number' && Number.isInteger(bit) && bit >= 0 && bit < 64) {
+			bits[key] = bit;
+		}
+	}
+	return Object.keys(bits).length ? bits : undefined;
+}
+
+function parseIdentity(message: Record<string, unknown>, previous?: CanvasIdentity): CanvasIdentity {
+	const isAdmin = message.is_admin !== undefined ? message.is_admin === true : Boolean(previous?.isAdmin);
+	const groups = message.groups !== undefined ? stringList(message.groups) : (previous?.groups || []);
+	const memberGroups = message.member_groups !== undefined
+		? stringList(message.member_groups)
+		: (previous?.memberGroups.length ? previous.memberGroups : groups);
+	const writeGroups = message.write_groups !== undefined ? stringList(message.write_groups) : (previous?.writeGroups || []);
+	const executeGroups = message.execute_groups !== undefined ? stringList(message.execute_groups) : (previous?.executeGroups || []);
+	const groupBits = message.group_bits !== undefined ? parseGroupBits(message.group_bits) : previous?.groupBits;
+	const userId = message.sync_user_id != null ? String(message.sync_user_id) : previous?.userId;
+	return { userId, groups, memberGroups, writeGroups, executeGroups, isAdmin, ...(groupBits ? { groupBits } : {}) };
+}
+
+/** Uses the authenticated Agora Wall Canvas & RTC channels. Exact request IDs survive retries. */
 export class AgoraClient {
 	private socket?: SocketTransport;
+	private rtcSocket?: SocketTransport;
+	private rtcReady = false;
 	private ready = false;
 	private stopped = false;
 	private connecting = false;
@@ -65,21 +122,79 @@ export class AgoraClient {
 	private delay = 500;
 	private pending = new Map<string, Pending>();
 	private runtimePending = new Map<string, RuntimePending>();
+	private connectWaiters: ConnectWaiter[] = [];
 	private recentRequestIds = new Set<string>();
 	private timer: ReturnType<typeof setInterval>;
 	private clientId = crypto.randomUUID();
 	private passwordGrant?: string;
+	private selfPeerId = '';
+	private peerMap = new Map<string, PeerProfile>();
+	private remoteEditorMap = new Map<string, RemoteEditorPresence>();
+	private wsPort?: string;
+	private accessToken?: string;
+	private rtcConnectionId?: string;
+	private rtcConnectionHash?: string;
+
 	canWrite = false;
 	canExecute = false;
+	canvasName = '';
+	identity: CanvasIdentity = { groups: [], memberGroups: [], writeGroups: [], executeGroups: [], isAdmin: false };
 	get passwordToken(): string | undefined { return this.passwordGrant; }
+	get socketClientId(): string { return this.clientId; }
+	get peers(): PeerProfile[] { return [...this.peerMap.values()]; }
+	get remoteEditors(): RemoteEditorPresence[] { return [...this.remoteEditorMap.values()]; }
+
 	onChange: (change: FileChange) => void = () => {};
 	onState: (state: string) => void = () => {};
+	onInitItems: (items: Record<string, CanvasItem>, meta: InitItemsMeta) => void = () => {};
+	onCanvasMessage: (message: CanvasCommitMessage | CanvasSnapshotMessage | CanvasWatermarkMessage) => void = () => {};
+	onCanvasError: (requestId: string | undefined, code: string) => void = () => {};
+	onIdentityChange: (identity: CanvasIdentity) => void = () => {};
+	onPresenceChange: (peers: PeerProfile[], editors: RemoteEditorPresence[]) => void = () => {};
 
-	constructor(readonly config: Connection, private readonly token: () => Promise<string | undefined>,
+	constructor(
+		readonly config: Connection,
+		private readonly token: () => Promise<string | undefined>,
 		private readonly password: () => Promise<string | undefined> = async () => undefined,
-		private readonly transport: Transport = { fetch: (...args) => fetch(...args), socket: url => new WebSocket(url) }) {
+		private readonly transport: Transport = { fetch: (...args) => fetch(...args), socket: url => new WebSocket(url) },
+	) {
 		connection(config);
 		this.timer = setInterval(() => this.tick(), 1000);
+	}
+
+	ensureConnected(): Promise<void> {
+		if (this.stopped) { return Promise.reject(new AgoraError('DISCONNECTED')); }
+		if (this.ready) { return Promise.resolve(); }
+		return new Promise<void>((resolve, reject) => {
+			this.connectWaiters.push({ resolve, reject });
+			this.tick();
+		});
+	}
+
+	sendCanvasFrame(frame: Record<string, unknown>): boolean {
+		if (this.stopped || !this.ready || !this.socket) { return false; }
+		this.socket.send(JSON.stringify(frame));
+		return true;
+	}
+
+	sendEditorPresence(itemId: string, editing: boolean, itemsById?: Record<string, CanvasItem>): boolean {
+		if (this.stopped || !this.rtcReady || !this.rtcSocket || !this.peerMap.size) { return false; }
+		const targetItem = itemsById?.[itemId];
+		const requiredGroups = targetItem ? itemPermissionGroups(targetItem.permission) : [];
+		const peerIds = [...this.peerMap.values()]
+			.filter(peer => {
+				if (!targetItem || peer.is_admin) { return true; }
+				if (!Array.isArray(peer.groups) || !requiredGroups.length) { return true; }
+				return requiredGroups.some(group => peer.groups!.includes(group));
+			})
+			.map(peer => peer.peer_id);
+		if (!peerIds.length) { return false; }
+		this.rtcSocket.send(JSON.stringify({
+			type: 'canvas_relay',
+			peer_ids: peerIds,
+			payload: { type: 'editor_presence', item_id: itemId, editing },
+		}));
+		return true;
 	}
 
 	request<T extends object>(request: FileRequest): Promise<T> {
@@ -88,174 +203,403 @@ export class AgoraClient {
 		const id = crypto.randomUUID();
 		const frame = JSON.stringify({ ...request, type: 'workspace_files', request_id: id });
 		if (new TextEncoder().encode(frame).length > 700000) { return Promise.reject(new AgoraError('FILE_TOO_LARGE')); }
-		this.recentRequestIds.add(id);
-		if (this.recentRequestIds.size > 256) {
-			const oldest = this.recentRequestIds.values().next().value;
-			if (oldest) { this.recentRequestIds.delete(oldest); }
-		}
+		this.recordRecentRequestId(id);
 		return new Promise<T>((resolve, reject) => {
 			this.pending.set(id, { frame, sent: 0, resolve: value => resolve(value as T), reject });
 			this.tick();
 		});
 	}
 
-	executeRuntime(language: 'python' | 'javascript' | 'c' | 'cpp' | 'bash' | 'java', code: string,
-		onOutput?: (chunk: string) => void): Promise<RuntimeResult> {
-		if (this.stopped) { return Promise.reject(new AgoraError('DISCONNECTED')); }
-		if (!this.ready || !this.socket) { return Promise.reject(new AgoraError('RUNTIME_NOT_CONNECTED')); }
-		const id = crypto.randomUUID();
-		const frame = JSON.stringify({
-			type: 'runtime_execute',
-			request_id: id,
-			action: 'execute',
-			object_id: 'irade-workspace',
-			language,
-			code,
-		});
-		if (new TextEncoder().encode(frame).length > 700000) { return Promise.reject(new AgoraError('FILE_TOO_LARGE')); }
+	private spaceChannel(): 'workspace' | 'canvas' {
+		return this.config.audience === 'irade' ? 'workspace' : 'canvas';
+	}
+
+	async executeRuntime(
+		language: 'python' | 'bash',
+		code: string,
+		onOutput?: (chunk: string) => void,
+		objectId?: string,
+	): Promise<RuntimeResult> {
+		if (this.stopped) { throw new AgoraError('DISCONNECTED'); }
+		if (!objectId) { throw new AgoraError('RUNTIME_REQUEST_INVALID'); }
+		if (!this.ready) { await this.ensureConnected(); }
+		if (this.stopped || !this.socket) { throw new AgoraError('RUNTIME_NOT_CONNECTED'); }
+		const requestId = crypto.randomUUID();
 		return new Promise<RuntimeResult>((resolve, reject) => {
 			const timer = setTimeout(() => {
-				this.runtimePending.delete(id);
-				reject(new AgoraError('RUNTIME_TIMEOUT'));
-			}, 200_000);
-			this.runtimePending.set(id, { timer, resolve, reject, onOutput });
-			try {
-				this.socket!.send(frame);
-			} catch (error) {
-				clearTimeout(timer);
-				this.runtimePending.delete(id);
-				reject(error instanceof Error ? error : new AgoraError('DISCONNECTED'));
-			}
+				if (this.runtimePending.delete(requestId)) {
+					reject(new AgoraError('RUNTIME_TIMEOUT'));
+				}
+			}, 90000);
+			this.runtimePending.set(requestId, { timer, resolve, reject, onOutput });
+			this.socket!.send(JSON.stringify({
+				type: 'runtime_execute',
+				request_id: requestId,
+				object_id: objectId,
+				language,
+				code,
+			}));
 		});
+	}
+
+	private recordRecentRequestId(id: string): void {
+		this.recentRequestIds.add(id);
+		if (this.recentRequestIds.size > 256) {
+			const oldest = this.recentRequestIds.values().next().value;
+			if (oldest) { this.recentRequestIds.delete(oldest); }
+		}
 	}
 
 	private tick(): void {
 		if (this.stopped) { return; }
-		if (!this.ready) {
-			if (!this.connecting && Date.now() >= this.retryAt) { void this.connect(); }
-			return;
+		if (!this.socket && !this.connecting && Date.now() >= this.retryAt) {
+			void this.connect();
 		}
-		for (const pending of this.pending.values()) {
-			if (Date.now() - pending.sent > 5000) {
-				try { this.socket!.send(pending.frame); pending.sent = Date.now(); }
-				catch { this.socket?.close(); break; }
+		if (!this.ready || !this.socket) { return; }
+		const now = Date.now();
+		for (const entry of this.pending.values()) {
+			if (!entry.sent || now - entry.sent > 15000) {
+				entry.sent = now;
+				this.socket.send(entry.frame);
 			}
 		}
 	}
 
 	private async connect(): Promise<void> {
 		this.connecting = true;
-		this.onState('Connecting');
+		this.onState(this.delay > 500 ? 'Reconnecting' : 'Connecting');
 		try {
-			const token = await this.token();
-			if (!token) { throw new AgoraError('TOKEN_REQUIRED'); }
-			let body: object = this.passwordGrant ? { canvas_password_token: this.passwordGrant } : {};
-			let response = await this.access(token, body);
-			if (response.status === 403 && !this.passwordGrant) {
-				const password = await this.password();
-				if (password === undefined) { throw new AgoraError('CANVAS_ACCESS_DENIED'); }
-				body = { password };
-				response = await this.access(token, body);
-			}
-			if (!response.ok) { throw new AgoraError(response.status === 401 ? 'TOKEN_EXPIRED' : response.status === 403 ? 'CANVAS_ACCESS_DENIED' : 'ACCESS_UNAVAILABLE'); }
-			const access = await response.json() as { ws_port: string; canvas_access_token: string; canvas_password_token?: string };
-			if (this.stopped) { return; }
-			this.passwordGrant = access.canvas_password_token || this.passwordGrant;
-			const url = new URL(`/wss/port/${encodeURIComponent(access.ws_port)}/canvas/${this.config.canvasId}`, this.config.origin);
+			const jwt = await this.token();
+			if (!jwt) { this.abortPending(new AgoraError('TOKEN_REQUIRED')); return; }
+			const access = await this.fetchAccess(jwt);
+			if (!access || this.stopped) { return; }
+			this.wsPort = String(access.ws_port);
+			this.accessToken = String(access.canvas_access_token);
+			const url = new URL(this.config.origin);
 			url.protocol = 'wss:';
-			url.searchParams.set('token', access.canvas_access_token);
+			url.pathname = `/wss/port/${encodeURIComponent(this.wsPort)}/${this.spaceChannel()}/${this.config.canvasId}`;
+			url.searchParams.set('token', this.accessToken);
 			url.searchParams.set('client_id', this.clientId);
 			const socket = this.transport.socket(url);
 			this.socket = socket;
-			const timeout = setTimeout(() => socket.close(), 40000);
-			socket.onmessage = event => {
-				if (this.socket !== socket) { return; }
-				try {
-					const message = JSON.parse(String(event.data)) as Record<string, unknown>;
-					if (message.type === 'init_items') {
-						clearTimeout(timeout); this.ready = true; this.delay = 500;
-						this.canWrite = message.is_admin === true || (Array.isArray(message.write_groups) && message.write_groups.length > 0);
-						this.canExecute = message.is_admin === true || (Array.isArray(message.execute_groups) && message.execute_groups.length > 0);
-						this.onState('Connected');
-						for (const pending of this.pending.values()) { pending.sent = 0; }
-						this.tick();
-						this.onChange({ operation: 'reconnect', path: '/' });
-					} else if (message.type === 'workspace_files_changed') {
-						const change = message as unknown as FileChange;
-						if (typeof change.request_id === 'string' && this.recentRequestIds.has(change.request_id)) {
-							change.self = true;
-						}
-						this.onChange(change);
-					} else if (message.type === 'canvas_access_changed') {
-						this.canWrite = message.is_admin === true || (Array.isArray(message.write_groups) && message.write_groups.length > 0);
-						this.canExecute = message.is_admin === true || (Array.isArray(message.execute_groups) && message.execute_groups.length > 0);
-						this.onState('Connected');
-						this.onChange({ operation: 'access', path: '/' });
-					} else if (message.type === 'canvas_access_revoked') {
-						this.fail(new AgoraError('CANVAS_ACCESS_REVOKED'));
-					} else if (message.type === 'server_reconnect') { socket.close(); }
-					else if (message.type === 'runtime_output' && typeof message.request_id === 'string') {
-						const rt = this.runtimePending.get(message.request_id);
-						if (rt) { rt.onOutput?.(String(message.output || '')); }
-					} else if ((message.type === 'runtime_result' || message.type === 'error') && typeof message.request_id === 'string' && this.runtimePending.has(message.request_id)) {
-						const rt = this.runtimePending.get(message.request_id)!;
-						clearTimeout(rt.timer);
-						this.runtimePending.delete(message.request_id);
-						if (message.type === 'runtime_result' && message.ok === true && message.result && typeof message.result === 'object') {
-							rt.resolve(message.result as RuntimeResult);
-						} else {
-							rt.reject(new AgoraError(String(message.message || message.code || 'RUNTIME_EXECUTION_FAILED')));
-						}
-					}
-					else if (typeof message.request_id === 'string' && this.pending.has(message.request_id)) {
-						const pending = this.pending.get(message.request_id)!;
-						if (message.ok === true) { this.pending.delete(message.request_id); pending.resolve(message.result as object); }
-						else if (!transient.has(String(message.code))) {
-							this.pending.delete(message.request_id); pending.reject(new AgoraError(String(message.code || 'WORKSPACE_REQUEST_FAILED')));
-						}
-					}
-				} catch { this.fail(new AgoraError('PROTOCOL_INVALID')); }
-			};
-			socket.onerror = () => socket.close();
-			socket.onclose = () => {
-				clearTimeout(timeout);
-				if (this.socket === socket) {
-					this.ready = false; this.connecting = false;
-					for (const rt of this.runtimePending.values()) { clearTimeout(rt.timer); rt.reject(new AgoraError('DISCONNECTED')); }
-					this.runtimePending.clear();
-					this.retryAt = Date.now() + this.delay; this.delay = Math.min(10000, this.delay * 2);
-					if (!this.stopped) { this.onState('Reconnecting'); }
-				}
-			};
+			this.installSocketHandlers(socket);
 		} catch (error) {
+			const code = error instanceof AgoraError ? error.code : 'CONNECTION_FAILED';
+			this.onState(code);
+			this.scheduleRetry();
+		} finally {
 			this.connecting = false;
-			this.retryAt = Date.now() + this.delay; this.delay = Math.min(10000, this.delay * 2);
-			if (error instanceof AgoraError && ['TOKEN_REQUIRED', 'TOKEN_EXPIRED', 'CANVAS_ACCESS_DENIED'].includes(error.code)) { this.fail(error); }
-			else { this.onState('Reconnecting'); }
 		}
 	}
 
-	private access(token: string, body: object): Promise<Response> {
-		return this.transport.fetch(`${this.config.origin}/api/${this.config.audience === 'irade' ? 'irade/workspaces' : 'canvases'}/${this.config.canvasId}/access`, {
-			method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-			body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(15000),
-		});
+	private async fetchAccess(jwt: string): Promise<Record<string, unknown> | undefined> {
+		const endpoint = this.config.audience === 'irade'
+			? `/api/irade/workspaces/${this.config.canvasId}/access`
+			: `/api/canvases/${this.config.canvasId}/access`;
+		let body: Record<string, string> | undefined = this.passwordGrant ? { password_token: this.passwordGrant } : undefined;
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const response = await this.transport.fetch(`${this.config.origin}${endpoint}`, {
+				method: 'POST',
+				headers: { Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' },
+				...(body ? { body: JSON.stringify(body) } : {}),
+			});
+			const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+			if (response.ok) {
+				if (typeof payload.password_token === 'string') { this.passwordGrant = payload.password_token; }
+				return payload;
+			}
+			const code = String(payload.code || payload.error || '');
+			if (code === 'CANVAS_004' || code === 'CANVAS_005') {
+				this.passwordGrant = undefined;
+				const secret = await this.password();
+				if (secret === undefined) {
+					this.abortPending(new AgoraError('CANVAS_ACCESS_DENIED'));
+					return undefined;
+				}
+				body = { password: secret };
+				continue;
+			}
+			if (response.status === 401 || response.status === 403) {
+				this.abortPending(new AgoraError(code || 'CANVAS_ACCESS_DENIED'));
+				return undefined;
+			}
+			throw new AgoraError(code || 'CONNECTION_FAILED');
+		}
+		this.abortPending(new AgoraError('CANVAS_ACCESS_DENIED'));
+		return undefined;
 	}
 
-	private fail(error: Error): void {
-		this.onState(error.message);
-		for (const pending of this.pending.values()) { pending.reject(error); }
+	private installSocketHandlers(socket: SocketTransport): void {
+		socket.onmessage = event => {
+			if (this.socket !== socket || this.stopped) { return; }
+			let message: Record<string, unknown>;
+			try { message = JSON.parse(String(event.data)); } catch { return; }
+			this.handleCanvasMessage(message);
+		};
+		socket.onerror = () => { /* Closed handler triggers reconnect. */ };
+		socket.onclose = () => {
+			if (this.socket !== socket) { return; }
+			this.closeRtc();
+			this.socket = undefined;
+			this.ready = false;
+			for (const entry of this.pending.values()) { entry.sent = 0; }
+			if (!this.stopped) { this.scheduleRetry(); }
+		};
+	}
+
+	private handleCanvasMessage(message: Record<string, unknown>): void {
+		const type = message.type;
+		if (type === 'init_items') {
+			this.ready = true;
+			this.delay = 500;
+			this.applyIdentity(parseIdentity(message));
+			if (typeof message.canvas_name === 'string') { this.canvasName = message.canvas_name; }
+			this.rtcConnectionId = typeof message.rtc_canvas_connection_id === 'string' ? message.rtc_canvas_connection_id : undefined;
+			this.rtcConnectionHash = typeof message.rtc_canvas_connection_hash === 'string' ? message.rtc_canvas_connection_hash : undefined;
+			const items = (message.items && typeof message.items === 'object' ? message.items : {}) as Record<string, CanvasItem>;
+			const revision = typeof message.revision === 'number' ? message.revision : 0;
+			const acceptedCount = typeof message.accepted_count === 'number' ? message.accepted_count : 0;
+			const waiters = this.connectWaiters.splice(0);
+			for (const waiter of waiters) { waiter.resolve(); }
+			this.onInitItems(items, { revision, acceptedCount, identity: this.identity, canvasName: this.canvasName || undefined });
+			this.onState('Connected');
+			this.tick();
+			if (this.rtcConnectionId && this.rtcConnectionHash) {
+				this.connectRtc(this.rtcConnectionId, this.rtcConnectionHash);
+			}
+			return;
+		}
+		if (type === 'canvas_commit' || type === 'canvas_snapshot' || type === 'canvas_watermark') {
+			this.onCanvasMessage(message as unknown as CanvasCommitMessage | CanvasSnapshotMessage | CanvasWatermarkMessage);
+			return;
+		}
+		if (type === 'canvas_access_changed') {
+			this.applyIdentity(parseIdentity(message, this.identity));
+			this.onIdentityChange(this.identity);
+			return;
+		}
+		if (type === 'canvas_access_revoked') {
+			this.abortPending(new AgoraError('CANVAS_ACCESS_REVOKED'));
+			return;
+		}
+		if (type === 'server_reconnect') {
+			this.closeRtc();
+			this.ready = false;
+			this.socket?.close();
+			this.socket = undefined;
+			this.retryAt = Date.now() + (typeof message.retry_after_ms === 'number' ? Math.max(0, message.retry_after_ms) : 0);
+			this.onState('Reconnecting');
+			return;
+		}
+		if (type === 'workspace_files_changed') {
+			const requestId = typeof message.request_id === 'string' ? message.request_id : undefined;
+			this.onChange({
+				path: String(message.path || '/'),
+				operation: String(message.operation || 'write'),
+				...(typeof message.target === 'string' ? { target: message.target } : {}),
+				...(typeof message.created === 'boolean' ? { created: message.created } : {}),
+				...(requestId ? { request_id: requestId, self: this.recentRequestIds.has(requestId) } : {}),
+			});
+			return;
+		}
+		if (type === 'workspace_files_result' && typeof message.request_id === 'string') {
+			const entry = this.pending.get(message.request_id);
+			if (!entry) { return; }
+			if (message.ok === true) {
+				this.pending.delete(message.request_id);
+				entry.resolve((message.result || {}) as object);
+			} else {
+				const code = String(message.code || 'WORKSPACE_ERROR');
+				if (transient.has(code)) {
+					entry.sent = 0;
+				} else {
+					this.pending.delete(message.request_id);
+					entry.reject(new AgoraError(code));
+				}
+			}
+			return;
+		}
+		if (type === 'runtime_output' && typeof message.request_id === 'string') {
+			const entry = this.runtimePending.get(message.request_id);
+			const chunk = typeof message.output === 'string' ? message.output : typeof message.chunk === 'string' ? message.chunk : '';
+			if (entry && chunk) { entry.onOutput?.(chunk); }
+			return;
+		}
+		if (type === 'runtime_result' && typeof message.request_id === 'string') {
+			const entry = this.runtimePending.get(message.request_id);
+			if (!entry) { return; }
+			clearTimeout(entry.timer);
+			this.runtimePending.delete(message.request_id);
+			if (message.ok === true && message.result && typeof message.result === 'object') {
+				entry.resolve(message.result as RuntimeResult);
+			} else {
+				entry.reject(new AgoraError(String(message.code || 'RUNTIME_VM_UNAVAILABLE')));
+			}
+			return;
+		}
+		if (type === 'error') {
+			const requestId = typeof message.request_id === 'string' ? message.request_id : undefined;
+			const code = String(message.code || 'CANVAS_ERROR');
+			if (requestId && this.runtimePending.has(requestId)) {
+				const entry = this.runtimePending.get(requestId)!;
+				clearTimeout(entry.timer);
+				this.runtimePending.delete(requestId);
+				entry.reject(new AgoraError(code));
+				return;
+			}
+			if (requestId && this.pending.has(requestId)) {
+				const entry = this.pending.get(requestId)!;
+				if (transient.has(code)) {
+					entry.sent = 0;
+				} else {
+					this.pending.delete(requestId);
+					entry.reject(new AgoraError(code));
+				}
+				return;
+			}
+			this.onCanvasError(requestId, code);
+		}
+	}
+
+	private applyIdentity(next: CanvasIdentity): void {
+		this.identity = next;
+		this.canWrite = next.isAdmin || next.writeGroups.length > 0;
+		this.canExecute = next.isAdmin || next.executeGroups.length > 0;
+	}
+
+	private connectRtc(connectionId: string, connectionHash: string): void {
+		this.closeRtc();
+		if (!this.wsPort || !this.accessToken) { return; }
+		const url = new URL(this.config.origin);
+		url.protocol = 'wss:';
+		url.pathname = `/wss/port/${encodeURIComponent(this.wsPort)}/rtc/${this.spaceChannel()}/${this.config.canvasId}`;
+		url.searchParams.set('token', this.accessToken);
+		let rtc: SocketTransport;
+		try {
+			rtc = this.transport.socket(url);
+		} catch {
+			return;
+		}
+		this.rtcSocket = rtc;
+		rtc.onmessage = event => {
+			if (this.rtcSocket !== rtc || this.stopped) { return; }
+			let data: Record<string, unknown>;
+			try { data = JSON.parse(String(event.data)); } catch { return; }
+			this.handleRtcMessage(rtc, data, connectionId, connectionHash);
+		};
+		rtc.onerror = () => { /* Ignore non-fatal presence transport drops. */ };
+		rtc.onclose = () => {
+			if (this.rtcSocket === rtc) {
+				this.rtcSocket = undefined;
+				this.rtcReady = false;
+				this.peerMap.clear();
+				this.remoteEditorMap.clear();
+				this.onPresenceChange([], []);
+			}
+		};
+	}
+
+	private handleRtcMessage(
+		rtc: SocketTransport,
+		data: Record<string, unknown>,
+		connectionId: string,
+		connectionHash: string,
+	): void {
+		if (data.type === 'rtc_ready') {
+			this.rtcReady = true;
+			rtc.send(JSON.stringify({
+				type: 'rtc_join',
+				canvas_protocol: 2,
+				canvas_transport: 'broker-v1',
+				request_id: crypto.randomUUID(),
+				canvas_connection_id: connectionId,
+				canvas_connection_hash: connectionHash,
+			}));
+			return;
+		}
+		if (data.type === 'rtc_peers') {
+			this.selfPeerId = typeof data.self_peer_id === 'string' ? data.self_peer_id : '';
+			this.peerMap.clear();
+			this.remoteEditorMap.clear();
+			for (const peer of Array.isArray(data.peers) ? data.peers as PeerProfile[] : []) {
+				if (peer?.peer_id && peer.peer_id !== this.selfPeerId) {
+					this.peerMap.set(peer.peer_id, peer);
+				}
+			}
+			this.onPresenceChange(this.peers, this.remoteEditors);
+			return;
+		}
+		if (data.type === 'rtc_peer_joined' && data.peer && typeof data.peer === 'object') {
+			const peer = data.peer as PeerProfile;
+			if (peer.peer_id && peer.peer_id !== this.selfPeerId) {
+				this.peerMap.set(peer.peer_id, peer);
+				this.onPresenceChange(this.peers, this.remoteEditors);
+			}
+			return;
+		}
+		if (data.type === 'rtc_peer_left' && typeof data.peer_id === 'string') {
+			this.peerMap.delete(data.peer_id);
+			this.remoteEditorMap.delete(data.peer_id);
+			this.onPresenceChange(this.peers, this.remoteEditors);
+			return;
+		}
+		if (data.type === 'canvas_relay') {
+			const rawPeer = data.peer as PeerProfile | undefined;
+			const peer = rawPeer?.peer_id ? (this.peerMap.get(rawPeer.peer_id) || rawPeer) : undefined;
+			const payload = data.payload as Record<string, unknown> | undefined;
+			if (!peer?.peer_id || peer.peer_id === this.selfPeerId || !payload) { return; }
+			if (payload.type === 'editor_presence' && typeof payload.item_id === 'string' && typeof payload.editing === 'boolean') {
+				if (payload.editing) {
+					this.remoteEditorMap.set(peer.peer_id, { peer, itemId: payload.item_id, editing: true, updatedAt: Date.now() });
+				} else {
+					const existing = this.remoteEditorMap.get(peer.peer_id);
+					if (!existing || existing.itemId === payload.item_id) {
+						this.remoteEditorMap.delete(peer.peer_id);
+					}
+				}
+				this.onPresenceChange(this.peers, this.remoteEditors);
+			}
+		}
+	}
+
+	private closeRtc(): void {
+		this.rtcReady = false;
+		const rtc = this.rtcSocket;
+		this.rtcSocket = undefined;
+		rtc?.close();
+		if (this.peerMap.size || this.remoteEditorMap.size) {
+			this.peerMap.clear();
+			this.remoteEditorMap.clear();
+			this.onPresenceChange([], []);
+		}
+	}
+
+	private scheduleRetry(): void {
+		if (this.stopped) { return; }
+		this.retryAt = Date.now() + this.delay;
+		this.delay = Math.min(this.delay * 2, 15000);
+	}
+
+	private abortPending(error: Error): void {
+		this.stopped = true;
+		clearInterval(this.timer);
+		this.closeRtc();
+		this.ready = false;
+		const socket = this.socket;
+		this.socket = undefined;
+		socket?.close();
+		for (const waiter of this.connectWaiters.splice(0)) { waiter.reject(error); }
+		for (const entry of this.pending.values()) { entry.reject(error); }
 		this.pending.clear();
-		for (const rt of this.runtimePending.values()) { clearTimeout(rt.timer); rt.reject(error); }
+		for (const entry of this.runtimePending.values()) {
+			clearTimeout(entry.timer);
+			entry.reject(error);
+		}
 		this.runtimePending.clear();
-		this.dispose();
+		this.onState(error instanceof AgoraError ? error.code : 'DISCONNECTED');
 	}
 
 	dispose(): void {
-		this.stopped = true; this.ready = false; clearInterval(this.timer); this.socket?.close();
-		for (const pending of this.pending.values()) { pending.reject(new AgoraError('DISCONNECTED')); }
-		this.pending.clear();
-		for (const rt of this.runtimePending.values()) { clearTimeout(rt.timer); rt.reject(new AgoraError('DISCONNECTED')); }
-		this.runtimePending.clear();
+		this.abortPending(new AgoraError('DISCONNECTED'));
 	}
 }

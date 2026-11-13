@@ -13,8 +13,9 @@ class Socket implements SocketTransport {
 	receive(message: object): void { this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(message) })); }
 }
 
-function fixture() {
+function fixture(audience?: 'irade') {
 	const sockets: Socket[] = [];
+	const socketUrls: URL[] = [];
 	const requests: { url: string; init?: RequestInit }[] = [];
 	const transport: Transport = {
 		fetch: async (url, init) => {
@@ -23,11 +24,12 @@ function fixture() {
 		},
 		socket: url => {
 			assert.equal(url.searchParams.get('token'), 'canvas-token');
+			socketUrls.push(url);
 			const socket = new Socket(); sockets.push(socket); return socket;
 		},
 	};
-	const client = new AgoraClient({ origin: 'https://agora.example', canvasId: 42 }, async () => 'login-token', undefined, transport);
-	return { client, requests, sockets };
+	const client = new AgoraClient({ origin: 'https://agora.example', canvasId: 42, ...(audience ? { audience } : {}) }, async () => 'login-token', undefined, transport);
+	return { client, requests, sockets, socketUrls };
 }
 
 test('uses access-token exchange and correlates out-of-order file responses', async () => {
@@ -81,4 +83,43 @@ test('workspace origins reject credentials, insecure URLs and ambiguous paths', 
 	for (const origin of ['http://agora.example', 'https://user:secret@agora.example', 'https://agora.example/elsewhere', 'https://agora.example/?token=secret']) {
 		assert.throws(() => connection({ origin, canvasId: 1 }));
 	}
+});
+
+test('routes canvas vs irade audience to distinct access, socket, and RTC paths and requires runtime objectId', async () => {
+	const irade = fixture('irade');
+	try {
+		const req = irade.client.request({ operation: 'read', path: '/a' });
+		await delay(0);
+		assert.equal(irade.requests[0].url, 'https://agora.example/api/irade/workspaces/42/access');
+		assert.equal(irade.socketUrls[0].pathname, '/wss/port/8002/workspace/42');
+		irade.sockets[0].receive({
+			type: 'init_items',
+			execute_groups: ['writers'],
+			rtc_canvas_connection_id: 'conn-1',
+			rtc_canvas_connection_hash: 'hash-1',
+		});
+		const sent = irade.sockets[0].sent[0];
+		irade.sockets[0].receive({ type: 'workspace_files_result', request_id: sent.request_id, ok: true, result: { ok: true } });
+		assert.deepEqual(await req, { ok: true });
+		assert.equal(irade.socketUrls.length, 2);
+		assert.equal(irade.socketUrls[1].pathname, '/wss/port/8002/rtc/workspace/42');
+		await assert.rejects(irade.client.executeRuntime('python', 'print(1)'), /RUNTIME_REQUEST_INVALID/);
+	} finally { irade.client.dispose(); }
+
+	const canvas = fixture();
+	try {
+		const req = canvas.client.request({ operation: 'read', path: '/a' });
+		await delay(0);
+		assert.equal(canvas.requests[0].url, 'https://agora.example/api/canvases/42/access');
+		assert.equal(canvas.socketUrls[0].pathname, '/wss/port/8002/canvas/42');
+		canvas.sockets[0].receive({
+			type: 'init_items',
+			rtc_canvas_connection_id: 'conn-2',
+			rtc_canvas_connection_hash: 'hash-2',
+		});
+		const sent = canvas.sockets[0].sent[0];
+		canvas.sockets[0].receive({ type: 'workspace_files_result', request_id: sent.request_id, ok: true, result: { ok: true } });
+		await req;
+		assert.equal(canvas.socketUrls[1].pathname, '/wss/port/8002/rtc/canvas/42');
+	} finally { canvas.client.dispose(); }
 });

@@ -27,6 +27,7 @@ let deletingCellId: string | undefined;
 let editingRemote = false;
 let inspectorTab = 'context';
 let loadGeneration = 0;
+let activePresenceCellId: string | undefined;
 let toastTimer: ReturnType<typeof setTimeout>;
 interface ExecutionOutput {
   running?: boolean;
@@ -111,11 +112,16 @@ const errorLabels: Record<string, string> = {
   TOKEN_REQUIRED: 'ORCID로 IRADE에 로그인하세요.',
   CANVAS_ACCESS_REVOKED: 'Workspace 접근 권한이 회수되었습니다.',
   WORKSPACE_ACCESS_DENIED: '이 workspace를 변경할 권한이 없습니다.',
-  ITEM_WRITE_DENIED: '셀 편집 권한이 없습니다.',
+  ITEM_WRITE_DENIED: '이 셀에 대한 쓰기 권한이 없습니다.',
+  ITEM_PERMISSION_DENIED: '셀 접근 그룹 변경은 Workspace 관리자만 가능하며, 참여 중인 그룹에만 부여할 수 있습니다.',
+  ITEM_PERMISSION_INVALID: '최소 1개 이상의 접근 그룹을 선택해야 합니다.',
+  ITEM_LOCKED: '이 셀은 잠겨 있습니다. 잠금을 해제한 뒤 편집하세요.',
+  ITEM_ID_INVALID: '유효하지 않은 Canvas 객체 ID입니다.',
+  CANVAS_READ_DENIED: '이 workspace 또는 셀을 읽을 권한이 없습니다.',
   CANVAS_ACCESS_DENIED: 'Workspace 접근 권한이나 비밀번호를 확인하세요.',
   FILE_TOO_LARGE: '셀 저장 한도(128 KiB)를 넘었습니다. 내용을 나누어 주세요.',
   FILE_REPLACED: '셀이 외부에서 교체되었습니다. 현재 내용을 내보내 보관한 후 다시 여세요.',
-  RUNTIME_EXECUTION_DENIED: '이 workspace에서 코드/증명을 실행할 권한이 없습니다.',
+  RUNTIME_EXECUTION_DENIED: '이 셀의 그룹에는 코드/증명을 실행할 권한이 없습니다.',
   RUNTIME_NOT_CONNECTED: 'Agora Wall 브로커에 연결되지 않았습니다. 연결 상태를 확인하세요.',
   RUNTIME_TIMEOUT: 'Agora VM 실행 시간이 초과되었습니다.',
   RUNTIME_VM_UNAVAILABLE: 'Agora VM 런타임 서버에 연결할 수 없습니다.',
@@ -158,7 +164,7 @@ async function signIn(): Promise<boolean> {
 async function ask(title: string, label: string, password = false): Promise<string | undefined> {
   return new Promise(resolve => {
     const headerNote = password
-      ? `<div class="ask-security-banner"><span class="ask-lock-icon">🔒</span><div><strong>비공개 연구 공간</strong><small>접근 권한 확인을 위해 캔버스 비밀번호를 입력하세요.</small></div></div>`
+      ? `<div class="ask-security-banner"><span class="ask-lock-icon">🔒</span><div><strong>비공개 연구 공간</strong><small>접근 권한 확인을 위해 workspace 비밀번호를 입력하세요.</small></div></div>`
       : '';
     const inputControl = password
       ? `<div class="password-field"><input name="value" type="password" required autocomplete="current-password" placeholder="비밀번호 입력…"><button type="button" class="password-toggle" id="toggle-password" aria-label="비밀번호 표시">표시</button></div>`
@@ -194,7 +200,7 @@ async function openWorkspace(): Promise<void> {
   let available: Canvas[] = [];
   const convert = (row: { workspaceId: number; name: string; description?: string }): Canvas => ({ canvas_id: row.workspaceId, canvas_name: row.name, description: row.description });
   available = (await api<{ workspaceId: number; name: string; description?: string }[]>('/api/irade/workspaces')).map(convert);
-  showModal('Workspace 선택', '<p class="modal-copy">Agora 캔버스 하나가 하나의 공유 연구 workspace에 연결됩니다.</p><input class="search-input" id="workspace-search" type="search" aria-label="Workspace 검색" placeholder="Workspace 이름 검색…"><div class="choice-list" id="workspace-choices"></div><div class="form-actions"><button class="button ghost" id="join-workspace">초대 링크 / ID로 열기</button><button class="button primary" id="create-workspace">새 workspace ＋</button></div>');
+  showModal('Workspace 선택', '<p class="modal-copy">공유 연구 workspace를 선택하거나 새로 만들면 모든 셀과 공동 작업을 실시간으로 동기화합니다.</p><input class="search-input" id="workspace-search" type="search" aria-label="Workspace 검색" placeholder="Workspace 이름 검색…"><div class="choice-list" id="workspace-choices"></div><div class="form-actions"><button class="button ghost" id="join-workspace">초대 링크 / ID로 열기</button><button class="button primary" id="create-workspace">새 workspace ＋</button></div>');
   const render = (): void => {
     const query = $<HTMLInputElement>('#workspace-search').value.toLowerCase();
     $('#workspace-choices').innerHTML = available.filter(canvas => `${canvas.canvas_name} ${canvas.canvas_id}`.toLowerCase().includes(query)).map(canvas => `<button class="choice" data-canvas="${canvas.canvas_id}"><span class="workspace-avatar">${escape(canvas.canvas_name.charAt(0).toUpperCase())}</span><span><strong>${escape(canvas.canvas_name)}</strong><small>${escape(canvas.description || '공유 연구 workspace')} · #${canvas.canvas_id}</small></span><span class="choice-arrow">↗</span></button>`).join('') || '<p class="empty-search">아직 workspace가 없습니다. 새 연구 공간을 만들어 보세요.</p>';
@@ -227,19 +233,86 @@ async function openWorkspace(): Promise<void> {
   })().catch(report); });
 }
 function clearModels(): void {
+  activePresenceCellId = undefined;
   for (const ed of cellEditors.values()) { ed.setModel(null); ed.dispose(); }
   cellEditors.clear();
   previewCells.clear();
   cellOutputs.clear();
   for (const model of models.values()) { model.dispose(); }
   models.clear();
+  const peersEl = document.querySelector<HTMLElement>('#notebook-peers');
+  if (peersEl) { peersEl.hidden = true; peersEl.textContent = ''; }
+}
+function shortItemId(id: string): string {
+  return id.length > 16 ? `${id.slice(0, 14)}…` : id;
+}
+function permissionSummary(cell: Cell): string {
+  if (!cell.permission.length) { return '기본 그룹'; }
+  return cell.permission.length === 1 ? cell.permission[0] : `${cell.permission[0]} +${cell.permission.length - 1}`;
+}
+function updatePermissionSummary(): void {
+  if (!workspace || !connected) {
+    $('#permission-label').textContent = demo ? '로컬 편집' : '';
+    return;
+  }
+  const { isAdmin, groups, writeGroups, executeGroups } = workspace.identity;
+  if (isAdmin) {
+    $('#permission-label').textContent = `Admin · 전체 권한 (${groups.length || 1}그룹)`;
+    return;
+  }
+  const caps = [
+    groups.length ? '읽기' : '',
+    writeGroups.length ? '쓰기' : '',
+    executeGroups.length ? '실행' : '',
+  ].filter(Boolean).join('/') || '읽기 전용';
+  const groupText = groups.length ? groups.join(', ') : '권한 없음';
+  $('#permission-label').textContent = `${groupText} · ${caps}`;
+}
+function setPresenceFocus(nextId: string | undefined): void {
+  if (activePresenceCellId && activePresenceCellId !== nextId) {
+    workspace?.sendCellPresence(activePresenceCellId, false);
+  }
+  activePresenceCellId = nextId;
+  if (nextId) {
+    workspace?.sendCellPresence(nextId, true);
+  }
+}
+function syncPresenceUI(): void {
+  const peersEl = document.querySelector<HTMLElement>('#notebook-peers');
+  if (peersEl) {
+    if (!workspace || !connected) {
+      peersEl.hidden = true;
+    } else {
+      const peers = workspace.peers;
+      peersEl.hidden = !peers.length;
+      if (peers.length) {
+        const names = peers.slice(0, 2).map(peer => peer.nickname || `Peer ${peer.peer_id.slice(0, 4)}`).join(', ');
+        peersEl.textContent = `👥 ${peers.length}명${names ? ` · ${names}` : ''}`;
+      }
+    }
+  }
+  const byCell = new Map<string, string[]>();
+  for (const entry of workspace?.remoteEditors || []) {
+    if (!entry.editing) { continue; }
+    const label = entry.peer.nickname || `참여자 ${entry.peer.peer_id.slice(0, 4)}`;
+    const list = byCell.get(entry.itemId) || [];
+    if (!list.includes(label)) { list.push(label); }
+    byCell.set(entry.itemId, list);
+  }
+  document.querySelectorAll<HTMLElement>('[data-nb-presence]').forEach(container => {
+    const cellId = container.dataset.nbPresence!;
+    const editors = byCell.get(cellId) || [];
+    container.innerHTML = editors.slice(0, 2).map(name => `<span class="nb-presence-chip"><span class="nb-presence-dot"></span>${escape(name)} 편집 중</span>`).join('');
+  });
+  if (inspectorTab === 'context') { renderInspector(); }
 }
 async function connect(id: number, name: string): Promise<void> {
   if (!Number.isSafeInteger(id) || id <= 0) { throw new Error('올바른 workspace ID를 입력하세요.'); }
   if (workspace?.pending) { await workspace.flush(); }
   const generation = ++loadGeneration;
+  setPresenceFocus(undefined);
   workspace?.dispose(); clearModels(); demo = false; connected = false; selected = undefined; cells = []; workspaceName = name;
-  const client = new AgoraClient({ origin, canvasId: id, audience: 'irade' }, async () => token || (await signIn() ? token : undefined), async () => ask('비공개 workspace', '캔버스 비밀번호', true));
+  const client = new AgoraClient({ origin, canvasId: id, audience: 'irade' }, async () => token || (await signIn() ? token : undefined), async () => ask('비공개 workspace', 'Workspace 비밀번호', true));
   const current = new ResearchWorkspace(client); workspace = current;
   current.onError = error => { if (generation === loadGeneration) { report(error); } };
   current.onState = state => {
@@ -247,12 +320,25 @@ async function connect(id: number, name: string): Promise<void> {
     connected = state === 'Connected' || state === 'Saving';
     const translated: Record<string, string> = { Connected: '실시간 연결됨', Saving: '변경 사항 저장 중…', Connecting: 'workspace 연결 중…', Reconnecting: '재연결 중 · 편집 내용 유지' };
     $('#status').textContent = translated[state] || state;
-    $('#connection-label').textContent = state === 'Saving' ? '동기화 중' : connected ? 'LIVE SYNC' : '연결 중';
-    $('#cell-save').textContent = state === 'Saving' ? '저장 중…' : connected ? '모든 변경 저장됨' : '로컬 변경 유지';
-    $('#permission-label').textContent = connected ? client.canWrite ? '편집 가능' : '읽기 전용' : '';
-    for (const ed of cellEditors.values()) { ed.updateOptions({ readOnly: !client.canWrite }); }
+    $('#connection-label').textContent = state === 'Saving' ? '동기화 중' : connected ? 'WORKSPACE LIVE SYNC' : '연결 중';
+    $('#cell-save').textContent = state === 'Saving' ? '저장 중…' : connected ? 'Workspace 동기화됨' : '로컬 변경 유지';
+    updatePermissionSummary();
+    for (const [cellId, ed] of cellEditors.entries()) {
+      const item = cells.find(entry => entry.id === cellId);
+      ed.updateOptions({ readOnly: item ? !item.canWrite : !client.canWrite });
+    }
+    syncPresenceUI();
     if (state === 'Connected' && current.pending) { void current.flush().catch(report); }
     if (!['Connected','Saving','Connecting','Reconnecting'].includes(state)) { report(new Error(state)); }
+  };
+  current.onIdentityChange = () => {
+    if (generation !== loadGeneration) { return; }
+    updatePermissionSummary();
+    for (const cell of cells) { updateCellCardMeta(cell.id); }
+    renderInspector();
+  };
+  current.onPresence = () => {
+    if (generation === loadGeneration) { syncPresenceUI(); }
   };
   current.onCells = () => {
     if (generation !== loadGeneration) { return; }
@@ -261,7 +347,7 @@ async function connect(id: number, name: string): Promise<void> {
       const removed = selected; selected = undefined;
       if (models.has(removed) && deletingCellId !== removed) {
         const model = models.get(removed)!; const value = model.getValue();
-        showModal('공유 셀이 삭제되었습니다', '<p class="modal-copy">다른 참여자가 이 셀을 삭제했습니다. 현재 편집기의 내용을 내려받아 보관할 수 있습니다.</p><label class="field">현재 탭의 로컬 복사본<textarea id="recovery-text" readonly></textarea></label><div class="form-actions"><button class="button primary" id="recover-cell">로컬 복사본 내려받기 ↧</button></div>');
+        showModal('공유 셀이 삭제되었거나 접근 권한이 변경되었습니다', '<p class="modal-copy">다른 참여자가 이 셀을 삭제했거나 이 그룹의 접근 권한이 회수되었습니다. 현재 편집기의 내용을 내려받아 보관할 수 있습니다.</p><label class="field">현재 탭의 로컬 복사본<textarea id="recovery-text" readonly></textarea></label><div class="form-actions"><button class="button primary" id="recover-cell">로컬 복사본 내려받기 ↧</button></div>');
         $<HTMLTextAreaElement>('#recovery-text').value = value;
         $('#recover-cell').addEventListener('click', () => download(value, 'recovered-cell.txt'));
       }
@@ -285,7 +371,7 @@ async function connect(id: number, name: string): Promise<void> {
       updateCellCardMeta(cell.id);
       renderList();
       if (previewCells.has(cell.id)) { renderCellPreview(cell.id); }
-      log(`${cellTypes[cell.kind].short} 셀의 공유 변경을 반영했습니다.`);
+      log(`${cellTypes[cell.kind].short} 셀의 Canvas 동기화 변경을 반영했습니다.`);
     }
   };
   const url = new URL(location.href); url.searchParams.delete('folder'); url.searchParams.set('workspace', String(id)); history.replaceState(null, '', url);
@@ -293,9 +379,10 @@ async function connect(id: number, name: string): Promise<void> {
   await current.load();
   if (generation !== loadGeneration) { return; }
   sessionStorage.setItem('irade.research.lastWorkspace', JSON.stringify({ id, name }));
-  $('#workspace-subtitle').textContent = `공유 workspace · #${id}`;
-  $('#workspace-mode').textContent = 'Agora Workspace'; $('#sync-description').textContent = '변경 내용은 같은 workspace에 실시간 공유';
-  log(`${name} workspace를 연결했습니다.`); notify('공유 workspace에 연결했습니다.');
+  $('#workspace-subtitle').textContent = `Agora Canvas · #${id}`;
+  $('#workspace-mode').textContent = 'Agora Canvas'; $('#sync-description').textContent = '각 셀은 Canvas 객체 ID·권한 ACL로 실시간 동기화';
+  updatePermissionSummary();
+  log(`${name} Canvas workspace를 연결했습니다.`); notify('Agora Canvas 실시간 협업에 연결했습니다.');
 }
 function visibleCells(): Cell[] {
   return cells.filter(cell => filter === 'all' || cell.kind === filter || filter === 'proof' && ['lean','rocq'].includes(cell.kind) || filter === 'document' && ['markdown','html'].includes(cell.kind));
@@ -305,7 +392,7 @@ function renderList(): void {
   $('#cell-count').textContent = String(cells.length); $('#status-cell-count').textContent = `${cells.length} cells`;
   $('#cell-list-label').textContent = filter === 'all' ? '연구 셀' : filter === 'agent' ? '에이전트 대화' : filter === 'proof' ? '증명 셀' : filter === 'python' ? '코드 셀' : '문서 셀';
   const visible = visibleCells();
-  $('#cell-list').innerHTML = visible.map(cell => `<button class="cell-list-item ${cell.id === selected ? 'selected' : ''}" data-cell="${escape(cell.id)}"><span class="mini-type ${cellTypes[cell.kind].color}">${cellTypes[cell.kind].icon}</span><span><strong>${escape(cell.title)}</strong><small>${cellTypes[cell.kind].short} · ${String(cells.indexOf(cell) + 1).padStart(2, '0')}</small></span></button>`).join('') || `<p class="empty-list">${workspace || demo ? '아직 셀이 없습니다.<br>새 셀로 연구를 시작하세요.' : '대화, 증명, 코드, 문서.<br>연구의 맥락이 여기에 모입니다.'}</p>`;
+  $('#cell-list').innerHTML = visible.map(cell => `<button class="cell-list-item ${cell.id === selected ? 'selected' : ''}" data-cell="${escape(cell.id)}"><span class="mini-type ${cellTypes[cell.kind].color}">${cellTypes[cell.kind].icon}</span><span><strong>${escape(cell.title)}</strong><small>${cell.locked ? '🔒 ' : ''}${cellTypes[cell.kind].short} · ${String(cells.indexOf(cell) + 1).padStart(2, '0')} · ${escape(permissionSummary(cell))}</small></span></button>`).join('') || `<p class="empty-list">${workspace || demo ? '아직 셀이 없습니다.<br>새 셀로 연구를 시작하세요.' : '대화, 증명, 코드, 문서.<br>연구의 맥락이 여기에 모입니다.'}</p>`;
   const hasWorkspaceTab = Boolean(workspace || demo);
   $('#cell-tabs').innerHTML = hasWorkspaceTab
     ? `<button class="tab ${viewMode === 'notebook' ? 'selected' : ''}" role="tab" aria-selected="${viewMode === 'notebook'}" data-action="notebook"><span class="mint">▤</span><span>${escape(workspaceName)}</span></button>`
@@ -336,8 +423,31 @@ function updateCellCardMeta(id: string): void {
   const cell = cells.find(item => item.id === id);
   const card = document.querySelector<HTMLElement>(`[data-nb-cell="${CSS.escape(id)}"]`);
   if (!cell || !card) { return; }
+  const idx = cells.indexOf(cell);
+  const idxEl = card.querySelector('.nb-cell-index');
+  if (idxEl) { idxEl.textContent = `[${String(idx + 1).padStart(2, '0')}]`; }
   const titleEl = card.querySelector('.nb-cell-title');
   if (titleEl) { titleEl.textContent = cell.title; }
+  const permBtn = card.querySelector<HTMLButtonElement>(`[data-cell-perm="${CSS.escape(id)}"]`);
+  if (permBtn) {
+    permBtn.textContent = `${cell.locked ? '🔒 ' : ''}${permissionSummary(cell)}`;
+    permBtn.classList.toggle('locked', cell.locked);
+  }
+  const ed = cellEditors.get(id);
+  if (ed) {
+    ed.updateOptions({ readOnly: workspace ? !cell.canWrite : cell.locked });
+  }
+  const runBtn = card.querySelector<HTMLButtonElement>(`[data-cell-run="${CSS.escape(id)}"]`);
+  if (runBtn && workspace) {
+    runBtn.disabled = !cell.canExecute;
+    runBtn.title = cell.canExecute ? '실행/검증 (Shift+Enter)' : '이 셀 그룹에 실행 권한이 없습니다.';
+  }
+  const delBtn = card.querySelector<HTMLButtonElement>(`[data-cell-delete="${CSS.escape(id)}"]`);
+  if (delBtn) { delBtn.disabled = workspace ? !cell.canWrite : false; }
+  const upBtn = card.querySelector<HTMLButtonElement>(`[data-cell-move-up="${CSS.escape(id)}"]`);
+  if (upBtn) { upBtn.disabled = idx <= 0 || (workspace ? !cell.canWrite : false); }
+  const downBtn = card.querySelector<HTMLButtonElement>(`[data-cell-move-down="${CSS.escape(id)}"]`);
+  if (downBtn) { downBtn.disabled = idx < 0 || idx >= cells.length - 1 || (workspace ? !cell.canWrite : false); }
 }
 function isExecutable(kind: CellKind): boolean {
   return kind === 'python' || kind === 'lean' || kind === 'rocq';
@@ -390,6 +500,7 @@ async function executeOnHost(kind: CellKind, code: string): Promise<ExecutionOut
 }
 async function executeInAgoraVm(id: string, kind: 'python' | 'lean' | 'rocq', code: string): Promise<ExecutionOutput> {
   const active = workspace!;
+  if (active.pending) { await active.flush(); }
   const started = Date.now();
   const marker = `__IRADE_${crypto.randomUUID().replace(/-/g, '')}__`;
   let language: 'python' | 'bash' = 'python';
@@ -417,7 +528,7 @@ async function executeInAgoraVm(id: string, kind: 'python' | 'lean' | 'rocq', co
         runtime: 'agora-vm',
       });
       renderCellOutput(id);
-    });
+    }, id);
   } catch (error) {
     const raw = error instanceof Error ? error.message : String(error);
     throw new Error(formatErrorLabel(raw));
@@ -459,6 +570,10 @@ async function executeInAgoraVm(id: string, kind: 'python' | 'lean' | 'rocq', co
 async function runCell(id: string): Promise<void> {
   const cell = cells.find(item => item.id === id);
   if (!cell || !isExecutable(cell.kind)) { return; }
+  if (workspace && !cell.canExecute) {
+    notify(errorLabels.RUNTIME_EXECUTION_DENIED, true);
+    return;
+  }
   const code = models.get(id)?.getValue() ?? cell.text;
   const runBtn = document.querySelector<HTMLButtonElement>(`[data-cell-run="${CSS.escape(id)}"]`);
   if (runBtn) { runBtn.disabled = true; }
@@ -519,10 +634,77 @@ function renderCellPreview(id: string): void {
     : 'body{font:13.5px/1.8 system-ui,sans-serif;color:#d4d4d8;background:#1b1b1f;padding:18px 22px;margin:0;overflow-wrap:anywhere}h1,h2,h3{font-weight:600;line-height:1.4;color:#f4f4f5}h1{font-size:20px}h2{font-size:17px;border-bottom:1px solid #27272a;padding-bottom:6px;margin-top:20px}a{color:#34d399}code{background:#27272a;padding:2px 6px;border-radius:4px}pre{padding:12px;background:#141417;border:1px solid #27272a;border-radius:8px;overflow:auto}pre code{padding:0;background:none}blockquote{border-left:2px solid #34d399;padding-left:14px;color:#a1a1aa}table{border-collapse:collapse;width:100%}th,td{border:1px solid #3f3f46;padding:6px 10px}img{max-width:100%}';
   frame.srcdoc = `<!doctype html><html lang="ko"><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"><meta name="color-scheme" content="${light ? 'light' : 'dark'}"><style>${css}</style></head><body>${safe}</body></html>`;
 }
+function openCellPermissionModal(id: string): void {
+  const cell = cells.find(item => item.id === id);
+  if (!cell) { return; }
+  const isAdmin = workspace?.identity.isAdmin === true;
+  const canUnlock = workspace ? workspace.canUnlock(id) : true;
+  const groups = workspace ? workspace.availableGroups : ['local'];
+  const current = new Set(cell.permission);
+  const canEdit = workspace ? cell.canWrite : !cell.locked;
+  const canExec = workspace ? cell.canExecute : true;
+  const groupHtml = groups.length
+    ? groups.map(group => `<label class="perm-group-item"><input type="checkbox" name="perm-group" value="${escape(group)}" ${current.has(group) ? 'checked' : ''} ${isAdmin ? '' : 'disabled'}><span>${escape(group)}</span></label>`).join('')
+    : '<p class="empty-search">할당된 Canvas 그룹이 없습니다.</p>';
+  const lockNotice = !isAdmin && workspace
+    ? '<p class="modal-copy">그룹 접근 권한 변경은 Workspace 관리자만 가능합니다. 쓰기 권한자는 잠금 상태를 전환할 수 있습니다.</p>'
+    : '<p class="modal-copy">Agora Canvas 객체 단위로 읽기·쓰기·실행 그룹과 잠금 상태를 제어합니다.</p>';
+  showModal(`셀 객체 권한 · ${cell.title}`, `${lockNotice}
+    <div class="perm-id-row">
+      <input id="perm-item-id" readonly value="${escape(cell.id)}" aria-label="Canvas Workspace Item ID">
+      <button type="button" class="button ghost" id="perm-copy-id">ID 복사</button>
+    </div>
+    <div class="perm-caps">
+      <span class="perm-cap allowed">읽기 ✓</span>
+      <span class="perm-cap ${canEdit ? 'allowed' : ''}">쓰기 ${canEdit ? '✓' : '✕'}</span>
+      ${isExecutable(cell.kind) ? `<span class="perm-cap ${canExec ? 'allowed' : ''}">실행 ${canExec ? '✓' : '✕'}</span>` : ''}
+      ${isAdmin ? '<span class="perm-cap allowed">Admin</span>' : ''}
+    </div>
+    <form id="perm-form">
+      <label class="perm-group-item"><input type="checkbox" id="perm-locked" ${cell.locked ? 'checked' : ''} ${canUnlock ? '' : 'disabled'}><span>셀 잠금 (잠금 시 쓰기·이동·삭제 제한)</span></label>
+      <div class="field"><span>허용 그룹 ACL</span><div class="perm-group-list">${groupHtml}</div></div>
+      <div class="form-actions">
+        <button type="button" class="button ghost" id="perm-cancel">닫기</button>
+        ${(isAdmin || canUnlock) ? '<button type="submit" class="button primary">권한 저장</button>' : ''}
+      </div>
+    </form>`);
+  $('#perm-copy-id').addEventListener('click', () => {
+    void navigator.clipboard.writeText(cell.id).then(() => notify('Canvas 객체 ID를 복사했습니다.')).catch(() => {});
+  });
+  $('#perm-cancel').addEventListener('click', () => modal.close());
+  $('#perm-form').addEventListener('submit', event => {
+    event.preventDefault();
+    void (async () => {
+      const nextLocked = $<HTMLInputElement>('#perm-locked').checked;
+      const checkedGroups = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="perm-group"]:checked'), el => el.value);
+      if (workspace) {
+        if (isAdmin && checkedGroups.length && checkedGroups.join(',') !== cell.permission.join(',')) {
+          await workspace.updatePermission(cell.id, checkedGroups);
+        } else if (isAdmin && !checkedGroups.length && groups.length) {
+          throw new Error('최소 1개 이상의 그룹을 선택해야 합니다.');
+        }
+        if (canUnlock && nextLocked !== cell.locked) {
+          await workspace.toggleLock(cell.id, nextLocked);
+        }
+        cells = workspace.cells;
+      } else {
+        cell.locked = nextLocked;
+        cell.canWrite = !nextLocked;
+        persistScratch();
+      }
+      updateCellCardMeta(cell.id);
+      renderList();
+      renderInspector();
+      modal.close();
+      notify('셀 객체 권한 설정을 반영했습니다.');
+    })().catch(report);
+  });
+}
+
 function renderNotebook(): void {
   if (viewMode !== 'notebook') { return; }
   $('#notebook-title').textContent = workspaceName;
-  $('#notebook-kind').textContent = demo ? 'LOCAL PLAYGROUND NOTEBOOK' : connected ? 'AGORA LIVE NOTEBOOK' : 'RESEARCH NOTEBOOK';
+  $('#notebook-kind').textContent = demo ? 'LOCAL PLAYGROUND NOTEBOOK' : connected ? 'AGORA WORKSPACE NOTEBOOK' : 'RESEARCH NOTEBOOK';
   const container = $('#notebook-cells');
   const visible = visibleCells();
   const visibleIds = new Set(visible.map(c => c.id));
@@ -546,9 +728,10 @@ function renderNotebook(): void {
   const fontSize = Number(localStorage.getItem('irade.fontSize') || 14);
   const lineNumbers = localStorage.getItem('irade.lineNumbers') === 'off' ? 'off' : 'on';
 
-  for (const cell of visible) {
+  visible.forEach((cell, visibleIdx) => {
     const type = cellTypes[cell.kind];
-    const indexLabel = `[${String(cells.indexOf(cell) + 1).padStart(2, '0')}]`;
+    const index = cells.indexOf(cell);
+    const indexLabel = `[${String(index + 1).padStart(2, '0')}]`;
     let card = existing.get(cell.id);
     if (!card) {
       card = document.createElement('article');
@@ -560,8 +743,10 @@ function renderNotebook(): void {
       if (cell.kind === 'html' && !previewCells.has(cell.id)) { previewCells.add(cell.id); }
       const previewLabel = previewCells.has(cell.id) ? '미리보기 닫기' : '미리보기';
       const runLabel = cell.kind === 'python' ? '▶ 실행' : '▶ 검증';
-      card.innerHTML = `<header class="nb-cell-header"><span class="nb-cell-index">${indexLabel}</span><span class="nb-cell-kind"><span class="${type.color}">${type.icon}</span>${type.short}</span><span class="nb-cell-title">${escape(cell.title)}</span><div class="nb-cell-tools">${canRun ? `<button class="nb-run-btn" data-cell-run="${escape(cell.id)}">${runLabel}</button>` : ''}${cell.kind === 'agent' ? `<button class="button tiny" data-cell-msg="${escape(cell.id)}">＋ 메시지</button>` : ''}${canPreview ? `<button class="button tiny" data-cell-preview="${escape(cell.id)}">${previewLabel}</button>` : ''}<button class="icon-button" data-cell-export="${escape(cell.id)}" title="셀 내보내기" aria-label="셀 내보내기">↧</button><button class="icon-button danger" data-cell-delete="${escape(cell.id)}" title="셀 삭제" aria-label="셀 삭제">×</button></div></header><div class="nb-cell-body"><div class="nb-editor-host"></div><iframe class="nb-preview-frame" data-nb-preview="${escape(cell.id)}" title="셀 미리보기" sandbox="${cell.kind === 'html' ? 'allow-scripts' : ''}" referrerpolicy="no-referrer" hidden></iframe><div class="nb-cell-output" data-nb-output="${escape(cell.id)}" hidden></div></div><footer class="nb-cell-footer"><span>${type.label}${canRun ? ' · Shift+Enter 실행' : ''}</span><span data-nb-cursor="${escape(cell.id)}">Ln 1, Col 1</span></footer>`;
-      container.appendChild(card);
+      const canWrite = workspace ? cell.canWrite : !cell.locked;
+      const canExecute = workspace ? cell.canExecute : true;
+      card.innerHTML = `<header class="nb-cell-header"><span class="nb-cell-index">${indexLabel}</span><span class="nb-cell-kind"><span class="${type.color}">${type.icon}</span>${type.short}</span><button type="button" class="nb-cell-id-chip" data-cell-copy-id="${escape(cell.id)}" title="Canvas Workspace Item ID: ${escape(cell.id)} (클릭해 복사)">#${escape(shortItemId(cell.id))}</button><span class="nb-cell-title">${escape(cell.title)}</span><span class="nb-cell-presence-group" data-nb-presence="${escape(cell.id)}"></span><button type="button" class="nb-cell-perm-btn ${cell.locked ? 'locked' : ''}" data-cell-perm="${escape(cell.id)}" title="Canvas 객체 권한 및 잠금 설정">${cell.locked ? '🔒 ' : ''}${escape(permissionSummary(cell))}</button><div class="nb-cell-tools"><button class="icon-button" data-cell-move-up="${escape(cell.id)}" title="위로 이동" aria-label="위로 이동" ${index <= 0 || !canWrite ? 'disabled' : ''}>↑</button><button class="icon-button" data-cell-move-down="${escape(cell.id)}" title="아래로 이동" aria-label="아래로 이동" ${index >= cells.length - 1 || !canWrite ? 'disabled' : ''}>↓</button>${canRun ? `<button class="nb-run-btn" data-cell-run="${escape(cell.id)}" ${canExecute ? '' : 'disabled'} title="${canExecute ? '실행/검증 (Shift+Enter)' : '이 셀 그룹에 실행 권한이 없습니다.'}">${runLabel}</button>` : ''}${cell.kind === 'agent' ? `<button class="button tiny" data-cell-msg="${escape(cell.id)}">＋ 메시지</button>` : ''}${canPreview ? `<button class="button tiny" data-cell-preview="${escape(cell.id)}">${previewLabel}</button>` : ''}<button class="icon-button" data-cell-export="${escape(cell.id)}" title="셀 내보내기" aria-label="셀 내보내기">↧</button><button class="icon-button danger" data-cell-delete="${escape(cell.id)}" title="셀 삭제" aria-label="셀 삭제" ${canWrite ? '' : 'disabled'}>×</button></div></header><div class="nb-cell-body"><div class="nb-editor-host"></div><iframe class="nb-preview-frame" data-nb-preview="${escape(cell.id)}" title="셀 미리보기" sandbox="${cell.kind === 'html' ? 'allow-scripts' : ''}" referrerpolicy="no-referrer" hidden></iframe><div class="nb-cell-output" data-nb-output="${escape(cell.id)}" hidden></div></div><footer class="nb-cell-footer"><span>${type.label}${canRun ? ' · Shift+Enter 실행' : ''} · ID ${escape(shortItemId(cell.id))}</span><span data-nb-cursor="${escape(cell.id)}">Ln 1, Col 1</span></footer>`;
+      container.insertBefore(card, container.children[visibleIdx] || null);
 
       const host = card.querySelector<HTMLElement>('.nb-editor-host')!;
       const model = ensureModel(cell);
@@ -582,7 +767,7 @@ function renderNotebook(): void {
         lineNumbersMinChars: 3,
         wordWrap: 'on',
         tabSize: 4,
-        readOnly: workspace ? !workspace.client.canWrite : false,
+        readOnly: !canWrite,
         fixedOverflowWidgets: true,
       });
       if (canRun) {
@@ -596,11 +781,17 @@ function renderNotebook(): void {
       ed.onDidContentSizeChange(updateHeight);
       updateHeight();
       ed.onDidFocusEditorText(() => {
+        setPresenceFocus(cell.id);
         if (selected !== cell.id) {
           selected = cell.id;
           syncActiveCellCard();
           renderList();
           renderInspector();
+        }
+      });
+      ed.onDidBlurEditorText(() => {
+        if (activePresenceCellId === cell.id) {
+          setPresenceFocus(undefined);
         }
       });
       ed.onDidChangeCursorPosition(event => {
@@ -616,6 +807,23 @@ function renderNotebook(): void {
           renderList();
           renderInspector();
         }
+      });
+      card.querySelector(`[data-cell-copy-id="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
+        e.stopPropagation();
+        void navigator.clipboard.writeText(cell.id).then(() => notify(`객체 ID 복사됨: ${cell.id}`)).catch(() => {});
+      });
+      card.querySelector(`[data-cell-perm="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
+        e.stopPropagation();
+        selected = cell.id;
+        openCellPermissionModal(cell.id);
+      });
+      card.querySelector(`[data-cell-move-up="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
+        e.stopPropagation();
+        void moveCellOrder(cell.id, -1).catch(report);
+      });
+      card.querySelector(`[data-cell-move-down="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
+        e.stopPropagation();
+        void moveCellOrder(cell.id, 1).catch(report);
       });
       card.querySelector(`[data-cell-run="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
         e.stopPropagation(); selected = cell.id; void runCell(cell.id);
@@ -639,12 +847,36 @@ function renderNotebook(): void {
       if (previewCells.has(cell.id)) { renderCellPreview(cell.id); }
       renderCellOutput(cell.id);
     } else {
-      container.appendChild(card);
-      const idxEl = card.querySelector('.nb-cell-index');
-      if (idxEl) { idxEl.textContent = indexLabel; }
+      if (container.children[visibleIdx] !== card) {
+        container.insertBefore(card, container.children[visibleIdx] || null);
+      }
+      updateCellCardMeta(cell.id);
     }
-  }
+  });
   syncActiveCellCard();
+  syncPresenceUI();
+}
+async function moveCellOrder(id: string, direction: -1 | 1): Promise<void> {
+  if (workspace) {
+    await workspace.moveCell(id, direction);
+    cells = workspace.cells;
+    renderNotebook();
+    renderList();
+  } else {
+    moveLocalCell(id, direction);
+  }
+}
+function moveLocalCell(id: string, direction: -1 | 1): void {
+  const idx = cells.findIndex(item => item.id === id);
+  const next = idx + direction;
+  if (idx < 0 || next < 0 || next >= cells.length) { return; }
+  const tmp = cells[idx];
+  cells[idx] = cells[next];
+  cells[next] = tmp;
+  cells.forEach((cell, i) => { cell.frameOrder = i * 10; });
+  persistScratch();
+  renderNotebook();
+  renderList();
 }
 function syncActiveCellCard(): void {
   document.querySelectorAll<HTMLElement>('[data-nb-cell]').forEach(el => {
@@ -659,13 +891,13 @@ function openNotebook(): void {
   renderList();
   renderInspector();
 }
-function selectCell(id: string): void {
+function selectCell(id: string, scrollBlock: ScrollLogicalPosition = 'center'): void {
   const cell = cells.find(cell => cell.id === id); if (!cell) { return; }
   selected = id;
   openNotebook();
   requestAnimationFrame(() => {
     const card = document.querySelector<HTMLElement>(`[data-nb-cell="${CSS.escape(id)}"]`);
-    card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    card?.scrollIntoView({ behavior: 'smooth', block: scrollBlock });
     cellEditors.get(id)?.focus();
   });
 }
@@ -693,15 +925,50 @@ function renderInspector(): void {
           ? '<div class="context-block"><h3 class="context-heading">PROOF STATE</h3><p class="context-copy">증명 오류가 발생했습니다. 셀 출력 영역을 확인하세요.</p><span class="context-tag">ERROR</span></div>'
           : '<div class="context-block"><h3 class="context-heading">PROOF STATE</h3><p class="context-copy">▶ 검증 버튼 또는 Shift+Enter로<br>증명을 실행해 검증할 수 있습니다.</p><span class="context-tag">NOT VERIFIED</span></div>'
     : '';
+  const cellAclHtml = cell
+    ? `<div class="context-block"><h3 class="context-heading">WORKSPACE ITEM & ACL</h3><div class="context-stat"><span>객체 ID</span><b>${escape(shortItemId(cell.id))}</b></div><div class="context-stat"><span>접근 그룹</span><b>${escape(permissionSummary(cell))}</b></div><div class="context-stat"><span>쓰기 / 잠금</span><b>${cell.locked ? '잠금됨' : cell.canWrite ? '편집 가능' : '읽기 전용'}</b></div>${isExecutable(cell.kind) ? `<div class="context-stat"><span>실행 권한</span><b>${cell.canExecute ? '허용' : '제한'}</b></div>` : ''}<button type="button" class="button ghost" id="inspector-perm-btn" style="margin-top:8px;width:100%">객체 권한 설정…</button></div>`
+    : '';
+  const peersHtml = workspace && connected
+    ? `<div class="context-block"><h3 class="context-heading">CONNECTED PEERS (${workspace.peers.length})</h3><p class="context-copy">${workspace.peers.length ? workspace.peers.map(p => escape(p.nickname || `Peer ${p.peer_id.slice(0, 4)}`)).join(', ') : '현재 다른 접속자가 없습니다.'}</p></div>`
+    : '';
   const typeCounts = { agent: cells.filter(cell => cell.kind === 'agent').length, proof: cells.filter(cell => ['lean','rocq'].includes(cell.kind)).length, code: cells.filter(cell => cell.kind === 'python').length, document: cells.filter(cell => ['markdown','html'].includes(cell.kind)).length };
-  $('#inspector-content').innerHTML = `<h3 class="context-heading">${cell ? 'CELL CONTEXT' : 'WORKSPACE CONTEXT'}</h3><h2 class="context-title">${escape(cell ? cellTypes[cell.kind].label : '연구의 흐름을\n하나로 연결하세요.').replace('\n','<br>')}</h2><p class="context-copy">${cell ? escape(cellTypes[cell.kind].description) : '아이디어를 탐색하고, 가설을 증명하고,<br>결과를 코드와 문서로 남기는 공간.'}</p>${proofStateHtml}<div class="context-flow"><div class="flow-step"><span class="step-icon mint">✧</span><span>탐색하고 대화하기<small>AGENT CONVERSATIONS</small></span></div><div class="flow-step"><span class="step-icon purple">∀</span><span>논리로 증명하기<small>LEAN 4 / ROCQ PROOFS</small></span></div><div class="flow-step"><span class="step-icon blue">λ</span><span>코드로 실험하기<small>PYTHON CELLS</small></span></div><div class="flow-step"><span class="step-icon sand">≡</span><span>지식으로 정리하기<small>MARKDOWN / HTML</small></span></div></div><div class="context-block"><h3 class="context-heading">${cell ? 'THIS WORKSPACE' : 'WORKSPACE OVERVIEW'}</h3><div class="context-stat"><span>대화 기록</span><b>${String(typeCounts.agent).padStart(2,'0')}</b></div><div class="context-stat"><span>형식 증명</span><b>${String(typeCounts.proof).padStart(2,'0')}</b></div><div class="context-stat"><span>Python 코드</span><b>${String(typeCounts.code).padStart(2,'0')}</b></div><div class="context-stat"><span>연구 문서</span><b>${String(typeCounts.document).padStart(2,'0')}</b></div></div><div class="context-block"><h3 class="context-heading">COLLABORATION</h3><p class="context-copy">${demo ? '로컬 체험 모드입니다.<br>내용은 현재 브라우저 탭에만 저장됩니다.' : connected ? '같은 workspace를 연 참여자에게<br>변경 내용이 실시간으로 공유됩니다.' : 'Agora workspace를 연결하면<br>함께 셀을 편집할 수 있습니다.'}</p><span class="context-tag">${demo ? 'LOCAL SESSION' : connected ? 'LIVE SYNC' : 'AGORA WORKSPACE'}</span></div>`;
+  $('#inspector-content').innerHTML = `<h3 class="context-heading">${cell ? 'CELL CONTEXT' : 'WORKSPACE CONTEXT'}</h3><h2 class="context-title">${escape(cell ? cellTypes[cell.kind].label : '연구의 흐름을\n하나로 연결하세요.').replace('\n','<br>')}</h2><p class="context-copy">${cell ? escape(cellTypes[cell.kind].description) : '아이디어를 탐색하고, 가설을 증명하고,<br>결과를 코드와 문서로 남기는 공간.'}</p>${proofStateHtml}${cellAclHtml}<div class="context-flow"><div class="flow-step"><span class="step-icon mint">✧</span><span>탐색하고 대화하기<small>AGENT CONVERSATIONS</small></span></div><div class="flow-step"><span class="step-icon purple">∀</span><span>논리로 증명하기<small>LEAN 4 / ROCQ PROOFS</small></span></div><div class="flow-step"><span class="step-icon blue">λ</span><span>코드로 실험하기<small>PYTHON CELLS</small></span></div><div class="flow-step"><span class="step-icon sand">≡</span><span>지식으로 정리하기<small>MARKDOWN / HTML</small></span></div></div><div class="context-block"><h3 class="context-heading">${cell ? 'THIS WORKSPACE' : 'WORKSPACE OVERVIEW'}</h3><div class="context-stat"><span>대화 기록</span><b>${String(typeCounts.agent).padStart(2,'0')}</b></div><div class="context-stat"><span>형식 증명</span><b>${String(typeCounts.proof).padStart(2,'0')}</b></div><div class="context-stat"><span>Python 코드</span><b>${String(typeCounts.code).padStart(2,'0')}</b></div><div class="context-stat"><span>연구 문서</span><b>${String(typeCounts.document).padStart(2,'0')}</b></div></div>${peersHtml}<div class="context-block"><h3 class="context-heading">COLLABORATION</h3><p class="context-copy">${demo ? '로컬 체험 모드입니다.<br>내용은 현재 브라우저 탭에만 저장됩니다.' : connected ? 'Agora Workspace 객체 ID·권한 ACL로<br>실시간 델타·CRDT 동기화 중입니다.' : 'Agora workspace를 연결하면<br>함께 셀을 편집할 수 있습니다.'}</p><span class="context-tag">${demo ? 'LOCAL SESSION' : connected ? 'WORKSPACE SYNC' : 'AGORA WORKSPACE'}</span></div>`;
+  if (cell) {
+    document.querySelector('#inspector-perm-btn')?.addEventListener('click', () => openCellPermissionModal(cell.id));
+  }
 }
 function persistScratch(): void { sessionStorage.setItem(demoKey, JSON.stringify(cells)); $('#cell-save').textContent = '현재 탭에 저장됨'; }
 async function startDemo(): Promise<void> {
   if (workspace?.pending) { await workspace.flush(); }
-  ++loadGeneration; workspace?.dispose(); workspace = undefined; connected = false; clearModels(); demo = true; workspaceName = 'Research playground'; selected = undefined;
+  ++loadGeneration; setPresenceFocus(undefined); workspace?.dispose(); workspace = undefined; connected = false; clearModels(); demo = true; workspaceName = 'Research playground'; selected = undefined;
   const cached = sessionStorage.getItem(demoKey);
-  cells = cached ? JSON.parse(cached) as Cell[] : (['markdown','agent','lean','rocq','python','html'] as CellKind[]).map((kind, index) => ({ id: `${Date.now() + index}-${crypto.randomUUID()}`, kind, path: '', text: starters[kind], title: cellTitle(kind, starters[kind]) }));
+  const parsed = cached ? JSON.parse(cached) as Partial<Cell>[] : undefined;
+  cells = parsed
+    ? parsed.map((item, index) => ({
+      id: item.id || `${Date.now() + index}-${crypto.randomUUID().slice(0, 8)}`,
+      kind: (item.kind || 'markdown') as CellKind,
+      path: item.path || '',
+      text: item.text || '',
+      title: item.title || cellTitle((item.kind || 'markdown') as CellKind, item.text || ''),
+      permission: Array.isArray(item.permission) ? item.permission : ['local'],
+      frameOrder: typeof item.frameOrder === 'number' ? item.frameOrder : index * 10,
+      locked: Boolean(item.locked),
+      canWrite: item.locked ? false : true,
+      canExecute: true,
+    }))
+    : (['markdown','agent','lean','rocq','python','html'] as CellKind[]).map((kind, index) => ({
+      id: `demo-${Date.now() + index}-${crypto.randomUUID().slice(0, 8)}`,
+      kind,
+      path: '',
+      text: starters[kind],
+      title: cellTitle(kind, starters[kind]),
+      permission: ['local'],
+      frameOrder: index * 10,
+      locked: false,
+      canWrite: true,
+      canExecute: true,
+    }));
+  cells.sort((a, b) => a.frameOrder - b.frameOrder || a.id.localeCompare(b.id));
   persistScratch(); const url = new URL(location.href); url.searchParams.delete('workspace'); url.searchParams.delete('folder'); history.replaceState(null,'',url);
   $('#workspace-subtitle').textContent = '로컬 체험 · 현재 탭에만 저장'; $('#workspace-mode').textContent = 'Local Playground'; $('#status').textContent = '로컬 체험 · 공유되지 않음'; $('#connection-label').textContent = 'LOCAL SESSION'; $('#sync-description').textContent = '체험 내용은 현재 탭에만 저장'; $('#permission-label').textContent = '로컬 편집';
   openNotebook(); log('로컬 체험 workspace를 열었습니다.'); notify('로컬 체험입니다. 공동 편집하려면 Agora workspace를 연결하세요.');
@@ -729,14 +996,19 @@ async function addCell(kind?: CellKind): Promise<void> {
     } finally {
       addingCell = false;
       buttons.forEach(button => { button.disabled = false; });
-      if (!workspace.pending) { $('#cell-save').textContent = connected ? '모든 변경 저장됨' : '로컬 변경 유지'; }
+      if (!workspace.pending) { $('#cell-save').textContent = connected ? 'Canvas 동기화됨' : '로컬 변경 유지'; }
     }
   } else {
-    cell = { id: `${Date.now()}-${crypto.randomUUID()}`, kind, path: '', text: starters[kind], title: cellTitle(kind, starters[kind]) };
+    const nextOrder = cells.reduce((max, item) => Math.max(max, item.frameOrder), -10) + 10;
+    cell = { id: `demo-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`, kind, path: '', text: starters[kind], title: cellTitle(kind, starters[kind]), permission: ['local'], frameOrder: nextOrder, locked: false, canWrite: true, canExecute: true };
     cells.push(cell);
     persistScratch();
   }
-  log(`${cellTypes[kind].label} 셀을 만들었습니다.`); selectCell(cell.id);
+  if (filter !== 'all' && !visibleCells().some(item => item.id === cell.id)) {
+    filter = 'all';
+    document.querySelectorAll('.rail-button').forEach(button => button.classList.toggle('active', button.getAttribute('data-action') === 'workspace'));
+  }
+  log(`${cellTypes[kind].label} 셀을 만들었습니다.`); selectCell(cell.id, 'end');
 }
 function search(): void {
   showModal('Workspace 빠른 이동', '<input class="search-input" id="cell-search" type="search" aria-label="셀 검색" placeholder="셀 제목, 종류, 내용 검색…"><div class="choice-list" id="search-results"></div>');
@@ -749,9 +1021,11 @@ function search(): void {
 }
 async function deleteCell(): Promise<void> {
   const cell = cells.find(cell => cell.id === selected); if (!cell) { return; }
+  if (workspace && !cell.canWrite) { notify(errorLabels[cell.locked ? 'ITEM_LOCKED' : 'ITEM_WRITE_DENIED'], true); return; }
   showModal('셀 삭제', `<p class="modal-copy">“${escape(cell.title)}” 셀을 삭제할까요? 공유 workspace에서는 다른 참여자에게도 적용됩니다.</p><div class="form-actions"><button class="button ghost" id="cancel-delete">취소</button><button class="button primary" id="confirm-delete">셀 삭제</button></div>`);
   $('#cancel-delete').addEventListener('click', () => modal.close());
   $('#confirm-delete').addEventListener('click', event => { (event.currentTarget as HTMLButtonElement).disabled = true; void (async () => {
+    if (activePresenceCellId === cell.id) { setPresenceFocus(undefined); }
     if (workspace) { deletingCellId = cell.id; try { await workspace.delete(cell.id); cells = workspace.cells; } finally { deletingCellId = undefined; } } else { cells = cells.filter(item => item.id !== cell.id); persistScratch(); }
     const ed = cellEditors.get(cell.id);
     if (ed) { ed.setModel(null); ed.dispose(); cellEditors.delete(cell.id); }
@@ -779,7 +1053,7 @@ function message(): void {
   showModal('대화 메시지 기록', '<p class="modal-copy">외부 에이전트와 나눈 대화나 자신의 질문을 기록합니다. AI 응답은 생성하지 않습니다.</p><form id="message-form"><label class="field">역할<select name="role"><option value="사용자">사용자</option><option value="에이전트">에이전트</option><option value="연구 메모">연구 메모</option></select></label><label class="field">메시지<textarea name="text" required placeholder="연구 맥락에 남길 내용을 입력하세요."></textarea></label><div class="form-actions"><button class="button primary">기록에 추가 ＋</button></div></form>');
   $('#message-form').addEventListener('submit', event => { event.preventDefault(); const data = new FormData(event.currentTarget as HTMLFormElement); const model = models.get(cell.id)!; const text = `${model.getValue().trimEnd()}\n\n## ${data.get('role')}\n${String(data.get('text')).trim()}\n`; model.pushEditOperations(null, [{ range: model.getFullModelRange(), text }], () => null); modal.close(); log('대화 기록에 메시지를 추가했습니다.'); });
 }
-function help(): void { showModal('연결된 연구를 시작하세요', '<div class="help-grid"><p><b>Workspace</b>는 공동 연구 공간입니다. 같은 Agora 캔버스를 열면 같은 셀을 편집하고 변경을 실시간으로 공유합니다.</p><p><b>에이전트 대화</b>는 질문과 응답을 기록합니다.<br><b>Lean 4 / Rocq</b>는 형식 증명 소스를 다룹니다.<br><b>Python</b>은 실험 코드를 작성합니다.<br><b>Markdown / HTML</b>은 문서와 미리보기를 제공합니다.</p><p>현재 셀 편집과 동기화를 지원합니다. AI 응답과 코드·증명 실행 커널은 아직 연결되지 않았습니다. 기존 workspace 데이터는 보존됩니다.</p><p><kbd>Ctrl K</kbd> 검색 · <kbd>Alt N</kbd> 새 셀<br><kbd>Ctrl S</kbd> 저장 · <kbd>Ctrl Shift F</kbd> 집중 모드</p></div>'); }
+function help(): void { showModal('연결된 연구를 시작하세요', '<div class="help-grid"><p><b>Workspace</b>는 공동 연구 공간입니다. 같은 workspace를 열면 같은 셀을 편집하고 변경을 실시간으로 공유합니다.</p><p><b>에이전트 대화</b>는 질문과 응답을 기록합니다.<br><b>Lean 4 / Rocq</b>는 형식 증명 소스를 다룹니다.<br><b>Python</b>은 실험 코드를 작성합니다.<br><b>Markdown / HTML</b>은 문서와 미리보기를 제공합니다.</p><p>현재 셀 편집과 동기화를 지원합니다. AI 응답과 코드·증명 실행 커널은 아직 연결되지 않았습니다. 기존 workspace 데이터는 보존됩니다.</p><p><kbd>Ctrl K</kbd> 검색 · <kbd>Alt N</kbd> 새 셀<br><kbd>Ctrl S</kbd> 저장 · <kbd>Ctrl Shift F</kbd> 집중 모드</p></div>'); }
 function settings(): void {
   const savedLines = localStorage.getItem('irade.lineNumbers') === 'off' ? 'off' : 'on';
   showModal('연구 환경 설정', `<p class="modal-copy">설정은 이 브라우저에 적용됩니다.</p><label class="settings-row">편집기 글자 크기<select id="font-size">${[12,14,16,18,20].map(size => `<option value="${size}" ${Number(localStorage.getItem('irade.fontSize') || 14) === size ? 'selected' : ''}>${size}px</option>`).join('')}</select></label><label class="settings-row">편집기 줄 번호<select id="line-numbers"><option value="on" ${savedLines === 'on' ? 'selected' : ''}>표시</option><option value="off" ${savedLines === 'off' ? 'selected' : ''}>숨기기</option></select></label><div class="form-actions"><button class="button ghost" data-action="help">사용 안내</button><button class="button primary" id="save-settings">적용</button></div>`);
@@ -802,7 +1076,7 @@ async function action(name: string): Promise<void> {
   else if (name === 'logout') {
       modal.close();
       if (workspace?.pending) { await workspace.flush(); }
-      ++loadGeneration; workspace?.dispose(); workspace = undefined; token = undefined; sessionStorage.removeItem(tokenKey); updateAccount(); clearModels(); cells = []; selected = undefined; connected = false; workspaceName = '나의 연구 공간'; demo = false;
+      ++loadGeneration; setPresenceFocus(undefined); workspace?.dispose(); workspace = undefined; token = undefined; sessionStorage.removeItem(tokenKey); updateAccount(); clearModels(); cells = []; selected = undefined; connected = false; workspaceName = '나의 연구 공간'; demo = false;
       const url = new URL(location.href); url.searchParams.delete('workspace'); history.replaceState(null,'',url); overview(); $('#workspace-subtitle').textContent = 'workspace를 연결하세요'; $('#status').textContent = '로그아웃됨'; $('#connection-label').textContent = '연결 대기'; $('#permission-label').textContent = ''; notify('로그아웃했습니다.');
   }
   else if (name === 'demo') { modal.close(); await startDemo(); }
