@@ -43,6 +43,10 @@ if [ "${DB_TRUST_SERVER_CERTIFICATE:-false}" = "true" ]; then
   echo "[ERROR] SQL certificate verification is required; DB_TRUST_SERVER_CERTIFICATE must be false." >&2
   exit 1
 fi
+SQLCMD_HOST_TLS_ARGS=("${SQLCMD_TRUST_ARGS[@]}")
+if [ "$MSSQL_HOST" = "127.0.0.1" ] || [ "$MSSQL_HOST" = "::1" ]; then
+  SQLCMD_HOST_TLS_ARGS+=(-F "${MSSQL_TLS_HOSTNAME:-localhost}")
+fi
 MSSQL_TABLE_USERS="${MSSQL_TABLE_USERS:-users}"
 MSSQL_TABLE_REDIS_SERVER="${MSSQL_TABLE_REDIS_SERVER:-redis_server}"
 MSSQL_TABLE_CPP_SERVER="${MSSQL_TABLE_CPP_SERVER:-cpp_server}"
@@ -64,7 +68,7 @@ echo "테이블 구성:   $MSSQL_TABLE_USERS, $MSSQL_TABLE_REDIS_SERVER, $MSSQL_
 # 로컬 sqlcmd가 있으면 로컬 사용, 없으면 docker exec fallback 사용
 if command -v sqlcmd &> /dev/null; then
   echo "로컬 sqlcmd를 사용하여 초기화합니다..."
-  SQLCMDPASSWORD="$MSSQL_SA_PASS" sqlcmd -S "$MSSQL_HOST,$MSSQL_PORT" -U sa ${SQLCMD_TRUST_ARGS[@]+"${SQLCMD_TRUST_ARGS[@]}"} -b -I \
+  SQLCMDPASSWORD="$MSSQL_SA_PASS" sqlcmd -S "$MSSQL_HOST,$MSSQL_PORT" -U sa ${SQLCMD_HOST_TLS_ARGS[@]+"${SQLCMD_HOST_TLS_ARGS[@]}"} -b -I \
     -v DB_NAME="$MSSQL_DB" DB_USER="$MSSQL_USER" DB_PASSWORD="$MSSQL_PASS" \
        TABLE_USERS="$MSSQL_TABLE_USERS" TABLE_REDIS_SERVER="$MSSQL_TABLE_REDIS_SERVER" \
        TABLE_WORKSPACE_INFO="$MSSQL_TABLE_WORKSPACE_INFO" \
@@ -84,7 +88,7 @@ fi
 
 echo -e "\n=== 2. 런타임 사용자($MSSQL_USER) 최소 권한 및 접속 검증 ==="
 if command -v sqlcmd &> /dev/null; then
-  SQLCMDPASSWORD="$MSSQL_PASS" sqlcmd -S "$MSSQL_HOST,$MSSQL_PORT" -U "$MSSQL_USER" ${SQLCMD_TRUST_ARGS[@]+"${SQLCMD_TRUST_ARGS[@]}"} -b -d "$MSSQL_DB" \
+  SQLCMDPASSWORD="$MSSQL_PASS" sqlcmd -S "$MSSQL_HOST,$MSSQL_PORT" -U "$MSSQL_USER" ${SQLCMD_HOST_TLS_ARGS[@]+"${SQLCMD_HOST_TLS_ARGS[@]}"} -b -d "$MSSQL_DB" \
     -Q "SELECT DB_NAME() AS [database], USER_NAME() AS [db_role], SUSER_SNAME() AS [login_user], IS_ROLEMEMBER('irade_runtime') AS [is_runtime_member], IS_ROLEMEMBER('db_owner') AS [is_db_owner];"
 else
   docker exec irade-mssql /bin/bash -lc \

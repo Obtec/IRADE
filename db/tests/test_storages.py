@@ -223,6 +223,8 @@ def run_mssql_query(sql):
         sqlcmd_args.append("-N")
     if MSSQL_TRUST_CERT:
         sqlcmd_args.append("-C")
+    elif sqlcmd_path is not None and MSSQL_HOST in ("127.0.0.1", "::1"):
+        sqlcmd_args.extend(["-F", os.environ.get("MSSQL_TLS_HOSTNAME", "localhost")])
     sqlcmd_args.extend(["-Q", f"SET NOCOUNT ON; {sql}"])
     if sqlcmd_path is None:
         if MSSQL_HOST not in ("127.0.0.1", "localhost", "::1") or str(MSSQL_PORT) not in ("1433", "14331"):
@@ -251,6 +253,13 @@ def run_mssql_query(sql):
         command = [sqlcmd_path, *sqlcmd_args]
         environment = os.environ.copy()
         environment["SQLCMDPASSWORD"] = MSSQL_PASS
+        ca_file = mssql_env.get("SSL_CERT_FILE") or (
+            str(Path(mssql_env["MSSQL_TLS_CERTS_DIR"]) / "ca.crt")
+            if mssql_env.get("MSSQL_TLS_CERTS_DIR")
+            else ""
+        )
+        if ca_file:
+            environment["SSL_CERT_FILE"] = ca_file
     completed = subprocess.run(command, capture_output=True, text=True, env=environment)
     if completed.returncode:
         raise subprocess.CalledProcessError(

@@ -181,6 +181,8 @@ server {
     }
     location /wss/ { return 404; }
 
+    absolute_redirect off;
+
     location = / { return 302 /irade/$is_args$args; }
     location = /ide { return 308 /irade/$is_args$args; }
     location /ide/ { return 308 /irade/$is_args$args; }

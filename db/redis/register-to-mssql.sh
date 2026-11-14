@@ -14,7 +14,7 @@ MSSQL_TLS_OVERRIDE="${MSSQL_TLS_ENABLED:-}"
 
 # 1. MS SQL 환경 변수 기본값 로드 (mssql/.env 우선 참조)
 if [ -f "$ROOT_DIR/mssql/.env" ]; then
-  MSSQL_ENV_CA_FILE=$(source "$ROOT_DIR/mssql/.env"; printf '%s' "${SSL_CERT_FILE:-${MSSQL_TLS_CERTS_DIR:-$ROOT_DIR/mssql/tls}/ca.crt}")
+  MSSQL_ENV_CA_FILE=$(unset SSL_CERT_FILE; source "$ROOT_DIR/mssql/.env"; printf '%s' "${SSL_CERT_FILE:-${MSSQL_TLS_CERTS_DIR:-$ROOT_DIR/mssql/tls}/ca.crt}")
   MSSQL_ENV_HOST=$(grep -v '^#' "$ROOT_DIR/mssql/.env" | grep '^MSSQL_MANAGEMENT_HOST=' | cut -d '=' -f2- | tr -d '\r' || true)
   if [ -z "$MSSQL_ENV_HOST" ]; then
     MSSQL_ENV_HOST=$(grep -v '^#' "$ROOT_DIR/mssql/.env" | grep '^MSSQL_EXTERNAL_IP=' | cut -d '=' -f2- | tr -d '\r' || true)
@@ -108,8 +108,12 @@ echo "=================================================================="
 run_mssql_cmd() {
   local sql_query="$1"
   if command -v sqlcmd &> /dev/null; then
-    export SSL_CERT_FILE="${SSL_CERT_FILE:-${MSSQL_ENV_CA_FILE:-$ROOT_DIR/mssql/tls/ca.crt}}"
-    SQLCMDPASSWORD="$MSSQL_PASS" sqlcmd -S "$MSSQL_HOST,$MSSQL_PORT" -U "$MSSQL_USER" ${SQLCMD_TLS_ARGS[@]+"${SQLCMD_TLS_ARGS[@]}"} -b -I -d "$MSSQL_DB" -Q "$sql_query" -W
+    local host_tls_args=("${SQLCMD_TLS_ARGS[@]}")
+    if [ "$MSSQL_HOST" = "127.0.0.1" ] || [ "$MSSQL_HOST" = "::1" ]; then
+      host_tls_args+=(-F "${MSSQL_TLS_HOSTNAME:-localhost}")
+    fi
+    export SSL_CERT_FILE="${MSSQL_ENV_CA_FILE:-${SSL_CERT_FILE:-$ROOT_DIR/mssql/tls/ca.crt}}"
+    SQLCMDPASSWORD="$MSSQL_PASS" sqlcmd -S "$MSSQL_HOST,$MSSQL_PORT" -U "$MSSQL_USER" ${host_tls_args[@]+"${host_tls_args[@]}"} -b -I -d "$MSSQL_DB" -Q "$sql_query" -W
   elif [[ "$MSSQL_HOST" == "127.0.0.1" || "$MSSQL_HOST" == "localhost" || "$MSSQL_HOST" == "::1" ]] \
       && docker inspect --format '{{.State.Running}}' irade-mssql 2>/dev/null | grep -q '^true$'; then
     docker exec irade-mssql /bin/bash -lc \
