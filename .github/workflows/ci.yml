@@ -1,0 +1,194 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  static-and-db:
+    name: Static Checks & Ops Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '26'
+
+      - name: Install Python test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml requests
+
+      - name: Validate Python, shell, YAML, and Web Compose config
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import py_compile
+          import subprocess
+          import yaml
+
+          roots = ['db', 'backend', 'wall', 'web', 'notebook-kernel', '.github']
+          raw = subprocess.check_output(
+              ['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', *roots]
+          ).split(b'\0')
+          paths = sorted({item.decode('utf-8') for item in raw if item})
+
+          py_files = [p for p in paths if p.endswith('.py')]
+          sh_files = [p for p in paths if p.endswith('.sh')]
+          yaml_files = [p for p in paths if p.endswith(('.yml', '.yaml'))]
+
+          for path in py_files:
+              py_compile.compile(path, doraise=True)
+          for path in sh_files:
+              subprocess.run(['bash', '-n', path], check=True)
+          for path in yaml_files:
+              with open(path, 'r', encoding='utf-8') as handle:
+                  yaml.safe_load(handle)
+
+          print(f"Validated {len(py_files)} Python, {len(sh_files)} shell, {len(yaml_files)} YAML files.")
+          PY
+          docker compose -f web/docker-compose.yml config --quiet
+
+      - name: Run DB, backend preflight, and search projection tests
+        run: |
+          python3 -m unittest discover -s db/tests -p "test_local*.py" -v
+          python3 -m unittest discover -s backend/scripts/checks -p "*_checks.py" -v
+          PYTHONPATH=backend/search python3 backend/search/tests/projection_faults.py
+
+  backend-spring:
+    name: Backend Spring (Java 26)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '26'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Run Spring unit tests
+        working-directory: backend/spring
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon test
+
+  backend-cpp:
+    name: Backend C++ (CMake & CTest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build and test C++ service
+        run: |
+          set -euo pipefail
+          build_and_test='
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              build-essential cmake pkg-config \
+              libcpp-httplib-dev libssl-dev freetds-dev zlib1g-dev nlohmann-json3-dev
+            cmake -S backend/cpp -B /tmp/irade-cpp-build -DBUILD_TESTING=ON
+            cmake --build /tmp/irade-cpp-build --parallel
+            ctest --test-dir /tmp/irade-cpp-build --output-on-failure
+          '
+          if dpkg --compare-versions "$(apt-cache show libcpp-httplib-dev 2>/dev/null | awk '/^Version:/ {print $2; exit}' || echo 0)" ge 0.18; then
+            sudo bash -c "$build_and_test"
+          else
+            docker run --rm \
+              -v "$GITHUB_WORKSPACE:/workspace:ro" \
+              -w /workspace \
+              ubuntu:26.04 \
+              bash -c "$build_and_test"
+          fi
+
+  wall-broker:
+    name: Wall Broker (Elixir)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.18'
+          otp-version: '27'
+
+      - name: Install dependencies and run ExUnit tests
+        working-directory: wall/broker
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get
+          MIX_ENV=test mix test
+
+  web:
+    name: Web IDE & Research Studio
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies and run checks
+        working-directory: web
+        run: |
+          npm install --no-audit --no-fund
+          npm test
+
+      - name: Install Playwright Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Studio Playwright tests
+        working-directory: web
+        env:
+          IRADE_PLAYWRIGHT_CHANNEL: bundled
+        run: npm run test:studio
+
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-studio-artifacts
+          path: web/.artifacts
+          if-no-files-found: ignore
+
+  notebook-kernel:
+    name: Notebook Kernel (Offline Protocol Tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install package and run offline pytest suite
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "./notebook-kernel[dev]"
+          pytest -v \
+            notebook-kernel/tests/test_repl_protocol.py \
+            notebook-kernel/tests/test_rocq_protocol.py \
+            notebook-kernel/tests/test_web_platform.py

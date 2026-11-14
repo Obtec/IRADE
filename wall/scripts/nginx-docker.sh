@@ -10,16 +10,8 @@ case "$command_name" in
     python3 "$PROJECT_DIR/scripts/preflight.py"
     docker info >/dev/null 2>&1 || { echo 'Docker engine is unavailable or access is denied' >&2; exit 1; }
     compose config --quiet
-    if [ "$command_name" = production ]; then
-      docker run --rm --network none --mount type=volume,src=irade-frontend-dist,dst=/frontend,readonly nginx:stable-alpine sh -c 'test -f /frontend/current/index.html' \
-        || { echo 'Frontend build is missing. Export the web build first.' >&2; exit 1; }
-    fi
     compose up -d --wait --wait-timeout 60
     compose exec -T nginx nginx -t
-    if [ "$command_name" = production ]; then
-      compose exec -T nginx test -f /usr/share/nginx/html/current/index.html \
-        || { echo 'Frontend production build is missing. Run the FE frontend-build exporter on this Docker engine.' >&2; exit 1; }
-    fi
     ;;
   config) compose config --quiet ;;
   test) compose exec -T nginx nginx -t ;;

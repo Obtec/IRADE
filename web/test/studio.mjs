@@ -11,7 +11,11 @@ const origin = 'https://localhost:9449';
 const errors = [];
 
 try {
-  browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--no-sandbox', '--ignore-certificate-errors'] });
+  const launchOptions = { headless: true, args: ['--no-sandbox', '--ignore-certificate-errors'] };
+  if (process.env.IRADE_PLAYWRIGHT_CHANNEL !== 'bundled') {
+    launchOptions.channel = process.env.IRADE_PLAYWRIGHT_CHANNEL || 'chrome';
+  }
+  browser = await chromium.launch(launchOptions);
   const first = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 950 } });
   const page = await first.newPage();
   page.setDefaultTimeout(20000);

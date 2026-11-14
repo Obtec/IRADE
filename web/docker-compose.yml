@@ -1,0 +1,40 @@
+name: irade-web-app
+
+services:
+  web:
+    image: irade-web:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: irade-web
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m,uid=10001,gid=10001
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - frontend-tls:/run/tls:ro
+    networks:
+      irade-web:
+        aliases:
+          - irade-frontend-dev
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--cacert", "/run/tls/ca.pem", "--resolve", "irade-frontend-dev:8090:127.0.0.1", "https://irade-frontend-dev:8090/irade-assets/manifest.webmanifest"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+networks:
+  irade-web:
+    external: true
+    name: irade-web
+
+volumes:
+  frontend-tls:
+    external: true
+    name: irade-frontend-tls
