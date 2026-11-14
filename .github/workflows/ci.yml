@@ -175,7 +175,7 @@ jobs:
           if-no-files-found: ignore
 
   notebook-kernel:
-    name: Notebook Kernel (Offline Protocol Tests)
+    name: Notebook Kernel (Protocol & Web Studio Tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -184,13 +184,37 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install package and run offline pytest suite
+      - name: Cache Lean toolchain and REPL build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            notebook-kernel/vendor/repl/.lake
+          key: lean-repl-${{ runner.os }}-${{ hashFiles('notebook-kernel/vendor/repl/lean-toolchain', 'notebook-kernel/vendor/repl/lakefile.toml', 'notebook-kernel/vendor/repl/lake-manifest.json', 'notebook-kernel/vendor/repl/REPL.lean', 'notebook-kernel/vendor/repl/REPL/**') }}
+          restore-keys: |
+            lean-repl-${{ runner.os }}-
+
+      - name: Install Lean 4 toolchain and build REPL
+        run: |
+          TOOLCHAIN="$(tr -d '[:space:]' < notebook-kernel/vendor/repl/lean-toolchain)"
+          if [ ! -x "$HOME/.elan/bin/elan" ]; then
+            curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain "$TOOLCHAIN"
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.elan/bin:$PATH"
+          elan default "$TOOLCHAIN"
+          (cd notebook-kernel/vendor/repl && lean --version && lake build repl)
+
+      - name: Install package, register kernelspec, and run pytest suite
         run: |
           python -m pip install --upgrade pip
           pip install -e "./notebook-kernel[dev]"
+          lean4-kernel install --sys-prefix
+          lean4-kernel doctor
           pytest -v \
             notebook-kernel/tests/test_repl_protocol.py \
             notebook-kernel/tests/test_rocq_protocol.py \
+            notebook-kernel/tests/test_session_and_magics.py \
             notebook-kernel/tests/test_web_platform.py
 
   backend-agent:

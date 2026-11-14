@@ -501,3 +501,81 @@ def test_web_server_enforces_https_only_and_rejects_missing_tls(
             tls_dir=tmp_path / "empty-tls-dir",
             allow_ephemeral_tls=False,
         )
+
+
+def test_kernel_pool_starts_python_without_registered_kernelspec(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from jupyter_client.kernelspec import KernelSpecManager, NoSuchKernel
+
+    empty_jupyter = tmp_path / "empty-jupyter"
+    empty_jupyter.mkdir()
+    monkeypatch.setenv("JUPYTER_DATA_DIR", str(empty_jupyter / "data"))
+    monkeypatch.setenv("JUPYTER_PATH", str(empty_jupyter / "path"))
+
+    def _raise_no_such_kernel(self: KernelSpecManager, kernel_name: str) -> None:
+        raise NoSuchKernel(kernel_name)
+
+    monkeypatch.setattr(KernelSpecManager, "get_kernel_spec", _raise_no_such_kernel)
+
+    server = create_server(
+        host="127.0.0.1",
+        port=0,
+        data_dir=tmp_path / "no-kernelspec-data",
+        max_kernels=2,
+        redis_client=AgoraRedisClient(force_memory=True),
+        self_signed=True,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[:2]
+    base_url = f"https://{host}:{port}"
+    try:
+        headers = {"X-Proof-User": "no-kernelspec-user"}
+        with httpx.Client(
+            base_url=base_url,
+            headers=headers,
+            verify=ssl.create_default_context(cafile=server.cert_file),
+            timeout=60.0,
+        ) as client:
+            r_create = client.post(
+                "/api/workspaces",
+                json={
+                    "title": "Python Fallback Workspace",
+                    "cells": [
+                        {
+                            "id": "c-py-fallback",
+                            "cellType": "code",
+                            "language": "python",
+                            "source": "print('NO_KERNELSPEC_OK:', 6 * 7)",
+                        }
+                    ],
+                },
+            )
+            assert r_create.status_code == 201
+            ws_id = r_create.json()["workspace"]["id"]
+
+            r_exec = client.post(
+                f"/api/workspaces/{ws_id}/execute",
+                json={
+                    "cellId": "c-py-fallback",
+                    "language": "python",
+                    "code": "print('NO_KERNELSPEC_OK:', 6 * 7)",
+                },
+            )
+            assert r_exec.status_code == 200
+            result = r_exec.json()
+            assert result["exitCode"] == 0
+            assert result["language"] == "python"
+            stream_texts = [
+                o.get("text", "")
+                for o in result["outputs"]
+                if o.get("output_type") == "stream"
+            ]
+            assert any("NO_KERNELSPEC_OK: 42" in t for t in stream_texts)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5.0)
+

@@ -45,6 +45,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency for AgoraBridge
     httpx = None  # type: ignore[assignment]
 from jupyter_client import KernelManager
+from jupyter_client.kernelspec import KernelSpec, NoSuchKernel
 
 from .magics import MAGIC_NAMES
 from .unicode_map import UNICODE_ABBREVIATIONS
@@ -748,6 +749,12 @@ class ProofKernelPool:
     (``ipykernel_launcher``) inside the same workspace.
     """
 
+    _KERNEL_SPEC_DEFAULTS: dict[str, tuple[str, str, str, str]] = {
+        "python": ("python3", "ipykernel_launcher", "Python 3", "python"),
+        "rocq": ("rocq", "rocq_kernel", "Rocq (Coq)", "rocq"),
+        "lean4": ("lean4", "lean4_kernel", "Lean 4", "lean4"),
+    }
+
     def __init__(self, max_kernels: int = MAX_KERNELS) -> None:
         self.max_kernels = max(1, int(max_kernels))
         self._lock = threading.RLock()
@@ -820,48 +827,27 @@ class ProofKernelPool:
                 lru_key = min(self._access_times, key=self._access_times.get)  # type: ignore[arg-type]
                 self._shutdown_key_unlocked(lru_key)
 
-            os.environ.update(_ensure_elan_in_path())
-            if lang == "python":
-                km = KernelManager(kernel_name="python3")
-                try:
-                    km.kernel_spec.argv = [
-                        sys.executable,
-                        "-m",
-                        "ipykernel_launcher",
-                        "-f",
-                        "{connection_file}",
-                    ]
-                    km.kernel_spec.env = _ensure_elan_in_path()
-                except Exception:
-                    pass
-            elif lang == "rocq":
-                km = KernelManager(kernel_name="rocq")
-                try:
-                    km.kernel_spec.argv = [
-                        sys.executable,
-                        "-m",
-                        "rocq_kernel",
-                        "-f",
-                        "{connection_file}",
-                    ]
-                    km.kernel_spec.env = _ensure_elan_in_path()
-                except Exception:
-                    pass
-            else:
-                km = KernelManager(kernel_name="lean4")
-                try:
-                    km.kernel_spec.argv = [
-                        sys.executable,
-                        "-m",
-                        "lean4_kernel",
-                        "-f",
-                        "{connection_file}",
-                    ]
-                    km.kernel_spec.env = _ensure_elan_in_path()
-                except Exception:
-                    pass
+            elan_env = _ensure_elan_in_path()
+            os.environ.update(elan_env)
+            kernel_name, module_name, display_name, spec_lang = self._KERNEL_SPEC_DEFAULTS.get(
+                lang, self._KERNEL_SPEC_DEFAULTS["lean4"]
+            )
+            argv = [sys.executable, "-m", module_name, "-f", "{connection_file}"]
+            km = KernelManager(kernel_name=kernel_name)
+            try:
+                spec = km.kernel_spec
+                spec.argv = argv
+                spec.env = elan_env
+            except NoSuchKernel:
+                # Synthesize an in-memory KernelSpec so embedded kernel pools work without global registration.
+                km._kernel_spec = KernelSpec(
+                    argv=argv,
+                    display_name=display_name,
+                    language=spec_lang,
+                    env=elan_env,
+                )
 
-            km.start_kernel(env=_ensure_elan_in_path())
+            km.start_kernel(env=elan_env)
             kc = km.client()
             kc.start_channels()
             try:
