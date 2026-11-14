@@ -106,6 +106,7 @@ inline Mutation prepare(const Json& operations,const std::function<std::optional
    Json translated={{"ids",ids},{"dx",dx},{"dy",dy}};if(operation.contains("start")){translated["start"]=operation["start"];translated["end"]=operation["end"];}result.translations.push_back(translated);
   }else{
    result.only_translations=false;const auto id=operation.value("id","");auto old=get(id);
+   if(operation.contains("expected_revision")&&(!operation["expected_revision"].is_number_integer()||old.is_null()||operation["expected_revision"]!=result.expected[id]))throw std::invalid_argument("CANVAS_WRITE_CONFLICT");
    if(action=="delete"){
     if(!old.is_null()&&old.value("kind","")=="project"&&old.value("projectType","")=="board"&&!admin)throw std::invalid_argument("PROJECT_MANAGE_DENIED");
     if(!old.is_null()&&!queryCanAccess(old,groups,admin))throw std::invalid_argument("ITEM_WRITE_DENIED");

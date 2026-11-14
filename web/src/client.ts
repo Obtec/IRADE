@@ -24,6 +24,69 @@ export interface Transport {
 	fetch: typeof fetch;
 	socket: (url: URL) => SocketTransport;
 }
+export interface AgentApiProfile {
+	id: string;
+	label: string;
+	model: string;
+	default_configured?: boolean;
+}
+export interface AgentQuotaWindow {
+	limit?: number | null;
+	remaining?: number | null;
+}
+export interface AgentTelemetry {
+	api?: string;
+	limits?: {
+		second?: AgentQuotaWindow;
+		minute?: AgentQuotaWindow;
+		day?: AgentQuotaWindow;
+	};
+	observed_at?: number;
+	limits_observed_at?: number | null;
+	status?: number;
+	retry_at?: number | null;
+}
+export interface AgentOptions {
+	reasoning_effort?: 'low' | 'high' | 'max';
+	max_tokens?: number;
+	max_steps?: number;
+	temperature?: number;
+	top_p?: number;
+}
+export interface AgentHistoryTurn {
+	role: 'user' | 'assistant';
+	content: string;
+}
+export interface AgentRequest {
+	operation: 'status' | 'run';
+	api?: string;
+	api_key?: string;
+	message?: string;
+	selected_ids?: string[];
+	history?: AgentHistoryTurn[];
+	allow_delete?: boolean;
+	options?: AgentOptions;
+}
+export interface AgentStatusResult {
+	ready?: boolean;
+	configured?: boolean;
+	credential_source?: 'server' | 'personal';
+	default_configured?: boolean;
+	api?: string;
+	model?: string;
+	apis?: AgentApiProfile[];
+	defaults?: Required<AgentOptions>;
+	telemetry?: AgentTelemetry;
+}
+export interface AgentRunResult {
+	answer?: string;
+	limited?: boolean;
+	api?: string;
+	model?: string;
+	telemetry?: AgentTelemetry;
+	error?: string;
+	message?: string;
+}
 export interface RuntimeResult {
 	exitCode?: number;
 	output?: string;
@@ -35,7 +98,7 @@ export interface RuntimeResult {
 }
 interface RuntimePending {
 	timer: ReturnType<typeof setTimeout>;
-	resolve: (value: RuntimeResult) => void;
+	resolve: (value: RuntimeResult | AgentStatusResult | AgentRunResult) => void;
 	reject: (error: Error) => void;
 	onOutput?: (chunk: string) => void;
 }
@@ -57,7 +120,13 @@ const transient = new Set([
 ]);
 
 export class AgoraError extends Error {
-	constructor(public readonly code: string) { super(code); }
+	constructor(
+		public readonly code: string,
+		public readonly serverMessage?: string,
+		public readonly payload?: Record<string, unknown>,
+	) {
+		super(code);
+	}
 }
 
 export function connection(value: Connection): Connection {
@@ -200,13 +269,55 @@ export class AgoraClient {
 					reject(new AgoraError('RUNTIME_TIMEOUT'));
 				}
 			}, 90000);
-			this.runtimePending.set(requestId, { timer, resolve, reject, onOutput });
+			this.runtimePending.set(requestId, {
+				timer,
+				resolve: value => resolve(value as RuntimeResult),
+				reject,
+				onOutput,
+			});
 			this.socket!.send(JSON.stringify({
 				type: 'runtime_execute',
 				request_id: requestId,
 				object_id: objectId,
 				language,
 				code,
+			}));
+		});
+	}
+
+	async executeAgent(
+		request: AgentRequest,
+		onOutput?: (chunk: string) => void,
+	): Promise<AgentStatusResult & AgentRunResult> {
+		if (this.stopped) { throw new AgoraError('DISCONNECTED'); }
+		if (!this.ready) { await this.ensureConnected(); }
+		if (this.stopped || !this.socket) { throw new AgoraError('RUNTIME_NOT_CONNECTED'); }
+		const requestId = crypto.randomUUID();
+		const timeoutMs = request.operation === 'status' ? 20000 : 260000;
+		return new Promise<AgentStatusResult & AgentRunResult>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				if (this.runtimePending.delete(requestId)) {
+					reject(new AgoraError('AGENT_TIMEOUT'));
+				}
+			}, timeoutMs);
+			this.runtimePending.set(requestId, {
+				timer,
+				resolve: value => resolve(value as AgentStatusResult & AgentRunResult),
+				reject,
+				onOutput,
+			});
+			this.socket!.send(JSON.stringify({
+				type: 'runtime_execute',
+				request_id: requestId,
+				action: 'agent',
+				operation: request.operation,
+				...(request.api ? { api: request.api } : {}),
+				...(request.api_key !== undefined ? { api_key: request.api_key } : {}),
+				...(request.message !== undefined ? { message: request.message } : {}),
+				...(request.selected_ids?.length ? { selected_ids: request.selected_ids } : {}),
+				...(request.history?.length ? { history: request.history } : {}),
+				...(request.allow_delete !== undefined ? { allow_delete: request.allow_delete } : {}),
+				...(request.options ? { options: request.options } : {}),
 			}));
 		});
 	}
@@ -355,7 +466,11 @@ export class AgoraClient {
 			if (message.ok === true && message.result && typeof message.result === 'object') {
 				entry.resolve(message.result as RuntimeResult);
 			} else {
-				entry.reject(new AgoraError(String(message.code || 'RUNTIME_VM_UNAVAILABLE')));
+				entry.reject(new AgoraError(
+					String(message.code || 'RUNTIME_VM_UNAVAILABLE'),
+					typeof message.message === 'string' ? message.message : undefined,
+					message,
+				));
 			}
 			return;
 		}

@@ -23,16 +23,28 @@ defmodule AgoraBroker.ServerSyncBackend do
       end
     end
 
+    for output <- event["test_outputs"] || [],
+        is_pid(input["runtime_sink"]) do
+      send(input["runtime_sink"], {:runtime_output, input["route"], %{"type" => "runtime_output", "output" => output}})
+    end
+
     response =
-      if event["type"] == "canvas_sync",
-        do: %{
-          "type" => "canvas_snapshot",
-          "sync_protocol" => 2,
-          "revision" => 0,
-          "accepted_count" => 0,
-          "items" => %{}
-        },
-        else: %{"type" => "canvas_result", "ok" => true, "revision" => 1, "server_revision" => 1}
+      cond do
+        is_map(event["test_runtime_response"]) ->
+          event["test_runtime_response"]
+
+        event["type"] == "canvas_sync" ->
+          %{
+            "type" => "canvas_snapshot",
+            "sync_protocol" => 2,
+            "revision" => 0,
+            "accepted_count" => 0,
+            "items" => %{}
+          }
+
+        true ->
+          %{"type" => "canvas_result", "ok" => true, "revision" => 1, "server_revision" => 1}
+      end
 
     result = %{
       "route" => input["route"],
@@ -668,5 +680,118 @@ defmodule AgoraBroker.RoomTest do
 
     send(second_peer, :stop)
     send(first_peer, :stop)
+  end
+
+  test "agent runtime validation, concurrency lanes, ACL and streaming commits", %{
+    room: room,
+    canvas: canvas
+  } do
+    reader = client(false, canvas, "group")
+    writer = %{reader | identity: Map.put(reader.identity, "write_groups", ["group"])}
+    other = %{client(false, canvas, "secret") | route: %{"canvas_id" => canvas, "connection_id" => Policy.id(), "request_id" => Policy.id()}}
+
+    :ok = Room.join(room, self(), writer)
+    assert_receive {:deliver, %{"type" => "init_items"}}
+    reader_pid = listener(room, reader)
+    assert_receive {:frame, ^reader_pid, %{"type" => "init_items"}}
+    other_pid = listener(room, other)
+    assert_receive {:frame, ^other_pid, %{"type" => "init_items"}}
+
+    assert {:error, "RUNTIME_REQUEST_INVALID"} =
+             Room.submit(room, self(), %{
+               "type" => "runtime_execute",
+               "action" => "agent",
+               "operation" => "run",
+               "api" => "https://evil.internal",
+               "message" => "hi"
+             })
+
+    assert {:error, "RUNTIME_REQUEST_INVALID"} =
+             Room.submit(room, self(), %{
+               "type" => "runtime_execute",
+               "action" => "agent",
+               "operation" => "run",
+               "options" => %{"reasoning_effort" => "medium"},
+               "message" => "hi"
+             })
+
+    assert {:error, "RUNTIME_EXECUTION_DENIED"} =
+             Room.submit(room, reader_pid, %{
+               "type" => "runtime_execute",
+               "action" => "agent",
+               "operation" => "run",
+               "message" => "hi"
+             })
+
+    :ok =
+      Room.submit(room, reader_pid, %{
+        "type" => "runtime_execute",
+        "action" => "agent",
+        "operation" => "status",
+        "api" => "k-exaone_v2.5",
+        "request_id" => "status-1",
+        "test_runtime_response" => %{"type" => "runtime_result", "ok" => true, "result" => %{"ready" => true}}
+      })
+
+    assert_receive {:query, %{"event" => %{"action" => "agent", "operation" => "status", "api" => "k-exaone_v2.5"}}}
+    assert_receive {:frame, ^reader_pid, %{"type" => "runtime_result", "request_id" => "status-1", "ok" => true}}
+
+    commit_broadcast = %{
+      "all" => true,
+      "event" => %{"type" => "canvas_commit", "revision" => 2, "items" => %{"c1" => %{"kind" => "text", "text" => "hi"}, "c2" => %{"kind" => "text", "text" => "secret"}}},
+      "permissions" => %{"c1" => "group", "c2" => "secret"}
+    }
+
+    outputs = [
+      Jason.encode!(%{"agent_event" => "progress", "text" => "planning\n"}),
+      Jason.encode!(%{"agent_event" => "commits", "broadcasts" => [commit_broadcast]})
+    ]
+
+    :ok =
+      Room.submit(room, self(), %{
+        "type" => "runtime_execute",
+        "action" => "agent",
+        "operation" => "run",
+        "api" => "k-exaone_v2.5",
+        "options" => %{"reasoning_effort" => "high", "max_tokens" => 4096, "max_steps" => 4, "temperature" => 0.7, "top_p" => 0.9},
+        "message" => "summarize",
+        "request_id" => "agent-1",
+        "wait" => true,
+        "test_outputs" => outputs,
+        "test_runtime_response" => %{"type" => "runtime_result", "ok" => true, "result" => %{"answer" => "ok"}}
+      })
+
+    assert_receive {:waiting, worker}
+
+    assert {:error, "AGENT_REQUEST_BUSY"} =
+             Room.submit(room, self(), %{
+               "type" => "runtime_execute",
+               "action" => "agent",
+               "operation" => "run",
+               "message" => "second"
+             })
+
+    :ok =
+      Room.submit(room, reader_pid, %{
+        "type" => "runtime_execute",
+        "action" => "agent",
+        "operation" => "status",
+        "request_id" => "status-concurrent",
+        "test_runtime_response" => %{"type" => "runtime_result", "ok" => true, "result" => %{"ready" => true}}
+      })
+
+    assert_receive {:frame, ^reader_pid, %{"type" => "runtime_result", "request_id" => "status-concurrent", "ok" => true}}
+
+    send(worker, :release)
+    assert_receive {:deliver, %{"type" => "runtime_output", "request_id" => "agent-1", "output" => "planning\n"}}
+    assert_receive {:frame, ^reader_pid, %{"type" => "canvas_commit", "revision" => 2, "items" => reader_items}}
+    assert Map.keys(reader_items) == ["c1"]
+    assert_receive {:frame, ^other_pid, %{"type" => "canvas_commit", "revision" => 2, "items" => other_items}}
+    assert Map.keys(other_items) == ["c2"]
+    assert_receive {:deliver, %{"type" => "runtime_result", "request_id" => "agent-1", "ok" => true}}
+    assert :sys.get_state(room).revision == 2
+
+    send(reader_pid, :stop)
+    send(other_pid, :stop)
   end
 end

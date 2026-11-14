@@ -662,3 +662,21 @@ return ARGV[4]
     try { auto parsed = nlohmann::json::parse(*result); if (!parsed.is_object()) return std::nullopt; return std::optional<nlohmann::json>(std::in_place, parsed); }
     catch (...) { return std::nullopt; }
 }
+
+std::optional<nlohmann::json> CanvasServiceMemory::agentItemIds(int id, int offset, int limit) {
+    return agentItemIds(SpaceScope::Workspace, id, offset, limit);
+}
+
+std::optional<nlohmann::json> CanvasServiceMemory::agentItemIds(SpaceScope scope, int id, int offset, int limit) {
+    const auto key = spaceRedisKey(scope, id);
+    const auto script = std::string(
+        "local keys=redis.call('JSON.OBJKEYS',KEYS[1],'$.items');"
+        "local ids=(type(keys)=='table' and keys[1]) or {};"
+        "local result={};local offset=tonumber(ARGV[1]);local limit=tonumber(ARGV[2]);"
+        "for i=offset+1,math.min(#ids,offset+limit) do result[#result+1]=ids[i] end;"
+        "return cjson.encode({ids=result,more=#ids>offset+limit})");
+    const auto raw = memory_->executeAtomic(key, {"EVAL", script, "1", key, std::to_string(offset), std::to_string(limit)}, {});
+    if (!raw) return std::nullopt;
+    try { return nlohmann::json::parse(*raw); }
+    catch (...) { return std::nullopt; }
+}

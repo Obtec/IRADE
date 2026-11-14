@@ -95,6 +95,8 @@ public:
         const nlohmann::json& permission, const nlohmann::json& message);
     std::optional<nlohmann::json> commitChatMessage(SpaceScope scope, int canvas_id, const std::string& room_id,
         const nlohmann::json& permission, const nlohmann::json& message);
+    std::optional<nlohmann::json> agentItemIds(int id, int offset, int limit);
+    std::optional<nlohmann::json> agentItemIds(SpaceScope scope, int id, int offset, int limit);
 
 private:
     std::unique_ptr<MemoryClass> memory_;

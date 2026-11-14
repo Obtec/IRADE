@@ -393,7 +393,7 @@ defmodule AgoraBroker.Room do
             {:reply, {:error, "RUNTIME_REQUEST_TOO_LARGE"}, state}
 
           type == "runtime_execute" and runtime_busy?(event, state) ->
-            {:reply, {:error, "RUNTIME_BUSY"}, state}
+            {:reply, {:error, runtime_busy_code(event)}, state}
 
           type == "runtime_execute" ->
             {:reply, :ok, start_runtime_request(client, event, state)}
@@ -432,48 +432,100 @@ defmodule AgoraBroker.Room do
     end
   end
 
-  defp runtime_busy?(event,state) do
-    service=event["action"]=="service"
-    Enum.count(state.runtime_tasks,fn {_,entry}->(entry.event["action"]=="service")==service end)>=(if service,do: 4,else: 1)
+  defp runtime_lane(%{"action" => "service"}), do: :service
+  defp runtime_lane(%{"action" => "agent", "operation" => "status"}), do: :agent_status
+  defp runtime_lane(%{"action" => "agent"}), do: :agent
+  defp runtime_lane(_), do: :runtime
+
+  defp runtime_busy_code(%{"action" => "agent", "operation" => "status"}), do: "AGENT_STATUS_BUSY"
+  defp runtime_busy_code(%{"action" => "agent"}), do: "AGENT_REQUEST_BUSY"
+  defp runtime_busy_code(_), do: "RUNTIME_BUSY"
+
+  defp runtime_busy?(event, state) do
+    lane = runtime_lane(event)
+    limit = if lane in [:service, :agent_status], do: 4, else: 1
+    Enum.count(state.runtime_tasks, fn {_, entry} -> runtime_lane(entry.event) == lane end) >= limit
   end
 
   defp runtime_allowed?(identity, event) do
-    if event["action"]=="service" do
-      request=event["service"]||%{}
-      read=request["operation"]=="resource" or (request["operation"] in [nil,"api"] and (request["method"] in [nil,"GET"] or String.starts_with?(request["path"]||"", "/github") or request["path"] in ["/access","/link-preview"]))
-      manager=String.starts_with?(request["path"]||"", "/bots") or request["path"] in ["/github/bind","/github/permissions","/people"] or (request["path"]=="" and request["method"]=="DELETE") or (request["path"]=="/image" and not read)
-      identity["is_admin"]==true or (not manager and (if request["path"]=="/runtime/terminal/ticket",do: Policy.can_execute?(identity),else: (if read,do: (identity["groups"]||[])!=[],else: (identity["write_groups"]||[])!=[])))
-    else
-    if event["action"] == "manage" and get_in(event, ["management", "action"]) == "settings_get" do
-      identity["is_admin"] == true or (identity["groups"] || []) != []
-    else
-      manage = event["action"] == "manage" or (event["action"] == "notebook" and event["operation"] == "prepare")
-      Policy.can_execute?(identity) and (not manage or identity["is_admin"] == true or (identity["write_groups"] || []) != [])
+    cond do
+      event["action"] == "service" ->
+        request = event["service"] || %{}
+        read = request["operation"] == "resource" or (request["operation"] in [nil, "api"] and (request["method"] in [nil, "GET"] or String.starts_with?(request["path"] || "", "/github") or request["path"] in ["/access", "/link-preview"]))
+        manager = String.starts_with?(request["path"] || "", "/bots") or request["path"] in ["/github/bind", "/github/permissions", "/people"] or (request["path"] == "" and request["method"] == "DELETE") or (request["path"] == "/image" and not read)
+        identity["is_admin"] == true or (not manager and (if request["path"] == "/runtime/terminal/ticket", do: Policy.can_execute?(identity), else: (if read, do: (identity["groups"] || []) != [], else: (identity["write_groups"] || []) != [])))
+
+      event["action"] == "agent" ->
+        if event["operation"] == "status" do
+          identity["is_admin"] == true or (identity["groups"] || []) != []
+        else
+          identity["is_admin"] == true or (identity["write_groups"] || []) != []
+        end
+
+      event["action"] == "manage" and get_in(event, ["management", "action"]) == "settings_get" ->
+        identity["is_admin"] == true or (identity["groups"] || []) != []
+
+      true ->
+        manage = event["action"] == "manage" or (event["action"] == "notebook" and event["operation"] == "prepare")
+        Policy.can_execute?(identity) and (not manage or identity["is_admin"] == true or (identity["write_groups"] || []) != [])
     end
   end
+
+  defp valid_agent_options?(nil), do: true
+
+  defp valid_agent_options?(options) when is_map(options) and map_size(options) <= 5 do
+    Enum.all?(options, fn
+      {"reasoning_effort", value} -> value in ["low", "high", "max"]
+      {"max_tokens", value} -> is_integer(value) and value in 512..32768
+      {"max_steps", value} -> is_integer(value) and value in 1..12
+      {"temperature", value} -> is_number(value) and value >= 0 and value <= 2
+      {"top_p", value} -> is_number(value) and value >= 0.05 and value <= 1
+      _ -> false
+    end)
   end
+
+  defp valid_agent_options?(_), do: false
 
   defp runtime_request_valid?(event) do
     action = event["action"]
     code = event["code"]
     object_id = event["object_id"]
-    if action=="service" do
-      is_map(event["service"]) and is_binary(event["service"]["path"]) and byte_size(event["service"]["path"])<=2048 and event["service"]["operation"] in [nil,"api","resource","upload_begin","upload_chunk","upload_finish","upload_cancel"]
-    else
-    if action == "manage" do
-      is_map(event["management"]) and event["management"]["action"] in ["settings_get", "settings_set", "resources_set", "disk_set", "java_dependencies", "reset"]
-    else
-      is_binary(action) and action in ["execute", "build", "notebook"] and
-        is_binary(code) and byte_size(code) <= 65_536 and
-        is_binary(object_id) and byte_size(object_id) in 1..128 and
-        (action == "notebook" or event["language"] in ["python", "javascript", "c", "cpp", "bash", "java"]) and
-        (action != "notebook" or
-          (event["operation"] in [nil, "execute", "prepare", "reset"] and
-           is_binary(event["notebook_id"]) and byte_size(event["notebook_id"]) in 1..128 and
-           (event["operation"] in ["prepare", "reset"] or (is_binary(event["cell_id"]) and byte_size(event["cell_id"]) in 1..128)))) and
-        (is_nil(event["stdin"]) or (is_binary(event["stdin"]) and byte_size(event["stdin"]) <= 65_536))
+
+    cond do
+      action == "service" ->
+        is_map(event["service"]) and is_binary(event["service"]["path"]) and byte_size(event["service"]["path"]) <= 2048 and event["service"]["operation"] in [nil, "api", "resource", "upload_begin", "upload_chunk", "upload_finish", "upload_cancel"]
+
+      action == "agent" ->
+        op = event["operation"]
+        msg = event["message"]
+        api = event["api"]
+        api_key = event["api_key"]
+        selected = event["selected_ids"]
+        history = event["history"]
+        op in [nil, "run", "status"] and
+          (is_nil(api) or (is_binary(api) and byte_size(api) in 1..64 and String.match?(api, ~r/\A[A-Za-z0-9._-]+\z/))) and
+          (is_nil(api_key) or (is_binary(api_key) and byte_size(api_key) <= 512)) and
+          valid_agent_options?(event["options"]) and
+          (op == "status" or (is_binary(msg) and byte_size(msg) in 1..20_000)) and
+          (op != "status" or is_nil(msg) or (is_binary(msg) and byte_size(msg) <= 20_000)) and
+          (is_nil(selected) or (is_list(selected) and length(selected) <= 48 and Enum.all?(selected, &(is_binary(&1) and byte_size(&1) in 1..128)))) and
+          (is_nil(history) or (is_list(history) and length(history) <= 16 and Enum.all?(history, fn item -> is_map(item) and item["role"] in ["user", "assistant"] and is_binary(item["content"]) and byte_size(item["content"]) <= 8000 end))) and
+          (is_nil(event["allow_delete"]) or is_boolean(event["allow_delete"]))
+
+      action == "manage" ->
+        is_map(event["management"]) and event["management"]["action"] in ["settings_get", "settings_set", "resources_set", "disk_set", "java_dependencies", "reset"]
+
+      true ->
+        is_binary(action) and action in ["execute", "build", "notebook"] and
+          is_binary(code) and byte_size(code) <= 65_536 and
+          is_binary(object_id) and byte_size(object_id) in 1..128 and
+          (action == "notebook" or event["language"] in ["python", "javascript", "c", "cpp", "bash", "java"]) and
+          (action != "notebook" or
+            (event["operation"] in [nil, "execute", "prepare", "reset"] and
+             is_binary(event["notebook_id"]) and byte_size(event["notebook_id"]) in 1..128 and
+             (event["operation"] in ["prepare", "reset"] or (is_binary(event["cell_id"]) and byte_size(event["cell_id"]) in 1..128)))) and
+          (is_nil(event["stdin"]) or (is_binary(event["stdin"]) and byte_size(event["stdin"]) <= 65_536))
     end
-  end
   end
 
   defp start_runtime_request(client, event, state) do
@@ -706,13 +758,26 @@ defmodule AgoraBroker.Room do
       when is_binary(output) do
     entry = Enum.find_value(state.runtime_tasks, fn {_ref, task} -> if task.route == route, do: task end)
 
-    if entry && Map.has_key?(state.sessions, entry.client.pid) do
-      deliver(entry.client.pid, %{
-        "type" => "runtime_output",
-        "request_id" => entry.event["request_id"],
-        "output" => output
-      })
-    end
+    state =
+      if entry do
+        case agent_runtime_output(entry, output) do
+          {:commits, broadcasts} ->
+            broadcast_agent_commits(state, broadcasts)
+
+          {:output, text} ->
+            if Map.has_key?(state.sessions, entry.client.pid) and text != "" do
+              deliver(entry.client.pid, %{
+                "type" => "runtime_output",
+                "request_id" => entry.event["request_id"],
+                "output" => text
+              })
+            end
+
+            state
+        end
+      else
+        state
+      end
 
     {:noreply, state}
   end
@@ -762,6 +827,37 @@ defmodule AgoraBroker.Room do
           do: {:noreply, dispatch(%{state | queue: :queue.in(entry, state.queue)})},
           else: {:noreply, state}
     end
+  end
+
+  defp agent_runtime_output(%{event: %{"action" => "agent"}}, output) do
+    case Jason.decode(output) do
+      {:ok, %{"agent_event" => "commits", "broadcasts" => broadcasts}} when is_list(broadcasts) ->
+        {:commits, broadcasts}
+
+      {:ok, %{"agent_event" => "progress"} = payload} ->
+        text = payload["text"] || payload["output"]
+        if is_binary(text), do: {:output, text}, else: {:output, output}
+
+      _ ->
+        {:output, output}
+    end
+  end
+
+  defp agent_runtime_output(_, output), do: {:output, output}
+
+  defp broadcast_agent_commits(state, broadcasts) do
+    next_revision =
+      Enum.reduce(broadcasts, state.revision, fn broadcast, acc ->
+        for {pid, client} <- state.sessions,
+            not client.rtc and Policy.receives?(client.identity, broadcast) do
+          deliver(pid, filtered_event(broadcast, client.identity))
+        end
+
+        rev = get_in(broadcast, ["event", "revision"])
+        if is_integer(rev), do: max(acc, rev), else: acc
+      end)
+
+    %{state | revision: next_revision}
   end
 
   defp update_settings_in_place(state, settings) do

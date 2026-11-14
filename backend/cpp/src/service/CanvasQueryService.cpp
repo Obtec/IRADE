@@ -15,6 +15,8 @@
 #include "service/CanvasBrokerOperations.hpp"
 #include "service/CanvasMentions.hpp"
 #include "service/RuntimeKernelClient.hpp"
+#include "service/AgentClient.hpp"
+#include "service/WorkspaceAgentTools.hpp"
 
 namespace {
 using Json = nlohmann::json;
@@ -78,7 +80,7 @@ Json CanvasQueryService::execute(const Json& input, const OutputHandler& on_outp
         return envelope(route, {{"type", "error"}, {"ok", false}, {"code", "QUERY_DATA_INVALID"}});
     } catch (const std::runtime_error& error) {
         const std::string code=error.what();
-        const bool runtime_error=code.rfind("RUNTIME_",0)==0;
+        const bool runtime_error=code.rfind("RUNTIME_",0)==0||code.rfind("AGENT_",0)==0;
         return envelope(route, {{"type", "error"}, {"ok", false}, {"code", runtime_error||code=="STORAGE_UNAVAILABLE"||code=="QUERY_OUTCOME_UNKNOWN"||code=="CANVAS_NOT_READY"?code:"QUERY_UNAVAILABLE"}});
     } catch (...) {
         return envelope(route, {{"type", "error"}, {"ok", false}, {"code", "QUERY_UNAVAILABLE"}});
@@ -197,6 +199,208 @@ Json CanvasQueryService::query(const Json& input, const OutputHandler& on_output
     const auto member_groups=identity.value("member_groups",identity["groups"]).get<std::unordered_set<std::string>>();
     CanvasAclScope access(identity.value("group_bits",Json::object()),{&groups,&write_groups,&execute_groups,&member_groups});
     CanvasServiceMemory memory(canvas->getRedisIp(), canvas->getRedisPort());
+    if (type == "agent_tool") {
+        if (scope != SpaceScope::Workspace) throw std::invalid_argument("AGENT_SCOPE_DENIED");
+        const auto name = event.value("name", std::string());
+        const auto args = event.value("arguments", Json::object());
+        if (!args.is_object() || args.dump().size() > 800000) throw std::invalid_argument("AGENT_ARGUMENTS_INVALID");
+        auto readable = [&](const std::string& key) {
+            if (!validQueryItemId(key)) throw std::invalid_argument("ITEM_ID_INVALID");
+            const auto target = readItem(memory, scope, id, key);
+            if (!target || !target->contains("kind") || target->value("kind", "") == "host-tombstone"
+                || !queryCanAccess(*target, groups, admin)) {
+                throw std::invalid_argument("ITEM_ACCESS_DENIED");
+            }
+            return *target;
+        };
+        if (name == "get_objects") {
+            const auto ids = args.value("ids", Json::array());
+            if (!ids.is_array() || ids.empty() || ids.size() > 6) throw std::invalid_argument("AGENT_ARGUMENTS_INVALID");
+            Json objects = Json::array();
+            for (const auto& key : ids) {
+                const auto item = readable(key.get<std::string>());
+                const auto source = agora::agent::publicItem(item, true);
+                if (source.dump().size() > 100000) throw std::invalid_argument("AGENT_OBJECT_TOO_LARGE");
+                objects.push_back({{"id", key}, {"revision", item.value("__broker_revision", 0LL)}, {"item", source}});
+            }
+            return envelope(route, {{"type", "agent_tool_result"}, {"result", {{"objects", objects}}}});
+        }
+        if (name == "list_objects") {
+            const auto offset = args.value("offset", 0), limit = args.value("limit", 20);
+            if (offset < 0 || offset > 10000000 || limit < 1 || limit > 50) throw std::invalid_argument("AGENT_ARGUMENTS_INVALID");
+            const auto page = memory.agentItemIds(scope, id, offset, 100);
+            if (!page) throw std::runtime_error("STORAGE_UNAVAILABLE");
+            Json objects = Json::array();
+            int examined = 0;
+            for (const auto& key : page->value("ids", Json::array())) {
+                ++examined;
+                const auto item = readItem(memory, scope, id, key.get<std::string>());
+                if (!item || !item->contains("kind") || item->value("kind", "") == "host-tombstone"
+                    || !queryCanAccess(*item, groups, admin)) {
+                    continue;
+                }
+                const auto kind = args.value("kind", std::string()), search = args.value("query", std::string());
+                if (!kind.empty() && item->value("kind", "") != kind) continue;
+                const auto title = item->value("title", std::string()) + item->value("filename", std::string());
+                if (!search.empty() && title.find(search) == std::string::npos) continue;
+                objects.push_back({{"id", key}, {"item", agora::agent::publicItem(*item, false)}});
+                if (objects.size() >= static_cast<std::size_t>(limit)) break;
+            }
+            const bool more = examined < 100 ? objects.size() >= static_cast<std::size_t>(limit) : page->value("more", false);
+            return envelope(route, {{"type", "agent_tool_result"}, {"result", {{"objects", objects}, {"next_offset", more ? Json(offset + examined) : Json(nullptr)}}}});
+        }
+        if (write_groups.empty() && !admin) throw std::invalid_argument("ITEM_WRITE_DENIED");
+        Json operations = Json::array(), ids = Json::array();
+        if (name == "create_objects") {
+            const auto values = args.value("items", Json::array());
+            if (!values.is_array() || values.empty() || values.size() > 10) throw std::invalid_argument("AGENT_ARGUMENTS_INVALID");
+            long long max_order = -10;
+            if (const auto raw = memory.loadCanvas(scope, id)) {
+                try {
+                    const auto doc = Json::parse(*raw);
+                    if (doc.contains("items") && doc["items"].is_object()) {
+                        for (const auto& entry : doc["items"].items()) {
+                            const auto& existing = entry.value();
+                            if (existing.value("kind", "") == "host-tombstone") continue;
+                            if (existing.contains("frameOrder") && existing["frameOrder"].is_number_integer()) {
+                                const long long fo = existing["frameOrder"].get<long long>();
+                                if (fo >= 0 && fo <= 1000000 && fo > max_order) max_order = fo;
+                            }
+                        }
+                    }
+                } catch (...) {}
+            }
+            for (auto item : values) {
+                agora::agent::fields(item);
+                if (!item.contains("frameOrder")) {
+                    const long long next_order = max_order < 0 ? 0
+                        : (max_order + 10 <= 1000000 ? max_order + 10 : (max_order < 1000000 ? max_order + 1 : 1000000));
+                    item["frameOrder"] = next_order;
+                    max_order = next_order;
+                }
+                const auto key = agora::agent::randomId();
+                item["permission"] = member_groups;
+                operations.push_back({{"action", "create"}, {"id", key}, {"patch", item}});
+                ids.push_back(key);
+            }
+        } else if (name == "patch_objects" || name == "delete_objects") {
+            if (name == "delete_objects" && !event.value("allow_delete", false)) throw std::invalid_argument("AGENT_DELETE_DISABLED");
+            const auto values = args.value(name == "patch_objects" ? "changes" : "objects", Json::array());
+            if (!values.is_array() || values.empty() || values.size() > 10) throw std::invalid_argument("AGENT_ARGUMENTS_INVALID");
+            for (const auto& value : values) {
+                const auto key = value.at("id").get<std::string>();
+                const auto item = readable(key);
+                if (!queryCanAccess(item, write_groups, admin) || queryObjectLocked(item)) throw std::invalid_argument("ITEM_WRITE_DENIED");
+                Json op{{"id", key}, {"action", name == "patch_objects" ? "patch" : "delete"}, {"expected_revision", value.at("revision")}};
+                if (name == "patch_objects") {
+                    const auto patch = value.at("patch");
+                    agora::agent::fields(patch);
+                    if (patch.contains("kind") && patch["kind"] != item["kind"]) throw std::invalid_argument("ITEM_KIND_INVALID");
+                    op["patch"] = patch;
+                    const auto kind = item.value("kind", std::string());
+                    const auto field = kind == "code" ? "code" : "text";
+                    if ((kind == "text" || kind == "note" || kind == "code") && patch.contains(field)) {
+                        op["unset"] = Json::array({"automerge_snapshot", "automerge_changes"});
+                    }
+                }
+                operations.push_back(op);
+                ids.push_back(key);
+            }
+        } else {
+            throw std::invalid_argument("AGENT_TOOL_UNKNOWN");
+        }
+        const auto client = "agent-" + std::to_string(identity["user_id"].get<long long>());
+        const auto key = std::to_string(identity["user_id"].get<long long>()) + ":" + client;
+        const auto sync = memory.brokerSyncState(scope, id, key);
+        if (!sync) throw std::runtime_error("STORAGE_UNAVAILABLE");
+        const auto receipt = sync->value("receipt", Json());
+        const auto count = receipt.is_null() ? 1LL : receipt.value("count", 0LL) + 1;
+        auto nested = input;
+        nested["event"] = {{"type", "canvas_ops"}, {"client_id", client}, {"request_count", count}, {"operations", operations}};
+        lock.unlock();
+        auto applied = query(nested);
+        auto response = applied.at("response");
+        response["type"] = "agent_tool_result";
+        response["result"] = {{"object_ids", ids}, {"revision", response.value("revision", 0LL)}};
+        applied["response"] = response;
+        return applied;
+    }
+    if (type == "runtime_execute" && event.value("action", std::string()) == "agent") {
+        if (scope != SpaceScope::Workspace || (!admin && groups.empty())) throw std::invalid_argument("AGENT_SCOPE_DENIED");
+        const auto operation = event.value("operation", std::string("run"));
+        if (operation != "run" && operation != "status") throw std::invalid_argument("AGENT_REQUEST_INVALID");
+        const auto api = event.value("api", std::string());
+        if (!agora::agent::validApiId(api)) throw std::invalid_argument("AGENT_API_INVALID");
+        const auto message = event.value("message", std::string());
+        const auto selected = event.value("selected_ids", Json::array());
+        const auto history = event.value("history", Json::array());
+        if (operation == "run" && (message.empty() || message.size() > 24000)) throw std::invalid_argument("AGENT_REQUEST_INVALID");
+        if (!selected.is_array() || selected.size() > 20 || !history.is_array() || history.size() > 12) {
+            throw std::invalid_argument("AGENT_REQUEST_INVALID");
+        }
+        for (const auto& entry : history) {
+            if (!entry.is_object() || !entry.contains("role") || !entry["role"].is_string()
+                || (entry["role"] != "user" && entry["role"] != "assistant")
+                || !entry.contains("content") || !entry["content"].is_string()
+                || entry["content"].get_ref<const std::string&>().size() > 24000) {
+                throw std::invalid_argument("AGENT_REQUEST_INVALID");
+            }
+        }
+        for (const auto& selected_id : selected) {
+            if (!selected_id.is_string() || !validQueryItemId(selected_id.get<std::string>())) {
+                throw std::invalid_argument("AGENT_REQUEST_INVALID");
+            }
+            const auto item = readItem(memory, scope, id, selected_id.get<std::string>());
+            if (!item || !queryCanAccess(*item, groups, admin)) throw std::invalid_argument("ITEM_ACCESS_DENIED");
+        }
+        const auto api_key = event.value("api_key", std::string());
+        if (api_key.size() > 4096 || std::any_of(api_key.begin(), api_key.end(), [](unsigned char c) { return c < 33 || c > 126; })) {
+            throw std::invalid_argument("AGENT_API_KEY_INVALID");
+        }
+        const auto agent_options = event.value("options", Json::object());
+        agora::agent::options(agent_options);
+        Json payload{
+            {"api", api},
+            {"api_key", api_key},
+            {"options", agent_options},
+            {"operation", operation},
+            {"workspace_id", id},
+            {"canvas_id", id},
+            {"user_id", identity["user_id"]},
+            {"message", message},
+            {"selected_ids", selected},
+            {"history", history},
+            {"allow_delete", event.value("allow_delete", false)}
+        };
+        lock.unlock();
+        auto result = agora::agent::request(
+            payload,
+            [&](const std::string& tool, const Json& args) {
+                auto nested = input;
+                nested["route"]["request_id"] = agora::agent::randomId();
+                nested["event"] = {{"type", "agent_tool"}, {"name", tool}, {"arguments", args}, {"allow_delete", event.value("allow_delete", false)}};
+                auto reply = execute(nested);
+                const auto response = reply.value("response", Json::object());
+                if (response.value("ok", true) == false || response.value("type", std::string()) == "error") {
+                    return Json{{"error", response.value("code", std::string("AGENT_TOOL_REJECTED"))}};
+                }
+                if (reply.contains("broadcasts") && on_output) {
+                    on_output(Json{{"agent_event", "commits"}, {"broadcasts", reply["broadcasts"]}}.dump());
+                }
+                return response.value("result", Json::object());
+            },
+            [&](const std::string& text) {
+                if (on_output) on_output(Json{{"agent_event", "progress"}, {"text", text}}.dump());
+            });
+        const bool ok = !result.contains("error");
+        return envelope(route, {
+            {"type", "runtime_result"},
+            {"ok", ok},
+            {"code", result.value("error", std::string())},
+            {"message", result.value("message", std::string())},
+            {"result", result}
+        });
+    }
     if (type == "runtime_execute") {
         if (!event.contains("action") || !event["action"].is_string()) throw std::invalid_argument("RUNTIME_REQUEST_INVALID");
         const auto action=event["action"].get<std::string>();
