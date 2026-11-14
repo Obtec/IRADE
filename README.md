@@ -4,7 +4,7 @@
 
 Visual Studio Code(Code - OSS) 기반의 프론트엔드 IDE와 고성능 상주형 정리 증명 커널(`notebook-kernel`)을 통합하여, 대화형 전술 탐색(Interactive Tactic Exploration), 불변 상태 스냅샷 및 자동 롤백, 실시간 분할 InfoView를 완벽하게 지원합니다.
 
-웹 연구 환경은 **[frelog.p-e.kr/irade/](https://frelog.p-e.kr/irade/)** 에서 사용할 수 있습니다. 대화 기록·Lean 4/Rocq 증명·Python 코드·Markdown/HTML 문서 셀을 workspace 단위로 편집하고 공유합니다. 새 웹 UI의 사용법과 현재 커널 연결 범위는 [agora-workspace/README.md](agora-workspace/README.md)를 참고하세요.
+웹 연구 환경은 **[proof-notebook.p-e.kr](https://proof-notebook.p-e.kr)** (모든 서비스 HTTPS/WSS 전용)에서 사용할 수 있습니다. 대화 기록·Lean 4/Rocq 증명·Python 코드·Markdown/HTML 문서 셀을 workspace 단위로 편집하고 공유합니다. 웹 스튜디오 사용법은 [web/README.md](web/README.md), 공개 Let's Encrypt TLS 설정은 [backend/docs/PUBLIC_TLS.md](backend/docs/PUBLIC_TLS.md)를 참고하세요.
 
 ---
 
@@ -92,9 +92,9 @@ rocq-kernel doctor
 ```
 
 설치 완료 후 다음 중 하나의 방법으로 증명 환경을 실행할 수 있습니다:
-- **Web Proof Studio 실행**:
+- **Web Proof Studio 실행 (HTTPS 전용)**:
   ```bash
-  lean4-kernel serve --host 127.0.0.1 --port 8890
+  lean4-kernel serve --host 127.0.0.1 --port 8890 --self-signed
   ```
 - **JupyterLab 실행**:
   ```bash

@@ -16,12 +16,16 @@ def validate():
     values = {**setup.read_env(ROOT / '.env'), **os.environ}
     if values.get('FRONTEND_MODE', 'production') not in ('development', 'production'):
         raise ValueError('FRONTEND_MODE must be development or production.')
+    if values.get('NGINX_EDGE_TRUST', 'internal') not in ('internal', 'system'):
+        raise ValueError('NGINX_EDGE_TRUST must be internal or system.')
     result = subprocess.run(['docker', 'compose', '--project-directory', str(ROOT), '--env-file', str(ROOT / '.env'), '-f', str(ROOT / 'docker-compose.nginx.yml'), 'config', '--format', 'json'], env=values, capture_output=True, text=True, timeout=20)
     if result.returncode: raise ValueError('Invalid gateway Compose configuration; review .env.')
     config = json.loads(result.stdout)
     for mount in config['services']['nginx']['volumes']:
-        if mount['type'] == 'bind' and not Path(mount['source']).is_file():
-            raise ValueError(f'Missing bind file for {mount["target"]}.')
+        if mount['type'] == 'bind':
+            source = Path(mount['source'])
+            if not source.is_file() or not os.access(source, os.R_OK):
+                raise ValueError(f'Missing or unreadable bind file for {mount["target"]}: {source}')
     network = subprocess.run(['docker', 'network', 'inspect', 'irade-services'], capture_output=True, text=True, timeout=10)
     if network.returncode: raise ValueError('Start Wall storage-broker first to create irade-services.')
     network = json.loads(network.stdout)[0]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import ssl
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,7 @@ from lean4_kernel.web import (
     NotebookStore,
     ProofNotebookHTTPServer,
     create_server,
+    resolve_tls_credentials,
 )
 
 httpx = pytest.importorskip("httpx")
@@ -27,11 +29,12 @@ def web_server(tmp_path: Path):
         data_dir=tmp_path / "data",
         max_kernels=6,
         redis_client=redis_client,
+        self_signed=True,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host, port = server.server_address[:2]
-    base_url = f"http://{host}:{port}"
+    base_url = f"https://{host}:{port}"
     try:
         yield base_url, server
     finally:
@@ -107,9 +110,9 @@ def test_notebook_store_starts_empty_without_example_and_supports_lean_python_md
 def test_workspace_redis_lifecycle_mount_update_unmount(
     web_server: tuple[str, ProofNotebookHTTPServer],
 ) -> None:
-    base_url, _ = web_server
+    base_url, server = web_server
     headers = {"X-Proof-User": "researcher-redis", "X-Proof-Client": "tab-1"}
-    with httpx.Client(base_url=base_url, headers=headers, timeout=20.0) as client:
+    with httpx.Client(base_url=base_url, headers=headers, verify=ssl.create_default_context(cafile=server.cert_file), timeout=20.0) as client:
         # Initially empty workspace list
         r_list0 = client.get("/api/workspaces")
         assert r_list0.status_code == 200
@@ -169,8 +172,8 @@ def test_workspace_redis_lifecycle_mount_update_unmount(
 
 
 def test_web_static_and_metadata_endpoints(web_server: tuple[str, ProofNotebookHTTPServer]) -> None:
-    base_url, _ = web_server
-    with httpx.Client(base_url=base_url, timeout=15.0) as client:
+    base_url, server = web_server
+    with httpx.Client(base_url=base_url, verify=ssl.create_default_context(cafile=server.cert_file), timeout=15.0) as client:
         r_index = client.get("/")
         assert r_index.status_code == 200
         assert "Lean 4 Proof Studio" in r_index.text
@@ -202,9 +205,9 @@ def test_web_static_and_metadata_endpoints(web_server: tuple[str, ProofNotebookH
 def test_web_dual_kernel_lean4_proof_and_python_code_execution(
     web_server: tuple[str, ProofNotebookHTTPServer],
 ) -> None:
-    base_url, _ = web_server
+    base_url, server = web_server
     headers = {"X-Proof-User": "alice-polyglot"}
-    with httpx.Client(base_url=base_url, headers=headers, timeout=60.0) as client:
+    with httpx.Client(base_url=base_url, headers=headers, verify=ssl.create_default_context(cafile=server.cert_file), timeout=60.0) as client:
         # 1. Create a workspace with Lean 4 definition, Lean 4 sumUpTo_double proof (omega), and Python 3 cell
         r_create = client.post(
             "/api/workspaces",
@@ -362,7 +365,7 @@ def test_agora_bridge_canvas_export_and_import(
         patch.object(server.app.agora, "_sdk_client", return_value=fake_sdk),
     ):
         headers = {"Authorization": "Bearer test-jwt-token-xyz"}
-        with httpx.Client(base_url=base_url, headers=headers, timeout=20.0) as client:
+        with httpx.Client(base_url=base_url, headers=headers, verify=ssl.create_default_context(cafile=server.cert_file), timeout=20.0) as client:
             r_sess = client.get("/api/auth/session")
             assert r_sess.status_code == 200
             assert r_sess.json()["user"]["nickname"] == "DrLean"
@@ -395,11 +398,13 @@ def test_realtime_multiuser_sync_and_error_visibility(
         httpx.Client(
             base_url=base_url,
             headers={"X-Proof-User": "alice", "X-Proof-Client": "client-alice"},
+            verify=ssl.create_default_context(cafile=server.cert_file),
             timeout=30.0,
         ) as alice,
         httpx.Client(
             base_url=base_url,
             headers={"X-Proof-User": "bob", "X-Proof-Client": "client-bob"},
+            verify=ssl.create_default_context(cafile=server.cert_file),
             timeout=30.0,
         ) as bob,
     ):
@@ -468,3 +473,31 @@ def test_realtime_multiuser_sync_and_error_visibility(
             assert any(e["type"] == "cell.executed" and e["data"]["lastRunStatus"] == "error" for e in exec_events)
         finally:
             server.app.realtime.unsubscribe(nb_id, sub_q)
+
+
+def test_web_server_enforces_https_only_and_rejects_missing_tls(
+    web_server: tuple[str, ProofNotebookHTTPServer],
+    tmp_path: Path,
+) -> None:
+    base_url, server = web_server
+    assert base_url.startswith("https://")
+    plain_url = "http://" + base_url.removeprefix("https://")
+    with pytest.raises(Exception):
+        httpx.get(f"{plain_url}/api/health", timeout=3.0)
+
+    with pytest.raises(FileNotFoundError):
+        create_server(
+            host="127.0.0.1",
+            port=0,
+            data_dir=tmp_path / "missing-tls-data",
+            redis_client=AgoraRedisClient(force_memory=True),
+            cert_file=tmp_path / "missing-cert.pem",
+            key_file=tmp_path / "missing-key.pem",
+            allow_ephemeral_tls=False,
+        )
+
+    with pytest.raises((FileNotFoundError, RuntimeError)):
+        resolve_tls_credentials(
+            tls_dir=tmp_path / "empty-tls-dir",
+            allow_ephemeral_tls=False,
+        )

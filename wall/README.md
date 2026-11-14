@@ -1,6 +1,6 @@
-# project-agora-Wall
+# IRADE Wall Gateway
 
-Agora의 외부 진입점과 서버 간 메시징 인프라를 관리하는 저장소입니다. Nginx와 Phoenix/Elixir WebSocket 메시지 브로커를 포함합니다. 브로커는 라우팅·브로드캐스트를 담당하고 C++가 데이터를 처리·저장합니다.
+IRADE의 외부 HTTPS/WSS 진입점과 서버 간 메시징 인프라를 관리하는 디렉터리입니다. Nginx와 Phoenix/Elixir WebSocket 메시지 브로커를 포함합니다. 브로커는 라우팅·브로드캐스트를 담당하고 C++가 데이터를 처리·저장합니다.
 
 ## 구성
 
@@ -9,15 +9,20 @@ Agora의 외부 진입점과 서버 간 메시징 인프라를 관리하는 저�
 | `broker/` | Phoenix 브로커와 지속 WSS C++ 클라이언트 |
 | `docker-compose.broker.yml` | 브로커와 인증서 볼륨 초기화 |
 | `scripts/broker-docker.sh` | 브로커 실행·설정·상태 확인 |
-| `docker-compose.nginx.yml` | Nginx 컨테이너, TLS 마운트, 네트워크와 공유 볼륨 |
-| `nginx/agora.conf.example` | HTTPS/WSS 라우팅의 단일 설정 템플릿 |
-| `scripts/setup.py` | 직접 준비한 인증서 경로와 연결 설정을 `.env`에 기록 |
+| `docker-compose.nginx.yml` | Nginx 컨테이너, 공개/내부 분리 TLS 마운트, 네트워크와 공유 볼륨 |
+| `docker-compose.nginx.letsencrypt.yml` | 단독 서버에서 80/443 Certbot ACME를 처리할 때 사용하는 Compose 오버라이드 |
+| `nginx/irade.conf.example` | HTTPS/WSS 라우팅의 단일 설정 템플릿 |
+| `scripts/setup.py` | 내부 CA 및 선택적 공개 Let's Encrypt 인증서 경로(`--public-tls-dir`)를 `.env`에 기록 |
+| `scripts/public-tls.sh` | Let's Encrypt 인증서 발급(`issue`), 갱신 검증(`verify-renewal`), 안전 동기화(`sync`) 및 reload |
+| `deploy/` | 호스트 Nginx 가상 호스트 및 Certbot deploy-hook / systemd timer 템플릿 |
 | `docker-compose.storage-broker.yml` | SQL·ES·Redis/Sentinel TCP 중계와 서비스 네트워크 생성 |
 | `storage-broker/haproxy.cfg` | 저장소 listener·upstream·연결 제한 |
 | `STORAGE_BROKER.md` | 저장소 브로커의 라우팅·TLS·전환·검증 |
 | `scripts/preflight.py` | 실행 전 인증서 파일·Compose·네트워크 확인 |
-| `scripts/nginx-docker.sh` | 개발·운영 실행, 설정 검사와 상태 확인 |
+| `scripts/nginx-docker.sh` | 개발·운영 실행, 무중단 reload, 설정 검사와 상태 확인 |
 | `.env.example` | 공개 설정 예시 |
+
+자세한 공개 도메인(`proof-notebook.p-e.kr`) Let's Encrypt 설정 방법은 [PUBLIC_TLS.md](../backend/docs/PUBLIC_TLS.md)를 참고하세요.
 
 FE는 화면과 빌드 결과, BE는 Spring·C++, DB는 저장소와 `agora-net` 네트워크를 담당합니다. Nginx 이미지·실행 설정은 Wall에서 관리합니다.
 
@@ -35,16 +40,21 @@ Docker Engine과 Docker Compose, Python 3가 필요합니다. 저장소를 clone
 Nginx 인증서는 실제 접속 도메인을 SAN에 포함해야 합니다. 기본 로컬 실행은 `localhost`, `127.0.0.1`을 사용하며 FE의 Nginx 프록시 연결에는 `agora-nginx`도 필요합니다. `root-ca.pem`은 Nginx 인증서와 내부 `agora-spring`, `agora-cpp`, 개발 시 `agora-frontend-dev` 인증서를 검증할 수 있는 공개 CA 묶음이어야 합니다. CA 개인 키는 마운트하지 않습니다. 사설 CA는 접속하는 브라우저의 신뢰 저장소에 직접 등록합니다.
 
 ```bash
-python3 scripts/setup.py --tls-dir /path/to/certificates --backend-dir ../project-agora-BE
+python3 scripts/setup.py --tls-dir /path/to/certificates --backend-dir ../backend
+# 공개 Let's Encrypt 인증서를 분리 적용하는 경우:
+python3 scripts/setup.py --tls-dir /path/to/certificates --public-tls-dir ~/.local/share/irade/letsencrypt/proof-notebook.p-e.kr --public-origin https://proof-notebook.p-e.kr --backend-dir ../backend
 ```
 
-`.env`를 생성하며 인증서·개인 키·실제 환경 파일은 Git에서 제외합니다. 외부 도메인을 사용할 경우 `--public-origin https://your-domain:8443`을 지정하고 FE·BE의 origin 설정도 맞춥니다.
+`.env`를 생성하며 인증서·개인 키·실제 환경 파일은 Git에서 제외합니다. 외부 도메인을 사용할 경우 `--public-origin https://proof-notebook.p-e.kr`을 지정하고 `backend` 설정도 맞춥니다.
 
 | 설정 | 기본값 | 설명 |
 | --- | --- | --- |
-| `NGINX_TLS_CERT_DIR` | 직접 지정 | 인증서 디렉터리의 절대 경로 |
-| `NGINX_HTTPS_PORT` | `8443` | loopback에 게시하는 HTTPS 포트 |
-| `NGINX_BACKEND_IP` | `172.23.0.250` | `agora-services`의 Nginx 고정 IP |
+| `NGINX_TLS_CERT_DIR` | 직접 지정 | 내부 CA(`root-ca.pem`) 및 서비스 TLS 번들 디렉터리 |
+| `NGINX_PUBLIC_TLS_CERT_DIR` | 비어 있으면 내부 인증서 사용 | 공개 게이트웨이용 Let's Encrypt `fullchain.pem`/`privkey.pem` 디렉터리 |
+| `NGINX_PUBLIC_HOSTNAME` | `proof-notebook.p-e.kr` | 공개 게이트웨이 TLS/헬스체크 대상 도메인 |
+| `NGINX_EDGE_TRUST` | `internal` (`system`은 공개 CA) | 게이트웨이 자체 검증 신뢰 모드 |
+| `NGINX_HTTPS_PORT` | `8453` | loopback에 게시하는 HTTPS 포트 |
+| `NGINX_BACKEND_IP` | `10.29.0.250` | `irade-services`의 Nginx 고정 IP |
 | `FRONTEND_MODE` | `production` | `development` 또는 `production` |
 
 Wall의 고정 IP와 BE의 `CPP_TRUSTED_PROXY_IPS`를 맞추고 Wall 서비스 네트워크 서브넷 내 빈 주소를 사용합니다. BE의 `NGINX_TLS_CERT_DIR`는 내부 서비스 인증서 초기화에도 사용하므로 유지합니다. BE의 `.env`를 먼저 준비합니다. 설정 스크립트는 `CPP_INTERNAL_API_TOKEN`을 읽어 Wall에 같은 값을 기록하고 브로커 secret을 생성합니다. 설정 스크립트는 Spring의 `JWT_SECRET`도 브로커에 전달합니다. 이 HS256 서명 검증 키는 Spring과 브로커만 공유하며 C++ 컨테이너에는 전달하지 않습니다. DB 비밀번호는 브로커에 주지 않습니다. 인증서는 직접 제공하며, 기본적으로 Nginx 인증서를 브로커에서도 사용해 내부 검증 이름을 `agora-nginx`로 지정합니다. 별도 인증서를 사용할 경우 `--broker-tls-dir`로 SAN `agora-broker` 인증서 디렉터리를 지정합니다.
@@ -64,7 +74,7 @@ cd ../project-agora-FE
 docker compose -f compose.dev.yaml up -d --build
 ```
 
-접속 주소는 **https://localhost:8443**입니다. 외부 접속과 내부 upstream은 HTTPS/WSS만 사용하고 CA 및 호스트명을 검증합니다. HTTP 포트는 열지 않습니다.
+접속 주소는 **https://proof-notebook.p-e.kr** (로컬 개발 기본 **https://localhost:8453**)입니다. 외부 접속과 내부 upstream은 HTTPS/WSS만 사용하고 CA 및 호스트명을 검증합니다. HTTP 포트는 평문 서비스에 사용하지 않으며, standalone Let's Encrypt 오버라이드(`docker-compose.nginx.letsencrypt.yml`)에서도 TCP/80은 ACME 챌린지와 301 HTTPS 리다이렉트 전용입니다.
 
 | 요청 | 목적지 |
 | --- | --- |

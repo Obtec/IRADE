@@ -105,16 +105,18 @@ python3 -m venv .venv
 ### 3. 노트북 실행 (JupyterLab 또는 Web Studio)
 
 ```bash
-# (A) 웹 기반 다중 증명기 Web Studio 실행 (기본 포트: 8890)
-.venv/bin/lean4-kernel serve --host 127.0.0.1 --port 8890
+# (A) 웹 기반 다중 증명기 Web Studio 실행 (HTTPS 전용, 기본 포트: 8890)
+.venv/bin/lean4-kernel serve --host 127.0.0.1 --port 8890 --self-signed
+# 또는 Let's Encrypt/내부 TLS 인증서 지정:
+# .venv/bin/lean4-kernel serve --host 127.0.0.1 --port 8890 --tls-dir ~/.local/share/irade/letsencrypt/proof-notebook.p-e.kr
 # 또는
-.venv/bin/lean4-proof-studio --host 127.0.0.1 --port 8890
+.venv/bin/lean4-proof-studio
 
 # (B) JupyterLab에서 실행 (Lean 4 및 Rocq 노트북 지원)
 jupyter lab
 ```
 
-- **웹 스튜디오 (`http://127.0.0.1:8890`)**:
+- **웹 스튜디오 (`https://127.0.0.1:8890`)**:
   - `ProofKernelPool`을 통해 **Lean 4**, **Rocq (Coq)**, **Python 3** 커널 인스턴스를 독립적으로 관리합니다.
   - 상단 툴바의 언어 선택기 또는 `+ Lean 4`, `+ Rocq`, `+ Code`, `+ Markdown` 버튼으로 셀을 추가하고 실행할 수 있습니다.
   - 증명 셀 실행 시 우측 또는 하단에 전용 **InfoView 패널**이 열려 현재 목표와 가설을 실시간으로 확인할 수 있습니다.

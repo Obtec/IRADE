@@ -9,7 +9,7 @@
   "scripts": {
     "build": "node build.mjs",
     "check": "tsc --noEmit",
-    "serve": "node scripts/serve.mjs",
+    "serve": "node scripts/serve-https.mjs",
     "serve:https": "node scripts/serve-https.mjs",
     "pretest": "npm run check && npm run build",
     "test": "node test/run.mjs",

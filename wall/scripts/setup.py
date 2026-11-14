@@ -93,17 +93,24 @@ def sync_storage(backend_dir=None):
     write_env(env, values)
     print('Wall storage routes synchronized; credentials and certificates unchanged.')
 
-def prepare(tls_dir, public_origin, backend_ip, backend_dir=None, broker_tls_dir=None):
+def prepare(tls_dir, public_origin, backend_ip, backend_dir=None, broker_tls_dir=None, public_tls_dir=None):
     tls = Path(tls_dir).expanduser().resolve()
+    public_tls = Path(public_tls_dir).expanduser().resolve() if public_tls_dir else tls
     origin = urlsplit(public_origin)
     if origin.scheme != 'https' or not origin.hostname or origin.username or origin.password or origin.query or origin.fragment or origin.path not in ('', '/'):
         raise ValueError('public-origin must be an HTTPS origin without credentials or a path.')
     address = ipaddress.ip_address(backend_ip)
     if address.version != 4 or not address.is_private or address.is_loopback or address.is_unspecified or address.is_multicast:
         raise ValueError('backend-ip must be a private IPv4 address on irade-services.')
-    for name in ('fullchain.pem', 'privkey.pem', 'root-ca.pem'):
-        if not (tls / name).is_file():
-            raise ValueError(f'Missing manually supplied certificate: {tls / name}')
+    if not (tls / 'root-ca.pem').is_file():
+        raise ValueError(f'Missing manually supplied internal CA: {tls / "root-ca.pem"}')
+    for name in ('fullchain.pem', 'privkey.pem'):
+        if not (public_tls / name).is_file():
+            raise ValueError(f'Missing gateway certificate file: {public_tls / name}')
+    if not broker_tls_dir:
+        for name in ('fullchain.pem', 'privkey.pem'):
+            if not (tls / name).is_file():
+                raise ValueError(f'Missing manually supplied certificate: {tls / name}')
     env = ROOT / '.env'
     if env.is_symlink():
         raise ValueError('Refusing a symlinked .env.')
@@ -121,19 +128,28 @@ def prepare(tls_dir, public_origin, backend_ip, backend_dir=None, broker_tls_dir
     broker_tls = Path(broker_tls_dir).expanduser().resolve() if broker_tls_dir else tls
     for name in ('fullchain.pem', 'privkey.pem'):
         if not (broker_tls / name).is_file(): raise ValueError(f'Missing broker certificate: {broker_tls / name}')
+    edge_trust = 'internal' if (public_tls == tls or (public_tls / 'root-ca.pem').is_file() or (public_tls / 'ca.pem').is_file()) else 'system'
     values.update(CPP_INTERNAL_API_TOKEN=token,
                   BROKER_SECRET_KEY_BASE=values.get('BROKER_SECRET_KEY_BASE') or secrets.token_urlsafe(64),
                   BROKER_TLS_CERT_DIR=str(broker_tls),
                   BROKER_TLS_SERVER_NAME='irade-broker' if broker_tls_dir else 'irade-nginx',
                   BROKER_CPP_TARGETS=values.get('BROKER_CPP_TARGETS') or json.dumps({'8002': 'wss://irade-cpp:8002'}, separators=(',', ':')),
                   BROKER_ALLOWED_ORIGINS=public_origin.rstrip('/') + (',https://127.0.0.1:' + str(origin.port or 443) if origin.hostname == 'localhost' else ''))
-    values.update(NGINX_TLS_CERT_DIR=str(tls), NGINX_HTTPS_PORT=str(origin.port or 443), NGINX_BACKEND_IP=str(address))
+    values.update(
+        NGINX_TLS_CERT_DIR=str(tls),
+        NGINX_PUBLIC_TLS_CERT_DIR=str(public_tls),
+        NGINX_PUBLIC_HOSTNAME=origin.hostname,
+        NGINX_EDGE_TRUST=edge_trust,
+        NGINX_HTTPS_PORT=str(origin.port or 443),
+        NGINX_BACKEND_IP=str(address),
+    )
     write_env(env, values)
     print('Wall .env prepared; certificate files were not generated or copied.')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--tls-dir')
+    parser.add_argument('--public-tls-dir', help='Optional public gateway certificate directory (e.g. Let\'s Encrypt fullchain.pem/privkey.pem).')
     parser.add_argument('--sync-storage-only', action='store_true')
     parser.add_argument('--public-origin', default='https://localhost:8453')
     parser.add_argument('--backend-ip', default='10.29.0.250')
@@ -142,6 +158,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
     try:
         if args.sync_storage_only: sync_storage(args.backend_dir)
-        elif args.tls_dir: prepare(args.tls_dir, args.public_origin, args.backend_ip, args.backend_dir, args.broker_tls_dir)
+        elif args.tls_dir: prepare(args.tls_dir, args.public_origin, args.backend_ip, args.backend_dir, args.broker_tls_dir, args.public_tls_dir)
         else: parser.error("--tls-dir is required for initial setup")
     except (OSError, ValueError) as error: parser.exit(1, f'Error: {error}\n')

@@ -1,6 +1,6 @@
 # IRADE Research Workspace Web Studio
 
-**https://frelog.p-e.kr/irade/**
+**https://proof-notebook.p-e.kr** (또는 `/irade/`)
 
 대화, 증명(Lean 4 · Rocq), 코드(Python), 문서(Markdown · HTML)를 하나의 독립 Workspace에서 실시간으로 편집하고 실행하는 웹 연구 스튜디오입니다.
 

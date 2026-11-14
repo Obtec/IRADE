@@ -1,0 +1,10 @@
+# Optional Compose override when irade-nginx itself terminates public port 80/443
+# directly on a standalone host with Certbot webroot ACME challenges.
+services:
+  nginx:
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/letsencrypt-edge.conf:/etc/nginx/templates/http-redirect.conf.template:ro
+      - ${CERTBOT_WEBROOT:-/var/www/letsencrypt}:/var/www/letsencrypt:ro

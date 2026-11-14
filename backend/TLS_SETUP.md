@@ -1,6 +1,6 @@
 # TLS 초기 설정
 
-기본 Docker 구성은 HTTPS·WSS와 인증서 검증을 사용하는 DB TLS 연결입니다. 인증서는 직접 준비하며 설정 도구는 인증서를 발급하지 않습니다.
+기본 Docker 구성은 HTTPS·WSS와 인증서 검증을 사용하는 DB TLS 연결입니다. 내부 서비스/DB 인증서는 `--tls-dir`로 준비하고, 공개 도메인(`proof-notebook.p-e.kr`)용 Let's Encrypt 인증서는 `--public-tls-dir`로 분리 연결합니다. 자세한 공개 인증서 발급·자동 갱신 절차는 [PUBLIC_TLS.md](docs/PUBLIC_TLS.md)를 참고하세요.
 
 네 프로젝트를 처음 실행할 때는 [전체 clone·인증서 배치·실행 안내](../project-agora-FE/docs/TLS_SETUP.md)를 따르세요. 기본 인증서 디렉터리 구조와 SAN 목록도 해당 문서에 있습니다.
 

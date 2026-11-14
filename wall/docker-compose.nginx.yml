@@ -14,8 +14,10 @@ services:
       FRONTEND_MODE: ${FRONTEND_MODE:-production}
       NGINX_TRUSTED_PROXY_IP: ${NGINX_TRUSTED_PROXY_IP:-127.0.0.1}
       NGINX_HTTPS_PORT: ${NGINX_HTTPS_PORT:-8453}
+      NGINX_PUBLIC_HOSTNAME: ${NGINX_PUBLIC_HOSTNAME:-localhost}
+      NGINX_EDGE_TRUST: ${NGINX_EDGE_TRUST:-internal}
       BROKER_TLS_SERVER_NAME: ${BROKER_TLS_SERVER_NAME:-irade-broker}
-      NGINX_ENVSUBST_FILTER: ^(FRONTEND_MODE|NGINX_HTTPS_PORT|BROKER_TLS_SERVER_NAME|NGINX_TRUSTED_PROXY_IP)$
+      NGINX_ENVSUBST_FILTER: ^(FRONTEND_MODE|NGINX_HTTPS_PORT|NGINX_PUBLIC_HOSTNAME|BROKER_TLS_SERVER_NAME|NGINX_TRUSTED_PROXY_IP)$
     ports:
       - "127.0.0.1:${NGINX_HTTPS_PORT:-8453}:443"
     volumes:
@@ -24,13 +26,13 @@ services:
       - ./nginx/irade.conf.example:/etc/nginx/templates/default.conf.template:ro
       - frontend-dist:/usr/share/nginx/html:ro
       - type: bind
-        source: ${NGINX_TLS_CERT_DIR:-./.local-certs/https}/fullchain.pem
+        source: ${NGINX_PUBLIC_TLS_CERT_DIR:-${NGINX_TLS_CERT_DIR:-./.local-certs/https}}/fullchain.pem
         target: /etc/nginx/ssl/irade/fullchain.pem
         read_only: true
         bind:
           create_host_path: false
       - type: bind
-        source: ${NGINX_TLS_CERT_DIR:-./.local-certs/https}/privkey.pem
+        source: ${NGINX_PUBLIC_TLS_CERT_DIR:-${NGINX_TLS_CERT_DIR:-./.local-certs/https}}/privkey.pem
         target: /etc/nginx/ssl/irade/privkey.pem
         read_only: true
         bind:
@@ -46,7 +48,15 @@ services:
         ipv4_address: ${NGINX_BACKEND_IP:-10.29.0.250}
       irade-web: {}
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--cacert", "/etc/nginx/ssl/irade/ca.pem", "https://localhost/nginx-health"]
+      test:
+        - "CMD-SHELL"
+        - >-
+          host="$${NGINX_PUBLIC_HOSTNAME:-localhost}";
+          if [ "$${NGINX_EDGE_TRUST:-internal}" = "system" ]; then
+            curl --fail --silent --show-error --resolve "$$host:443:127.0.0.1" "https://$$host/nginx-health";
+          else
+            curl --fail --silent --show-error --cacert /etc/nginx/ssl/irade/ca.pem --resolve "$$host:443:127.0.0.1" "https://$$host/nginx-health";
+          fi
       interval: 10s
       timeout: 5s
       retries: 5

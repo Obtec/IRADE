@@ -153,14 +153,34 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_serve = sub.add_parser(
         "serve",
-        help="Start the Lean 4 Proof Notebook Studio web server integrated with Project-Agora",
+        help="Start the Lean 4 Proof Notebook Studio HTTPS web server integrated with IRADE",
     )
     p_serve.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
     p_serve.add_argument("--port", type=int, default=8890, help="Bind port (default: 8890)")
     p_serve.add_argument(
+        "--cert",
+        default=None,
+        help="Path to PEM TLS certificate chain (fullchain.pem)",
+    )
+    p_serve.add_argument(
+        "--key",
+        default=None,
+        help="Path to PEM TLS private key (privkey.pem)",
+    )
+    p_serve.add_argument(
+        "--tls-dir",
+        default=None,
+        help="Directory containing fullchain.pem and privkey.pem",
+    )
+    p_serve.add_argument(
+        "--self-signed",
+        action="store_true",
+        help="Generate an ephemeral self-signed localhost/127.0.0.1 TLS certificate",
+    )
+    p_serve.add_argument(
         "--agora-url",
         default=None,
-        help="Project-Agora API base URL (default: $AGORA_API_URL or https://127.0.0.1:8444)",
+        help="IRADE/Agora API base URL (default: $IRADE_API_URL or https://127.0.0.1:8453)",
     )
     p_serve.add_argument(
         "--agora-public-url",
@@ -228,6 +248,11 @@ def main(argv: list[str] | None = None) -> int:
             agora_api_url=args.agora_url,
             agora_public_url=args.agora_public_url,
             max_kernels=args.max_kernels,
+            cert_file=args.cert,
+            key_file=args.key,
+            tls_dir=args.tls_dir,
+            self_signed=args.self_signed,
+            allow_ephemeral_tls=args.self_signed,
         )
 
     parser.print_help()

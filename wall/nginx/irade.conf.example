@@ -62,8 +62,8 @@ server {
     ssl_protocols TLSv1.3;
     ssl_session_cache shared:IradeTLS:10m;
     ssl_session_timeout 1h;
-    # Local certificates cover localhost and loopback only. Public deployments
-    # must supply their domain's CA-issued fullchain/key using the same mounts.
+    # Gateway listener serves Let's Encrypt fullchain/privkey when NGINX_PUBLIC_TLS_CERT_DIR
+    # is configured, while proxy_ssl_trusted_certificate verifies internal upstreams via root-ca.pem.
     add_header Strict-Transport-Security $irade_hsts always;
     add_header Content-Security-Policy "connect-src https: wss:; img-src https: data: blob:; media-src https: blob: data:; frame-src https:" always;
     add_header X-Content-Type-Options nosniff always;

@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew IRADE Let's Encrypt certificate (proof-notebook.p-e.kr)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/snap/bin/certbot -q renew --cert-name proof-notebook.p-e.kr --no-random-sleep-on-renew
+PrivateTmp=true

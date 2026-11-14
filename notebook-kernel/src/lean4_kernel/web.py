@@ -19,14 +19,18 @@ Provides:
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import mimetypes
 import os
 import queue
 import re
+import shutil
 import socket
 import ssl
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -199,9 +203,11 @@ def _ensure_elan_in_path(env: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def _read_agora_be_env() -> dict[str, str]:
-    """Parse ``project-agora-BE/.env`` if present on disk for shared Redis/TLS discovery."""
+    """Parse IRADE/Agora backend ``.env`` if present on disk for shared Redis/TLS discovery."""
     values: dict[str, str] = {}
     candidates = [
+        Path(__file__).resolve().parents[3] / "backend" / ".env",
+        Path("/home/steam/Github/IRADE/backend/.env"),
         Path(__file__).resolve().parents[3] / "project-agora-BE" / ".env",
         Path("/home/steam/Github/project-agora-BE/.env"),
     ]
@@ -221,12 +227,14 @@ def _read_agora_be_env() -> dict[str, str]:
 
 
 def _detect_agora_ca_cert() -> str | None:
-    """Auto-detect Project-Agora local root CA certificate if present on disk."""
-    explicit = os.environ.get("AGORA_CA_CERT", "").strip()
+    """Auto-detect IRADE/Agora local root CA certificate if present on disk."""
+    explicit = os.environ.get("IRADE_CA_CERT", "").strip() or os.environ.get("AGORA_CA_CERT", "").strip()
     if explicit and Path(explicit).is_file():
         return explicit
 
     candidates: list[Path] = [
+        Path.home() / ".local" / "share" / "irade" / "tls-dev" / "root-ca.pem",
+        Path("/home/steam/.local/share/irade/tls-dev/root-ca.pem"),
         Path.home() / ".local" / "share" / "project-agora" / "tls-20261013" / "root-ca.pem",
         Path("/home/steam/.local/share/project-agora/tls-20261013/root-ca.pem"),
     ]
@@ -238,6 +246,117 @@ def _detect_agora_ca_cert() -> str | None:
         if candidate.is_file():
             return str(candidate)
     return None
+
+
+def resolve_tls_credentials(
+    *,
+    cert_file: str | Path | None = None,
+    key_file: str | Path | None = None,
+    tls_dir: str | Path | None = None,
+    self_signed: bool = False,
+    allow_ephemeral_tls: bool = False,
+    ephemeral_dir: Path | None = None,
+    host: str = "127.0.0.1",
+) -> tuple[Path, Path, Path | None]:
+    """Resolve TLS credentials for HTTPS-only serving; never allow plaintext HTTP."""
+    if not self_signed:
+        cert = (
+            Path(cert_file).expanduser()
+            if cert_file
+            else (
+                Path(os.environ["IRADE_STUDIO_TLS_CERT"]).expanduser()
+                if os.environ.get("IRADE_STUDIO_TLS_CERT", "").strip()
+                else None
+            )
+        )
+        key = (
+            Path(key_file).expanduser()
+            if key_file
+            else (
+                Path(os.environ["IRADE_STUDIO_TLS_KEY"]).expanduser()
+                if os.environ.get("IRADE_STUDIO_TLS_KEY", "").strip()
+                else None
+            )
+        )
+        resolved_dir = tls_dir or os.environ.get("IRADE_STUDIO_TLS_DIR", "").strip() or None
+        if (cert is None or key is None) and resolved_dir:
+            base = Path(resolved_dir).expanduser()
+            cert = cert or (base / "fullchain.pem")
+            key = key or (base / "privkey.pem")
+        if cert is None and key is None:
+            domain = os.environ.get("IRADE_PUBLIC_HOSTNAME", "proof-notebook.p-e.kr").strip() or "proof-notebook.p-e.kr"
+            for candidate in (
+                Path.home() / ".local" / "share" / "irade" / "letsencrypt" / domain,
+                Path.home() / ".local" / "share" / "irade" / "tls-dev",
+                Path.home() / ".local" / "share" / "irade" / "tls-dev" / "internal" / "frontend",
+            ):
+                cand_cert = candidate / "fullchain.pem"
+                cand_key = candidate / "privkey.pem"
+                if cand_cert.is_file() and cand_key.is_file():
+                    cert, key = cand_cert, cand_key
+                    break
+        if cert is not None or key is not None:
+            if cert is None or key is None or not cert.is_file() or not key.is_file():
+                raise FileNotFoundError(f"TLS certificate or key file not found: cert={cert}, key={key}")
+            return cert, key, None
+        if not allow_ephemeral_tls:
+            raise RuntimeError(
+                "HTTPS-only server requires TLS credentials. Pass --cert/--key or --tls-dir, "
+                "set IRADE_STUDIO_TLS_CERT/KEY, provision ~/.local/share/irade/letsencrypt/<domain>, "
+                "or pass --self-signed for local loopback use."
+            )
+
+    temp_dir_to_clean: Path | None = None
+    if ephemeral_dir is None:
+        tls_root = Path(tempfile.mkdtemp(prefix="irade-studio-tls-"))
+        temp_dir_to_clean = tls_root
+    else:
+        tls_root = Path(ephemeral_dir)
+        tls_root.mkdir(parents=True, exist_ok=True)
+    cert_path = tls_root / "fullchain.pem"
+    key_path = tls_root / "privkey.pem"
+    san_entries = ["DNS:localhost", "IP:127.0.0.1"]
+    if host and host not in ("127.0.0.1", "0.0.0.0", "localhost", "::"):
+        try:
+            ipaddress.ip_address(host)
+            san_entries.append(f"IP:{host}")
+        except ValueError:
+            san_entries.append(f"DNS:{host}")
+    ext_cnf = tls_root / "san.cnf"
+    ext_cnf.write_text(
+        "[req]\ndistinguished_name=dn\nx509_extensions=v3_req\nprompt=no\n"
+        "[dn]\nCN=IRADE Proof Studio\n"
+        "[v3_req]\nbasicConstraints=critical,CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\n"
+        f"extendedKeyUsage=serverAuth\nsubjectAltName={','.join(san_entries)}\n",
+        encoding="utf-8",
+    )
+    try:
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "ec",
+                "-pkeyopt",
+                "ec_paramgen_curve:prime256v1",
+                "-nodes",
+                "-days",
+                "7",
+                "-config",
+                str(ext_cnf),
+                "-keyout",
+                str(key_path),
+                "-out",
+                str(cert_path),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        os.chmod(key_path, 0o600)
+    finally:
+        ext_cnf.unlink(missing_ok=True)
+    return cert_path, key_path, temp_dir_to_clean
 
 
 def _sanitize_id(value: str, fallback: str = "default") -> str:
@@ -1823,14 +1942,20 @@ class AgoraBridge:
     ) -> None:
         self.api_url = (
             api_url
+            or os.environ.get("IRADE_API_URL")
             or os.environ.get("AGORA_API_URL")
-            or "https://127.0.0.1:8444"
+            or "https://127.0.0.1:8453"
         ).rstrip("/")
+        if not self.api_url.startswith("https://"):
+            raise ValueError(f"IRADE/Agora API URL must use HTTPS: {self.api_url}")
         self.public_url = (
             public_url
+            or os.environ.get("IRADE_PUBLIC_URL")
             or os.environ.get("AGORA_PUBLIC_URL")
             or self.api_url
         ).rstrip("/")
+        if not self.public_url.startswith("https://"):
+            raise ValueError(f"Public web URL must use HTTPS: {self.public_url}")
         self.ca_cert = ca_cert if ca_cert is not None else _detect_agora_ca_cert()
 
     def _ssl_verify(self) -> ssl.SSLContext | bool:
@@ -3152,6 +3277,8 @@ class _ProofStudioRequestHandler(BaseHTTPRequestHandler):
 
 
 class ProofNotebookHTTPServer(ThreadingHTTPServer):
+    """HTTPS-only Proof Workspace Studio server (name preserved for API compatibility)."""
+
     allow_reuse_address = True
     daemon_threads = True
 
@@ -3159,15 +3286,48 @@ class ProofNotebookHTTPServer(ThreadingHTTPServer):
         self,
         server_address: tuple[str, int],
         app: ProofStudioApp,
+        *,
+        cert_file: str | Path | None = None,
+        key_file: str | Path | None = None,
+        tls_dir: str | Path | None = None,
+        self_signed: bool = False,
+        allow_ephemeral_tls: bool = True,
     ) -> None:
         self.app = app
+        self._ephemeral_tls_dir: Path | None = None
         super().__init__(server_address, _ProofStudioRequestHandler)
+        try:
+            cert, key, temp_dir = resolve_tls_credentials(
+                cert_file=cert_file,
+                key_file=key_file,
+                tls_dir=tls_dir,
+                self_signed=self_signed,
+                allow_ephemeral_tls=allow_ephemeral_tls,
+                ephemeral_dir=None,
+                host=server_address[0],
+            )
+            self._ephemeral_tls_dir = temp_dir
+            self.cert_file = str(cert)
+            self.key_file = str(key)
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+            ctx.load_cert_chain(certfile=self.cert_file, keyfile=self.key_file)
+            self.socket = ctx.wrap_socket(self.socket, server_side=True)
+        except Exception:
+            super().server_close()
+            raise
 
     def server_close(self) -> None:
         try:
             self.app.shutdown()
         finally:
             super().server_close()
+            if self._ephemeral_tls_dir is not None:
+                shutil.rmtree(self._ephemeral_tls_dir, ignore_errors=True)
+                self._ephemeral_tls_dir = None
+
+
+ProofNotebookHTTPSServer = ProofNotebookHTTPServer
 
 
 def create_server(
@@ -3179,8 +3339,13 @@ def create_server(
     agora_ca_cert: str | None = None,
     max_kernels: int = MAX_KERNELS,
     redis_client: AgoraRedisClient | None = None,
+    cert_file: str | Path | None = None,
+    key_file: str | Path | None = None,
+    tls_dir: str | Path | None = None,
+    self_signed: bool = False,
+    allow_ephemeral_tls: bool = True,
 ) -> ProofNotebookHTTPServer:
-    """Create a configured ``ProofNotebookHTTPServer`` instance."""
+    """Create a configured HTTPS ``ProofNotebookHTTPServer`` instance."""
     app = ProofStudioApp(
         data_dir=data_dir,
         agora_api_url=agora_api_url,
@@ -3189,7 +3354,15 @@ def create_server(
         max_kernels=max_kernels,
         redis_client=redis_client,
     )
-    return ProofNotebookHTTPServer((host, int(port)), app)
+    return ProofNotebookHTTPServer(
+        (host, int(port)),
+        app,
+        cert_file=cert_file,
+        key_file=key_file,
+        tls_dir=tls_dir,
+        self_signed=self_signed,
+        allow_ephemeral_tls=allow_ephemeral_tls,
+    )
 
 
 def serve(
@@ -3200,8 +3373,13 @@ def serve(
     agora_public_url: str | None = None,
     agora_ca_cert: str | None = None,
     max_kernels: int = MAX_KERNELS,
+    cert_file: str | Path | None = None,
+    key_file: str | Path | None = None,
+    tls_dir: str | Path | None = None,
+    self_signed: bool = False,
+    allow_ephemeral_tls: bool = False,
 ) -> int:
-    """Run the Lean 4 Proof Workspace Studio web server in the foreground."""
+    """Run the Lean 4 Proof Workspace Studio HTTPS web server in the foreground."""
     server = create_server(
         host=host,
         port=port,
@@ -3210,9 +3388,15 @@ def serve(
         agora_public_url=agora_public_url,
         agora_ca_cert=agora_ca_cert,
         max_kernels=max_kernels,
+        cert_file=cert_file,
+        key_file=key_file,
+        tls_dir=tls_dir,
+        self_signed=self_signed,
+        allow_ephemeral_tls=allow_ephemeral_tls or self_signed,
     )
     bound_host, bound_port = server.server_address[:2]
-    print(f"∀ Lean 4 Proof Workspace Studio running at http://{bound_host}:{bound_port}")
+    print(f"∀ Lean 4 Proof Workspace Studio running at https://{bound_host}:{bound_port}")
+    print(f"  TLS Certificate         : {server.cert_file}")
     print(f"  Project-Agora API Bridge: {server.app.agora.api_url}")
     print(f"  Redis Lifecycle Backend : {server.app.lifecycle.redis_info()['backend']}")
     print(f"  Workspace Storage Dir   : {server.app.notebook_store.base_dir}")

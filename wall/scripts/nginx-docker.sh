@@ -13,10 +13,14 @@ case "$command_name" in
     compose up -d --wait --wait-timeout 60
     compose exec -T nginx nginx -t
     ;;
+  reload)
+    compose exec -T nginx nginx -t
+    compose exec -T nginx nginx -s reload
+    ;;
   config) compose config --quiet ;;
   test) compose exec -T nginx nginx -t ;;
   status) compose ps ;;
   stop) compose down ;;
   logs) compose logs --tail=100 --follow ;;
-  *) echo 'Usage: nginx-docker.sh development|production|config|test|status|stop|logs' >&2; exit 2 ;;
+  *) echo 'Usage: nginx-docker.sh development|production|reload|config|test|status|stop|logs' >&2; exit 2 ;;
 esac

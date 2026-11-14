@@ -85,17 +85,18 @@ class SetupTests(unittest.TestCase):
         shutil.copytree(self.bundle, tls)
         return parent, tls
 
-    def run_setup(self, parent, tls, *args):
+    def run_setup(self, parent, tls, *args, extra_env=None):
+        env = {**os.environ, 'PYTHONDONTWRITEBYTECODE': '1', **(extra_env or {})}
         be = subprocess.run([sys.executable, str(parent / 'backend/scripts/setup-docker.py'),
                              '--db-dir', str(parent / 'db'), '--tls-dir', str(tls), *args],
                             capture_output=True, text=True,
-                            env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+                            env=env)
         if be.returncode:
             return be
         return subprocess.run([sys.executable, str(parent / 'wall/scripts/setup.py'),
                                '--tls-dir', str(tls), '--backend-dir', str(parent / 'backend'), *args],
                               capture_output=True, text=True,
-                              env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+                              env=env)
 
     def test_fresh_clone_setup_is_verified_tls_and_repeatable(self):
         with tempfile.TemporaryDirectory(prefix='irade checkout ') as directory:
@@ -233,6 +234,80 @@ class SetupTests(unittest.TestCase):
             self.assertTrue(wall['networks']['irade-services']['internal'])
             self.assertFalse(proxy.get('ports'))
             self.assertTrue(all(key.startswith('STORAGE_') for key in proxy['environment']))
+
+    def test_public_tls_split_lets_encrypt_sync_and_setup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent, tls = self.checkout(directory)
+            public_root = Path(directory) / 'public-ca'
+            public_root.mkdir()
+            le_ca = public_root / 'isrg-test-root.pem'
+            le_ca_key = public_root / 'isrg-test-root.key'
+            self.openssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '90',
+                         '-subj', '/CN=Public Test LE CA', '-keyout', str(le_ca_key), '-out', str(le_ca))
+            source_le = public_root / 'live'
+            source_le.mkdir()
+            ext = public_root / 'leaf.cnf'
+            ext.write_text('basicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:proof-notebook.p-e.kr\n')
+            csr = public_root / 'leaf.csr'
+            self.openssl('req', '-new', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
+                         '-subj', '/CN=proof-notebook.p-e.kr',
+                         '-keyout', str(source_le / 'privkey.pem'), '-out', str(csr))
+            self.openssl('x509', '-req', '-in', str(csr), '-CA', str(le_ca), '-CAkey', str(le_ca_key),
+                         '-set_serial', '77', '-days', '90', '-extfile', str(ext), '-out', str(source_le / 'fullchain.pem'))
+
+            synced_le = Path(directory) / 'synced-le'
+            public_tls_script = ROOT.parent / 'wall/scripts/public-tls.sh'
+            bad_san = subprocess.run(
+                [str(public_tls_script), 'sync', 'wrong.example.com',
+                 '--source-dir', str(source_le), '--dest-dir', str(synced_le), '--no-reload'],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(bad_san.returncode, 0)
+            self.assertIn('SAN does not match', bad_san.stderr)
+
+            synced = subprocess.run(
+                [str(public_tls_script), 'sync', 'proof-notebook.p-e.kr',
+                 '--source-dir', str(source_le), '--dest-dir', str(synced_le), '--no-reload'],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(synced.returncode, 0, synced.stderr)
+            self.assertTrue((synced_le / 'fullchain.pem').is_file())
+            self.assertTrue((synced_le / 'privkey.pem').is_file())
+            self.assertFalse((synced_le / 'root-ca.pem').exists())
+
+            untrusted = self.run_setup(
+                parent, tls,
+                '--public-origin', 'https://proof-notebook.p-e.kr',
+                '--public-tls-dir', str(synced_le),
+            )
+            self.assertNotEqual(untrusted.returncode, 0)
+            self.assertIn('system CAs or local CA', untrusted.stderr)
+
+            ok = self.run_setup(
+                parent, tls,
+                '--public-origin', 'https://proof-notebook.p-e.kr',
+                '--public-tls-dir', str(synced_le),
+                extra_env={'SSL_CERT_FILE': str(le_ca)},
+            )
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+
+            be = (parent / 'backend/.env').read_text()
+            self.assertIn(f'NGINX_TLS_CERT_DIR="{tls}"', be)
+            self.assertIn(f'NGINX_PUBLIC_TLS_CERT_DIR={synced_le.resolve()}', be)
+            self.assertIn('NGINX_PUBLIC_HOSTNAME=proof-notebook.p-e.kr', be)
+            self.assertIn('NGINX_EDGE_TRUST=system', be)
+            self.assertIn('NGINX_HTTPS_PORT=443', be)
+            self.assertIn('PASSKEY_RP_ID=proof-notebook.p-e.kr', be)
+            self.assertIn('PASSKEY_ORIGIN=https://proof-notebook.p-e.kr', be)
+            self.assertIn('GOOGLE_REDIRECT_URI=https://proof-notebook.p-e.kr/api/auth/oauth2/callback/google', be)
+            self.assertIn('KAKAO_REDIRECT_URI=https://proof-notebook.p-e.kr/api/auth/oauth2/callback/kakao', be)
+
+            wall = (parent / 'wall/.env').read_text()
+            self.assertIn(f'NGINX_TLS_CERT_DIR="{tls}"', wall)
+            self.assertIn(f'NGINX_PUBLIC_TLS_CERT_DIR="{synced_le.resolve()}"', wall)
+            self.assertIn('NGINX_PUBLIC_HOSTNAME="proof-notebook.p-e.kr"', wall)
+            self.assertIn('NGINX_EDGE_TRUST="system"', wall)
+            self.assertIn('NGINX_HTTPS_PORT="443"', wall)
 
 
 if __name__ == '__main__':

@@ -1,11 +1,11 @@
 # IRADE ORCID authentication
 
-IRADE login page: `https://frelog.p-e.kr/irade/login`.
+IRADE login page: `https://proof-notebook.p-e.kr/irade/login`.
 
-Register an ORCID Public API client with application URL `https://frelog.p-e.kr/irade/` and the exact **Redirect URI**:
+Register an ORCID Public API client with application URL `https://proof-notebook.p-e.kr/irade/` and the exact **Redirect URI**:
 
 ```text
-https://frelog.p-e.kr/api/irade/auth/orcid/callback
+https://proof-notebook.p-e.kr/api/irade/auth/orcid/callback
 ```
 
 ## Private credentials
@@ -17,7 +17,7 @@ ORCID_OAUTH_ENABLED=false
 ORCID_CLIENT_ID=
 ORCID_CLIENT_SECRET=
 ORCID_ISSUER=https://orcid.org
-ORCID_REDIRECT_URI=https://frelog.p-e.kr/api/irade/auth/orcid/callback
+ORCID_REDIRECT_URI=https://proof-notebook.p-e.kr/api/irade/auth/orcid/callback
 ```
 
 `ORCID_ENV_FILE` in the backend `.env` selects that file. Compose `env_file` uses `format: raw`, preserving `$`, `#` and other secret characters without interpolation. The Spring `environment` block must not override those values. Docker Compose 2.30+ is required for raw env files. Never print `docker compose config` or container environment dumps: use `config --quiet`.

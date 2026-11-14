@@ -1,0 +1,10 @@
+[Unit]
+Description=Check IRADE certificate renewal twice daily (proof-notebook.p-e.kr)
+
+[Timer]
+OnCalendar=*-*-* 00,12:00:00
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target

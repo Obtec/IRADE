@@ -35,11 +35,11 @@ This directory hosts pre-executed, production-quality Jupyter notebooks demonstr
 
 ## 4. Launching & Viewing
 
-### Option A: Via the Web Proof Studio (Recommended)
+### Option A: Via the Web Proof Studio (Recommended, HTTPS-only)
 ```bash
-.venv/bin/lean4-kernel serve --host 127.0.0.1 --port 8890
+.venv/bin/lean4-kernel serve --host 127.0.0.1 --port 8890 --self-signed
 ```
-Open your browser at `http://127.0.0.1:8890` and import or select notebooks.
+Open your browser at `https://127.0.0.1:8890` and import or select notebooks.
 
 ### Option B: Via Standard JupyterLab / Classic Notebook
 ```bash

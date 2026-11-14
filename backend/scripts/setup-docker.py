@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import ipaddress
 from pathlib import Path
 import secrets
 import subprocess
@@ -57,9 +58,65 @@ def verify_bundle(db, tls, configs):
            ['irade-elasticsearch', 'localhost', es.get('ES_EXTERNAL_IP', '127.0.0.1')], 'Elasticsearch')
 
 
-def prepare(db_dir, tls_dir, public_origin='https://localhost:8453'):
+def is_public_domain(hostname: str) -> bool:
+    if hostname == 'localhost' or hostname.endswith('.localhost'):
+        return False
+    try:
+        ipaddress.ip_address(hostname)
+        return False
+    except ValueError:
+        return True
+
+
+def verify_public_certificate(db, public_tls_dir: Path, hostname: str) -> str:
+    """Validate public gateway fullchain/privkey using a local CA if present or system trust."""
+    cert = public_tls_dir / 'fullchain.pem'
+    key = public_tls_dir / 'privkey.pem'
+    for item in (cert, key):
+        if not item.is_file():
+            raise db.SetupError(f'Public gateway certificate file is missing: {item}')
+    local_ca = next(
+        (candidate for candidate in (public_tls_dir / 'root-ca.pem', public_tls_dir / 'ca.pem') if candidate.is_file()),
+        None,
+    )
+    if local_ca is not None:
+        db.verify_certificate(cert, key, local_ca, [hostname], 'Public gateway hostname')
+        return 'internal'
+    verify = subprocess.run(
+        ['openssl', 'verify', '-purpose', 'sslserver', '-untrusted', str(cert), str(cert)],
+        capture_output=True, text=True,
+    )
+    if verify.returncode:
+        raise db.SetupError('Public gateway certificate chain does not validate against system CAs or local CA.')
+    cert_pub = subprocess.run(
+        ['openssl', 'x509', '-in', str(cert), '-pubkey', '-noout'], capture_output=True, check=True,
+    ).stdout
+    cert_der = subprocess.run(
+        ['openssl', 'pkey', '-pubin', '-outform', 'DER'], input=cert_pub, capture_output=True, check=True,
+    ).stdout
+    key_der = subprocess.run(
+        ['openssl', 'pkey', '-in', str(key), '-passin', 'pass:', '-pubout', '-outform', 'DER'], capture_output=True, check=True,
+    ).stdout
+    if cert_der != key_der:
+        raise db.SetupError('Public gateway certificate and private key do not match.')
+    expiry = subprocess.run(
+        ['openssl', 'x509', '-in', str(cert), '-checkend', '86400', '-noout'], capture_output=True,
+    )
+    if expiry.returncode:
+        raise db.SetupError('Public gateway certificate expires within 24 hours or is already expired.')
+    cert_text = subprocess.run(
+        ['openssl', 'x509', '-in', str(cert), '-noout', '-text'],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    if not db.certificate_san_matches(cert_text, hostname):
+        raise db.SetupError(f'Public gateway certificate SAN does not match {hostname}.')
+    return 'system'
+
+
+def prepare(db_dir, tls_dir, public_origin='https://localhost:8453', public_tls_dir=None):
     db_dir = db_dir.expanduser().resolve()
     tls_dir = tls_dir.expanduser().resolve()
+    resolved_public_tls = public_tls_dir.expanduser().resolve() if public_tls_dir else tls_dir
     parsed = urlsplit(public_origin)
     if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ('', '/') or parsed.query or parsed.fragment:
         raise ValueError('--public-origin must be an HTTPS origin without credentials, path, query or fragment.')
@@ -70,8 +127,12 @@ def prepare(db_dir, tls_dir, public_origin='https://localhost:8453'):
     db.prepare(tls_dir)
     configs = {service: db.read_env(path) for service, path in db.ENV_FILES.items()}
     verify_bundle(db, tls_dir, configs)
-    db.verify_certificate(tls_dir / 'fullchain.pem', tls_dir / 'privkey.pem', tls_dir / 'root-ca.pem',
-                          [parsed.hostname], 'Public gateway hostname')
+    if public_tls_dir is not None:
+        edge_trust = verify_public_certificate(db, resolved_public_tls, parsed.hostname)
+    else:
+        db.verify_certificate(tls_dir / 'fullchain.pem', tls_dir / 'privkey.pem', tls_dir / 'root-ca.pem',
+                              [parsed.hostname], 'Public gateway hostname')
+        edge_trust = 'internal'
 
     sync = module_at('irade_db_sync', ROOT / 'scripts/sync-docker-env.py')
     env_path = ROOT / '.env'
@@ -82,7 +143,11 @@ def prepare(db_dir, tls_dir, public_origin='https://localhost:8453'):
         sync.atomic_write_owner_only(env_path, (ROOT / '.env.example').read_text())
     values = sync.read_env(env_path)
     desired = {
-        'NGINX_TLS_CERT_DIR': str(tls_dir), 'NGINX_HTTPS_PORT': str(gateway_port),
+        'NGINX_TLS_CERT_DIR': str(tls_dir),
+        'NGINX_PUBLIC_TLS_CERT_DIR': str(resolved_public_tls),
+        'NGINX_PUBLIC_HOSTNAME': parsed.hostname,
+        'NGINX_EDGE_TRUST': edge_trust,
+        'NGINX_HTTPS_PORT': str(gateway_port),
         'IRADE_DB_DIR': str(db_dir), 'DB_ENCRYPT': 'true', 'DB_TRUST_SERVER_CERTIFICATE': 'false',
         'REDIS_TLS_ENABLED': 'true', 'ES_SCHEME': 'https',
         'CPP_FREETDS_CONF_HOST_PATH': str(ROOT / 'cpp/config/freetds-docker-tls.conf'),
@@ -90,6 +155,12 @@ def prepare(db_dir, tls_dir, public_origin='https://localhost:8453'):
         'SERVICE_TLS_KEY': str(tls_dir / 'internal/spring/privkey.pem'),
         'SERVICE_TLS_CA': str(tls_dir / 'root-ca.pem'),
     }
+    if is_public_domain(parsed.hostname):
+        desired['PASSKEY_RP_ID'] = parsed.hostname
+        desired['PASSKEY_ORIGIN'] = public_origin
+        desired['GOOGLE_REDIRECT_URI'] = f'{public_origin}/api/auth/oauth2/callback/google'
+        desired['NAVER_REDIRECT_URI'] = f'{public_origin}/api/auth/oauth2/callback/naver'
+        desired['KAKAO_REDIRECT_URI'] = f'{public_origin}/api/auth/oauth2/callback/kakao'
     for key in ('JWT_SECRET', 'CPP_INTERNAL_API_TOKEN'):
         if not values.get(key) or db.PLACEHOLDER.search(values[key]):
             desired[key] = secrets.token_hex(32)
@@ -126,9 +197,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--db-dir', type=Path, default=ROOT.parent / 'db')
     parser.add_argument('--tls-dir', type=Path, required=True, help='Manually supplied bundle; see TLS_SETUP.md.')
+    parser.add_argument('--public-tls-dir', type=Path, default=None,
+                        help='Optional Let\'s Encrypt / public gateway certificate directory.')
     parser.add_argument('--public-origin', default='https://localhost:8453')
     args = parser.parse_args()
-    prepare(args.db_dir, args.tls_dir, args.public_origin)
+    prepare(args.db_dir, args.tls_dir, args.public_origin, args.public_tls_dir)
 
 
 if __name__ == '__main__':
