@@ -1,0 +1,8 @@
+# IRADE Database Infrastructure Root Compose
+# 기본 로컬 구성은 Elasticsearch, Redis Sentinel HA, MSSQL입니다.
+name: irade-db
+
+include:
+  - path: ./elasticsearch/docker-compose.yml
+  - path: ./redis/docker-compose.sentinel.yml
+  - path: ./mssql/docker-compose.yml

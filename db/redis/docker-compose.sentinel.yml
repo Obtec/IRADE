@@ -1,0 +1,243 @@
+# Redis Stack HA topology: one primary, two replicas, three Sentinels.
+# This is the default Redis topology in the repository root Compose stack.
+services:
+  redis-primary:
+    image: redis:8.6.7
+    container_name: irade-redis-primary
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      REDIS_NODE_APPENDONLY: "${REDIS_NODE_APPENDONLY:-yes}"
+      REDIS_NODE_ANNOUNCE_IP: ${REDIS_PRIMARY_IP:-10.26.0.2}
+      REDIS_NODE_PRIMARY_HOST: ${REDIS_PRIMARY_UPSTREAM-}
+      REDIS_NODE_PRIMARY_PORT: ${REDIS_NODE_PRIMARY_PORT:-6379}
+    entrypoint: ["/bin/sh", "/usr/local/bin/redis-node-entrypoint.sh"]
+    ports:
+      - "${REDIS_BIND_IP:-127.0.0.1}:${REDIS_EXTERNAL_PORT:-16379}:6379"
+    volumes:
+      - ./redis-node-entrypoint.sh:/usr/local/bin/redis-node-entrypoint.sh:ro
+      - ./redis-healthcheck.sh:/usr/local/bin/redis-healthcheck.sh:ro
+      - ${REDIS_TLS_CERTS_DIR:-./tls/server}:/run/secrets/redis-tls:ro
+      - redis_primary_data:/data
+    networks:
+      redis-ha:
+        ipv4_address: ${REDIS_PRIMARY_IP:-10.26.0.2}
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/redis-healthcheck.sh", "node"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis-replica-1:
+    image: redis:8.6.7
+    container_name: irade-redis-replica-1
+    restart: unless-stopped
+    env_file:
+      - .env
+    entrypoint: ["/bin/sh", "/usr/local/bin/redis-node-entrypoint.sh"]
+    environment:
+      REDIS_NODE_PRIMARY_HOST: ${REDIS_REPLICA_1_UPSTREAM-redis-primary}
+      REDIS_NODE_PRIMARY_PORT: ${REDIS_NODE_PRIMARY_PORT:-6379}
+      REDIS_NODE_ANNOUNCE_IP: ${REDIS_REPLICA_1_IP:-10.26.0.7}
+    volumes:
+      - ./redis-node-entrypoint.sh:/usr/local/bin/redis-node-entrypoint.sh:ro
+      - ./redis-healthcheck.sh:/usr/local/bin/redis-healthcheck.sh:ro
+      - ${REDIS_TLS_CERTS_DIR:-./tls/server}:/run/secrets/redis-tls:ro
+      - redis_replica_1_data:/data
+    networks:
+      redis-ha:
+        ipv4_address: ${REDIS_REPLICA_1_IP:-10.26.0.7}
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/redis-healthcheck.sh", "node"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis-replica-2:
+    image: redis:8.6.7
+    container_name: irade-redis-replica-2
+    restart: unless-stopped
+    env_file:
+      - .env
+    entrypoint: ["/bin/sh", "/usr/local/bin/redis-node-entrypoint.sh"]
+    environment:
+      REDIS_NODE_PRIMARY_HOST: ${REDIS_REPLICA_2_UPSTREAM-redis-primary}
+      REDIS_NODE_PRIMARY_PORT: ${REDIS_NODE_PRIMARY_PORT:-6379}
+      REDIS_NODE_ANNOUNCE_IP: ${REDIS_REPLICA_2_IP:-10.26.0.5}
+    volumes:
+      - ./redis-node-entrypoint.sh:/usr/local/bin/redis-node-entrypoint.sh:ro
+      - ./redis-healthcheck.sh:/usr/local/bin/redis-healthcheck.sh:ro
+      - ${REDIS_TLS_CERTS_DIR:-./tls/server}:/run/secrets/redis-tls:ro
+      - redis_replica_2_data:/data
+    networks:
+      redis-ha:
+        ipv4_address: ${REDIS_REPLICA_2_IP:-10.26.0.5}
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/redis-healthcheck.sh", "node"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis-sentinel-1:
+    image: redis:8.6.7
+    container_name: irade-redis-sentinel-1
+    restart: unless-stopped
+    env_file:
+      - .env
+    entrypoint: ["/bin/sh", "/usr/local/bin/sentinel-entrypoint.sh"]
+    ports:
+      - "${REDIS_BIND_IP:-127.0.0.1}:26479:26379"
+    volumes:
+      - ./sentinel-entrypoint.sh:/usr/local/bin/sentinel-entrypoint.sh:ro
+      - ./redis-healthcheck.sh:/usr/local/bin/redis-healthcheck.sh:ro
+      - ${REDIS_TLS_CERTS_DIR:-./tls/server}:/run/secrets/redis-tls:ro
+      - redis_sentinel_1_data:/data
+    networks:
+      redis-ha:
+        ipv4_address: ${REDIS_SENTINEL_1_IP:-10.26.0.6}
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/redis-healthcheck.sh", "sentinel"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis-sentinel-2:
+    image: redis:8.6.7
+    container_name: irade-redis-sentinel-2
+    restart: unless-stopped
+    env_file:
+      - .env
+    entrypoint: ["/bin/sh", "/usr/local/bin/sentinel-entrypoint.sh"]
+    ports:
+      - "${REDIS_BIND_IP:-127.0.0.1}:26480:26379"
+    volumes:
+      - ./sentinel-entrypoint.sh:/usr/local/bin/sentinel-entrypoint.sh:ro
+      - ./redis-healthcheck.sh:/usr/local/bin/redis-healthcheck.sh:ro
+      - ${REDIS_TLS_CERTS_DIR:-./tls/server}:/run/secrets/redis-tls:ro
+      - redis_sentinel_2_data:/data
+    networks:
+      redis-ha:
+        ipv4_address: ${REDIS_SENTINEL_2_IP:-10.26.0.3}
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/redis-healthcheck.sh", "sentinel"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis-sentinel-3:
+    image: redis:8.6.7
+    container_name: irade-redis-sentinel-3
+    restart: unless-stopped
+    env_file:
+      - .env
+    entrypoint: ["/bin/sh", "/usr/local/bin/sentinel-entrypoint.sh"]
+    ports:
+      - "${REDIS_BIND_IP:-127.0.0.1}:26481:26379"
+    volumes:
+      - ./sentinel-entrypoint.sh:/usr/local/bin/sentinel-entrypoint.sh:ro
+      - ./redis-healthcheck.sh:/usr/local/bin/redis-healthcheck.sh:ro
+      - ${REDIS_TLS_CERTS_DIR:-./tls/server}:/run/secrets/redis-tls:ro
+      - redis_sentinel_3_data:/data
+    networks:
+      redis-ha:
+        ipv4_address: ${REDIS_SENTINEL_3_IP:-10.26.0.4}
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/redis-healthcheck.sh", "sentinel"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis-insight-tls-init:
+    image: redis:8.6.7
+    user: "0:0"
+    restart: "no"
+    network_mode: none
+    entrypoint: ["/bin/sh", "/prepare-tls-volume.sh", "1000", "fullchain.pem", "privkey.pem", "ca.pem"]
+    volumes:
+      - type: bind
+        source: ${REDIS_INSIGHT_TLS_CERTS_DIR:-./tls/insight}
+        target: /source
+        read_only: true
+        bind:
+          create_host_path: false
+      - redis-insight-tls:/target
+      - ../ops/prepare-tls-volume.sh:/prepare-tls-volume.sh:ro
+
+  redis-insight:
+    depends_on:
+      redis-insight-tls-init:
+        condition: service_completed_successfully
+    environment:
+      RI_SERVER_TLS_KEY: /run/tls/privkey.pem
+      RI_SERVER_TLS_CERT: /run/tls/fullchain.pem
+    image: redis/redisinsight:3.8.0
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          const https=require('https'),fs=require('fs');
+          const r=https.get({hostname:'localhost',port:5540,path:'/api/health/',ca:fs.readFileSync('/run/tls/ca.pem')},res=>{res.resume();process.exitCode=res.statusCode===200?0:1});
+          r.on('error',()=>{process.exitCode=1});r.setTimeout(5000,()=>r.destroy());
+      interval: 10s
+      timeout: 7s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    ports:
+      - "${REDIS_INSIGHT_BIND_IP:-127.0.0.1}:${REDIS_INSIGHT_PORT:-18001}:5540"
+    volumes:
+      - redis_insight_data:/data
+      - redis-insight-tls:/run/tls:ro
+    networks:
+      redis-ha:
+        ipv4_address: ${REDIS_INSIGHT_IP:-10.26.0.20}
+      redis-insight-access: {}
+
+volumes:
+  redis-insight-tls:
+    name: irade-redis-insight-tls
+  redis_primary_data:
+  redis_replica_1_data:
+  redis_replica_2_data:
+  redis_sentinel_1_data:
+  redis_sentinel_2_data:
+  redis_sentinel_3_data:
+  redis_insight_data:
+
+networks:
+  redis-ha:
+    name: irade-redis-ha
+    internal: true
+    ipam:
+      config:
+        - subnet: ${REDIS_HA_SUBNET:-10.26.0.0/16}
+  redis-insight-access:
+    name: irade-redis-insight-access
+    ipam:
+      config:
+        - subnet: ${REDIS_INSIGHT_ACCESS_SUBNET:-10.28.0.0/16}
+    driver: bridge

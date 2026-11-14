@@ -1,0 +1,100 @@
+plugins {
+	id 'java'
+	id 'org.springframework.boot' version '4.1.1'
+	id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.endpoint'
+version = '0.0.1-SNAPSHOT'
+
+def generatedBuildInfoDir = layout.buildDirectory.dir('generated/build-info-resources')
+def generatedBuildInfoFile = generatedBuildInfoDir.map { it.file('build-info.properties') }
+
+tasks.register('generateBuildInfoProperties') {
+	inputs.property('projectVersion', project.version)
+	outputs.file(generatedBuildInfoFile)
+	doLast {
+		def output = generatedBuildInfoFile.get().asFile
+		output.parentFile.mkdirs()
+		output.text = "app.build.version=${project.version}\n"
+	}
+}
+
+sourceSets.main.resources.srcDir(generatedBuildInfoDir)
+tasks.named('processResources') {
+	dependsOn(tasks.named('generateBuildInfoProperties'))
+}
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(26)
+	}
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencyLocking {
+	lockAllConfigurations()
+}
+
+// Yubico's runtime Guava range otherwise probes newer, unverified metadata
+// before Gradle applies the lock. Use the already locked and verified version.
+dependencyManagement {
+    dependencies {
+        dependency 'com.google.guava:guava:33.7.2-jre'
+    }
+}
+
+dependencies {
+	implementation 'org.springframework.boot:spring-boot-starter'
+	implementation 'org.springframework.boot:spring-boot-starter-web'
+	implementation 'org.springframework.boot:spring-boot-starter-websocket'
+	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+	implementation 'org.springframework.boot:spring-boot-starter-security'
+	implementation 'org.springframework.boot:spring-boot-starter-oauth2-client'
+	implementation 'org.springframework.boot:spring-boot-starter-mail'
+	implementation 'org.springframework.boot:spring-boot-starter-validation'
+	implementation 'com.yubico:webauthn-server-core:2.10.1'
+	implementation 'org.apache.tomcat.embed:tomcat-embed-jasper'
+	implementation 'jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api'
+	implementation 'org.glassfish.web:jakarta.servlet.jsp.jstl'
+
+	runtimeOnly 'com.microsoft.sqlserver:mssql-jdbc'
+
+	implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
+	runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
+	runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
+	implementation 'com.fasterxml.jackson.core:jackson-databind:2.18.2'
+
+	runtimeOnly 'com.h2database:h2'
+	testImplementation 'org.springframework.boot:spring-boot-starter-test'
+	testImplementation 'org.springframework.security:spring-security-test'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+	systemProperty 'test.ca.path', file('src/test/resources/test-ca.pem').absolutePath
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.encoding = 'UTF-8'
+}
+
+tasks.named('bootJar') {
+	from(rootProject.file('../licenses/upstream/yubico-webauthn-2.10.1-COPYING')) {
+		into 'META-INF/agora-licenses'
+	}
+	from(rootProject.file('../LICENSE')) {
+		into 'META-INF/agora-licenses'
+	}
+	from(rootProject.file('../THIRD_PARTY_LICENSES.md')) {
+		into 'META-INF/agora-licenses'
+	}
+	from(rootProject.file('../cpp/third_party/uWebSockets/LICENSE')) {
+		into 'META-INF/agora-licenses'
+		rename { 'Apache-2.0.txt' }
+	}
+}

@@ -1,0 +1,213 @@
+package com.endpoint.frelog.domain.canvas.dto;
+
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * IRADE Elasticsearch 'workspace' 인덱스 규격을 반영한 도큐먼트 모델
+ */
+@JsonInclude(JsonInclude.Include.ALWAYS)
+@JsonIgnoreProperties(ignoreUnknown = true)
+public class CanvasDocument {
+
+    @JsonProperty("canvas-name")
+    @JsonAlias({"canvasName", "canvas_name", "workspace-name", "workspaceName", "workspace_name"})
+    private String canvasName;
+
+    @JsonProperty("canvas-id")
+    @JsonAlias({"canvasId", "canvas_id", "workspace-id", "workspaceId", "workspace_id"})
+    private Integer canvasId;
+
+    @JsonProperty("admin-user-id")
+    @JsonAlias({"admin", "adminUserId", "admin_user_id"})
+    private Long adminUserId;
+
+    @JsonProperty("description")
+    private String description = "";
+
+    // Existing documents had participant-only access, so absent/invalid values fail closed.
+    @JsonProperty("visibility")
+    private String visibility = "private";
+
+    public String getVisibility() { return "public".equals(visibility) ? "public" : "private"; }
+    public void setVisibility(String value) { visibility = "public".equals(value) ? "public" : "private"; }
+
+    @JsonProperty("canvas-password-hash")
+    @JsonAlias({"canvasPassword", "canvas_password_hash", "canvas-password", "workspace-password-hash", "workspacePasswordHash", "workspace_password_hash", "workspacePassword", "workspace-password"})
+    private String canvasPasswordHash;
+
+    // Password grants survive unrelated settings updates, but never password changes.
+    @JsonProperty("password-revision")
+    private Long passwordRevision = 0L;
+    public Long getPasswordRevision() { return passwordRevision == null ? 0L : passwordRevision; }
+    public void setPasswordRevision(Long value) { passwordRevision = value; }
+
+    @JsonProperty("people")
+    @JsonAlias({"peoples"})
+    private List<Long> people = new ArrayList<>();
+
+    @JsonProperty("inner-group")
+    @JsonAlias({"innerGroup", "inner_group"})
+    private Map<String, List<Long>> innerGroup = new LinkedHashMap<>();
+
+    @JsonProperty("group-bits")
+    @JsonAlias("group_bits")
+    private Map<String,Integer> groupBits=new LinkedHashMap<>();
+    public Map<String,Integer> getGroupBits(){return groupBits;}
+    public void setGroupBits(Map<String,Integer> value){groupBits=value;}
+
+    @JsonProperty("group-permissions")
+    @JsonAlias("group_permissions")
+    private Map<String, Object> groupPermissions = new LinkedHashMap<>();
+    public Map<String, Object> getGroupPermissions() { return groupPermissions; }
+    public void setGroupPermissions(Map<String, Object> value) { groupPermissions = value; }
+
+    @JsonProperty("items")
+    private Map<String, Object> items = new LinkedHashMap<>();
+
+    @JsonProperty("init-group")
+    @JsonAlias({"initGroup", "init_group"})
+    private String initGroup = "default";
+
+    @JsonProperty("settings-revision")
+    private Long settingsRevision = 0L;
+
+    public CanvasDocument() {
+    }
+
+    public CanvasDocument(String canvasName, Integer canvasId, Long adminUserId, String canvasPasswordHash, String initGroup) {
+        this.canvasName = canvasName;
+        this.canvasId = canvasId;
+        this.adminUserId = adminUserId;
+        this.canvasPasswordHash = canvasPasswordHash;
+        this.initGroup = (initGroup != null && !initGroup.isBlank()) ? initGroup : "default";
+
+        if (adminUserId != null) {
+            this.people.add(adminUserId);
+            List<Long> adminList = new ArrayList<>();
+            adminList.add(adminUserId);
+            this.innerGroup.put("admin-group", adminList);
+            this.groupBits.put("admin-group",0);this.groupPermissions.put("admin-group",7);
+            if (!this.innerGroup.containsKey(this.initGroup)) {
+                this.innerGroup.put(this.initGroup, new ArrayList<>());
+                this.groupBits.put(this.initGroup,1);this.groupPermissions.put(this.initGroup,7);
+            }
+        }
+    }
+
+    public String getCanvasName() {
+        return canvasName;
+    }
+
+    public void setCanvasName(String canvasName) {
+        this.canvasName = canvasName;
+    }
+
+    public Integer getCanvasId() {
+        return canvasId;
+    }
+
+    public void setCanvasId(Integer canvasId) {
+        this.canvasId = canvasId;
+    }
+
+    public Long getAdminUserId() {
+        return adminUserId;
+    }
+
+    public void setAdminUserId(Long adminUserId) {
+        this.adminUserId = adminUserId;
+    }
+
+    // Compatibility alias
+    public Long getAdmin() {
+        return adminUserId;
+    }
+
+    public void setAdmin(Long admin) {
+        this.adminUserId = admin;
+    }
+
+    public String getDescription() {
+        return description;
+    }
+
+    public void setDescription(String description) {
+        this.description = description;
+    }
+
+    public String getCanvasPasswordHash() {
+        return canvasPasswordHash;
+    }
+
+    public void setCanvasPasswordHash(String canvasPasswordHash) {
+        this.canvasPasswordHash = canvasPasswordHash;
+    }
+
+    // Compatibility alias
+    @JsonProperty(value="canvasPassword", access=JsonProperty.Access.WRITE_ONLY)
+    public String getCanvasPassword() {
+        return canvasPasswordHash;
+    }
+
+    public void setCanvasPassword(String canvasPassword) {
+        this.canvasPasswordHash = canvasPassword;
+    }
+
+    public List<Long> getPeople() {
+        return people;
+    }
+
+    public void setPeople(List<Long> people) {
+        this.people = people != null ? people : new ArrayList<>();
+    }
+
+    // Compatibility alias
+    @JsonProperty(value="peoples", access=JsonProperty.Access.WRITE_ONLY)
+    public List<Long> getPeoples() {
+        return people;
+    }
+
+    public void setPeoples(List<Long> peoples) {
+        this.people = peoples != null ? peoples : new ArrayList<>();
+    }
+
+    public Map<String, List<Long>> getInnerGroup() {
+        return innerGroup;
+    }
+
+    public void setInnerGroup(Map<String, List<Long>> innerGroup) {
+        this.innerGroup = innerGroup != null ? innerGroup : new LinkedHashMap<>();
+    }
+
+    public Map<String, Object> getItems() {
+        return items;
+    }
+
+    public void setItems(Map<String, Object> items) {
+        this.items = items != null ? items : new LinkedHashMap<>();
+    }
+
+    public String getInitGroup() {
+        return initGroup;
+    }
+
+    public void setInitGroup(String initGroup) {
+        this.initGroup = initGroup;
+    }
+
+    public Long getSettingsRevision() {
+        return settingsRevision;
+    }
+
+    public void setSettingsRevision(Long settingsRevision) {
+        this.settingsRevision = settingsRevision == null ? 0L : settingsRevision;
+    }
+}

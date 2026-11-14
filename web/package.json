@@ -1,0 +1,32 @@
+{
+  "name": "irade-web",
+  "displayName": "IRADE Research Workspace",
+  "description": "Web research workspace for AI conversations, formal proofs, code, and documents",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "tsc --noEmit",
+    "serve": "node scripts/serve.mjs",
+    "serve:https": "node scripts/serve-https.mjs",
+    "pretest": "npm run check && npm run build",
+    "test": "node test/run.mjs",
+    "test:studio": "npm run build && node test/studio.mjs"
+  },
+  "dependencies": {
+    "@automerge/automerge": "3.5.0",
+    "dompurify": "^3.4.17",
+    "koa": "^3.3.0",
+    "marked": "^18.2.0",
+    "monaco-editor": "^0.52.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "esbuild": "^0.28.1",
+    "playwright": "1.65.0",
+    "typescript": "^5.9.3",
+    "ws": "^8.19.0"
+  }
+}

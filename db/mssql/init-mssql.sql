@@ -1,0 +1,853 @@
+-- ==============================================================================
+-- Agora MS SQL Server Database & Schema Initialization
+-- sqlcmd 변수 사용:
+--   $(DB_NAME), $(DB_USER), $(DB_PASSWORD)
+--   $(TABLE_USERS), $(TABLE_REDIS_SERVER), $(TABLE_CPP_SERVER), $(TABLE_WORKSPACE_INFO)
+-- ==============================================================================
+
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+
+-- 1. SQL Server 런타임 계정 생성 및 비밀번호 동기화
+IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = '$(DB_USER)')
+BEGIN
+    CREATE LOGIN [$(DB_USER)] WITH PASSWORD = '$(DB_PASSWORD)', CHECK_POLICY = ON;
+END
+ELSE
+BEGIN
+    ALTER LOGIN [$(DB_USER)] WITH PASSWORD = '$(DB_PASSWORD)', CHECK_POLICY = ON;
+END
+GO
+
+-- 2. 데이터베이스 생성 (존재하지 않을 경우)
+IF NOT EXISTS (SELECT 1 FROM sys.databases WHERE name = '$(DB_NAME)')
+BEGIN
+    CREATE DATABASE [$(DB_NAME)];
+END
+GO
+
+-- 3. DB owner와 런타임 DML 계정을 분리한다. 스키마 생성은 이 스크립트의
+--    관리자 연결로 수행하고 애플리케이션 계정은 dbo 권한을 갖지 않는다.
+ALTER AUTHORIZATION ON DATABASE::[$(DB_NAME)] TO [sa];
+GO
+
+-- 4. 해당 사용자의 기본 데이터베이스 지정
+ALTER LOGIN [$(DB_USER)] WITH DEFAULT_DATABASE = [$(DB_NAME)];
+GO
+
+-- 5. 대상 데이터베이스 컨텍스트로 전환
+USE [$(DB_NAME)];
+GO
+
+IF USER_ID('$(DB_USER)') IS NULL
+    CREATE USER [$(DB_USER)] FOR LOGIN [$(DB_USER)];
+ELSE
+    ALTER USER [$(DB_USER)] WITH LOGIN = [$(DB_USER)];
+
+IF IS_ROLEMEMBER('db_owner', '$(DB_USER)') = 1
+    ALTER ROLE [db_owner] DROP MEMBER [$(DB_USER)];
+IF IS_ROLEMEMBER('db_ddladmin', '$(DB_USER)') = 1
+    ALTER ROLE [db_ddladmin] DROP MEMBER [$(DB_USER)];
+IF IS_ROLEMEMBER('db_securityadmin', '$(DB_USER)') = 1
+    ALTER ROLE [db_securityadmin] DROP MEMBER [$(DB_USER)];
+IF IS_ROLEMEMBER('db_accessadmin', '$(DB_USER)') = 1
+    ALTER ROLE [db_accessadmin] DROP MEMBER [$(DB_USER)];
+GO
+
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+GO
+
+-- 6. Redis 등록 테이블 (PK: redis_id, UQ: redis_ip, redis_port)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = '$(TABLE_REDIS_SERVER)')
+BEGIN
+    CREATE TABLE [$(TABLE_REDIS_SERVER)] (
+        redis_id      INT IDENTITY(1,1) NOT NULL,
+        redis_ip      VARCHAR(45)       NOT NULL,          -- Redis IP 주소 (IPv4/IPv6, 공백 불가)
+        redis_port    VARCHAR(10)       NOT NULL,          -- Redis 포트 번호 (공백 불가)
+        is_activated  BIT               NOT NULL DEFAULT 0, -- 활성화 여부
+        created_at    DATETIME2         NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT [PK_$(TABLE_REDIS_SERVER)] PRIMARY KEY CLUSTERED (redis_id),
+        CONSTRAINT [UQ_$(TABLE_REDIS_SERVER)_ip_port] UNIQUE NONCLUSTERED (redis_ip, redis_port),
+        CONSTRAINT [CK_$(TABLE_REDIS_SERVER)_ip] CHECK (LEN(LTRIM(RTRIM(redis_ip))) > 0),
+        CONSTRAINT [CK_$(TABLE_REDIS_SERVER)_port] CHECK (LEN(LTRIM(RTRIM(redis_port))) > 0)
+    );
+END
+ELSE
+BEGIN
+    IF COL_LENGTH('$(TABLE_REDIS_SERVER)', 'is_activated') IS NULL
+    BEGIN
+        ALTER TABLE [$(TABLE_REDIS_SERVER)] ADD is_activated BIT NOT NULL DEFAULT 0;
+    END;
+    IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_$(TABLE_REDIS_SERVER)_ip')
+    BEGIN
+        ALTER TABLE [$(TABLE_REDIS_SERVER)] ADD CONSTRAINT [CK_$(TABLE_REDIS_SERVER)_ip] CHECK (LEN(LTRIM(RTRIM(redis_ip))) > 0);
+    END;
+    IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_$(TABLE_REDIS_SERVER)_port')
+    BEGIN
+        ALTER TABLE [$(TABLE_REDIS_SERVER)] ADD CONSTRAINT [CK_$(TABLE_REDIS_SERVER)_port] CHECK (LEN(LTRIM(RTRIM(redis_port))) > 0);
+    END;
+END
+GO
+
+-- 7. C++ 실시간 서버 인스턴스 등록 테이블 (PK: server_id, UQ: server_ip, server_port)
+
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = '$(TABLE_CPP_SERVER)')
+BEGIN
+    CREATE TABLE [$(TABLE_CPP_SERVER)] (
+        server_id     INT IDENTITY(1,1) NOT NULL,
+        server_ip     VARCHAR(45)       NOT NULL,          -- C++ 실시간 서버 IP 주소 (IPv4/IPv6, 공백 불가)
+        server_port   VARCHAR(10)       NOT NULL,          -- C++ 실시간 서버 포트 번호 (공백 불가)
+        ws_port       VARCHAR(10)       NOT NULL,          -- C++ 웹소켓 포트 번호
+        is_activated  BIT               NOT NULL DEFAULT 0, -- 활성화 여부
+        created_at    DATETIME2         NOT NULL DEFAULT SYSUTCDATETIME(),
+        last_heartbeat_at DATETIME2      NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT [PK_$(TABLE_CPP_SERVER)] PRIMARY KEY CLUSTERED (server_id),
+        CONSTRAINT [UQ_$(TABLE_CPP_SERVER)_ip_port] UNIQUE NONCLUSTERED (server_ip, server_port),
+        CONSTRAINT [CK_$(TABLE_CPP_SERVER)_ip] CHECK (LEN(LTRIM(RTRIM(server_ip))) > 0),
+        CONSTRAINT [CK_$(TABLE_CPP_SERVER)_port] CHECK (LEN(LTRIM(RTRIM(server_port))) > 0),
+        CONSTRAINT [CK_$(TABLE_CPP_SERVER)_ws_port] CHECK (LEN(LTRIM(RTRIM(ws_port))) > 0)
+    );
+END
+ELSE
+BEGIN
+    IF COL_LENGTH('$(TABLE_CPP_SERVER)', 'is_activated') IS NULL
+    BEGIN
+        ALTER TABLE [$(TABLE_CPP_SERVER)] ADD is_activated BIT NOT NULL DEFAULT 0;
+    END;
+    IF COL_LENGTH('$(TABLE_CPP_SERVER)', 'last_heartbeat_at') IS NULL
+    BEGIN
+        ALTER TABLE [$(TABLE_CPP_SERVER)] ADD last_heartbeat_at DATETIME2 NOT NULL
+            CONSTRAINT [DF_$(TABLE_CPP_SERVER)_last_heartbeat_at] DEFAULT SYSUTCDATETIME();
+    END;
+    IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_$(TABLE_CPP_SERVER)_ip')
+    BEGIN
+        ALTER TABLE [$(TABLE_CPP_SERVER)] ADD CONSTRAINT [CK_$(TABLE_CPP_SERVER)_ip] CHECK (LEN(LTRIM(RTRIM(server_ip))) > 0);
+    END;
+    IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_$(TABLE_CPP_SERVER)_port')
+    BEGIN
+        ALTER TABLE [$(TABLE_CPP_SERVER)] ADD CONSTRAINT [CK_$(TABLE_CPP_SERVER)_port] CHECK (LEN(LTRIM(RTRIM(server_port))) > 0),
+        CONSTRAINT [CK_$(TABLE_CPP_SERVER)_ws_port] CHECK (LEN(LTRIM(RTRIM(ws_port))) > 0);
+    END;
+END
+GO
+
+-- 8. 회원 테이블 (PK: user_id, UQ: email, 인덱스: oauth, nickname)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = '$(TABLE_USERS)')
+BEGIN
+    CREATE TABLE [$(TABLE_USERS)] (
+        user_id              INT IDENTITY(1,1) NOT NULL,              -- 기본키 자동 증가 클러스터드 인덱스
+        email                NVARCHAR(255)     NOT NULL,              -- 넌클러스터드 유니크 인덱스 UQ_Users_Email
+        password_hash        NVARCHAR(255)     NULL,                  -- 비밀번호 해시 (NULL 허용)
+        nickname             NVARCHAR(100)     NOT NULL,              -- 닉네임 (중복 가능, 공백 불가)
+        tag_number           INT               NOT NULL DEFAULT 0,    -- 닉네임 유일성 식별용 정수값
+        role                 NVARCHAR(20)      NOT NULL DEFAULT 'ROLE_USER', -- 기본 ROLE_USER (관리자 ROLE_ADMIN)
+        status               NVARCHAR(20)      NOT NULL DEFAULT 'ACTIVE',    -- ACTIVE, SUSPENDED, WITHDRAWN
+        oauth_provider       NVARCHAR(50)      NULL,                  -- OAuth 제공자 (NULL 가능)
+        oauth_id             NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NULL,                  -- 제공자별 고유 회원 식별자 (NULL 가능)
+        password_changed_at  DATETIME2         NULL,                  -- 비밀번호 변경 시간 (NULL 가능)
+        created_at           DATETIME2         NOT NULL DEFAULT SYSUTCDATETIME(),
+        updated_at           DATETIME2         NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT [PK_$(TABLE_USERS)] PRIMARY KEY CLUSTERED (user_id),
+        CONSTRAINT [UQ_Users_Email] UNIQUE NONCLUSTERED (email),
+        CONSTRAINT [UQ_Users_Nickname_TagNumber] UNIQUE NONCLUSTERED (nickname, tag_number),
+        CONSTRAINT [CK_$(TABLE_USERS)_Status] CHECK (status IN ('ACTIVE', 'SUSPENDED', 'WITHDRAWN')),
+        CONSTRAINT [CK_$(TABLE_USERS)_Role] CHECK (role IN ('ROLE_USER', 'ROLE_ADMIN')),
+        CONSTRAINT [CK_$(TABLE_USERS)_Nickname] CHECK (LEN(LTRIM(RTRIM(nickname))) > 0),
+        CONSTRAINT [CK_$(TABLE_USERS)_Auth] CHECK (status = 'WITHDRAWN' OR password_hash IS NOT NULL OR (oauth_provider IS NOT NULL AND oauth_id IS NOT NULL))
+    );
+END
+ELSE
+BEGIN
+    -- 기존 users 테이블에 저장된 세션 상태를 제거하기 전에 정규 세션 테이블로 옮긴다.
+    -- 세션 테이블이 없으면 workspace_info 생성 전에도 만들 수 있는 최소 형태로 먼저 생성한다.
+    IF COL_LENGTH('$(TABLE_USERS)', 'cpp_server_id') IS NOT NULL
+       OR COL_LENGTH('$(TABLE_USERS)', 'is_accessed') IS NOT NULL
+       OR COL_LENGTH('$(TABLE_USERS)', 'last_login_at') IS NOT NULL
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'user_sessions')
+        BEGIN
+            CREATE TABLE [user_sessions] (
+                user_id       INT       NOT NULL,
+                cpp_server_id INT       NULL,
+                is_accessed   BIT       NOT NULL CONSTRAINT [DF_user_sessions_is_accessed] DEFAULT 0,
+                last_login_at DATETIME2 NULL,
+                updated_at    DATETIME2 NOT NULL CONSTRAINT [DF_user_sessions_updated_at] DEFAULT SYSUTCDATETIME(),
+                CONSTRAINT [PK_user_sessions] PRIMARY KEY CLUSTERED (user_id),
+                CONSTRAINT [FK_user_sessions_users] FOREIGN KEY (user_id) REFERENCES [$(TABLE_USERS)] (user_id) ON DELETE NO ACTION ON UPDATE NO ACTION,
+                CONSTRAINT [FK_user_sessions_$(TABLE_CPP_SERVER)] FOREIGN KEY (cpp_server_id) REFERENCES [$(TABLE_CPP_SERVER)] (server_id) ON DELETE NO ACTION ON UPDATE NO ACTION
+            );
+        END;
+
+        DECLARE @legacy_cpp_server_id NVARCHAR(100) =
+            CASE WHEN COL_LENGTH('$(TABLE_USERS)', 'cpp_server_id') IS NOT NULL THEN N'u.cpp_server_id' ELSE N'CAST(NULL AS INT)' END;
+        DECLARE @legacy_is_accessed NVARCHAR(100) =
+            CASE WHEN COL_LENGTH('$(TABLE_USERS)', 'is_accessed') IS NOT NULL THEN N'ISNULL(u.is_accessed, 0)' ELSE N'CAST(0 AS BIT)' END;
+        DECLARE @legacy_last_login_at NVARCHAR(100) =
+            CASE WHEN COL_LENGTH('$(TABLE_USERS)', 'last_login_at') IS NOT NULL THEN N'u.last_login_at' ELSE N'CAST(NULL AS DATETIME2)' END;
+        DECLARE @legacy_session_predicate NVARCHAR(500) = N'';
+
+        IF COL_LENGTH('$(TABLE_USERS)', 'cpp_server_id') IS NOT NULL
+            SET @legacy_session_predicate += N' OR u.cpp_server_id IS NOT NULL';
+        IF COL_LENGTH('$(TABLE_USERS)', 'is_accessed') IS NOT NULL
+            SET @legacy_session_predicate += N' OR ISNULL(u.is_accessed, 0) = 1';
+        IF COL_LENGTH('$(TABLE_USERS)', 'last_login_at') IS NOT NULL
+            SET @legacy_session_predicate += N' OR u.last_login_at IS NOT NULL';
+
+        DECLARE @migrate_legacy_sessions NVARCHAR(MAX) =
+            N'INSERT INTO [user_sessions] (user_id, cpp_server_id, is_accessed, last_login_at) ' +
+            N'SELECT u.user_id, ' + @legacy_cpp_server_id + N', ' + @legacy_is_accessed + N', ' + @legacy_last_login_at +
+            N' FROM [$(TABLE_USERS)] AS u WHERE (' + STUFF(@legacy_session_predicate, 1, 4, N'') + N')' +
+            N' AND NOT EXISTS (SELECT 1 FROM [user_sessions] AS s WHERE s.user_id = u.user_id);';
+        EXEC sys.sp_executesql @migrate_legacy_sessions;
+    END;
+
+    -- 이전 세션 FK는 값 복사 후 제거한다.
+    IF EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_$(TABLE_USERS)_$(TABLE_CPP_SERVER)')
+    BEGIN
+        ALTER TABLE [$(TABLE_USERS)] DROP CONSTRAINT [FK_$(TABLE_USERS)_$(TABLE_CPP_SERVER)];
+    END;
+    DECLARE @legacy_default_constraint sysname;
+    DECLARE @drop_legacy_default_sql NVARCHAR(500);
+    IF COL_LENGTH('$(TABLE_USERS)', 'cpp_server_id') IS NOT NULL
+    BEGIN
+        SET @legacy_default_constraint = NULL;
+        SELECT @legacy_default_constraint = d.name
+        FROM sys.default_constraints d
+        JOIN sys.columns c ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id
+        WHERE d.parent_object_id = OBJECT_ID('$(TABLE_USERS)') AND c.name = 'cpp_server_id';
+        IF @legacy_default_constraint IS NOT NULL
+        BEGIN
+            SET @drop_legacy_default_sql = N'ALTER TABLE [$(TABLE_USERS)] DROP CONSTRAINT ' + QUOTENAME(@legacy_default_constraint);
+            EXEC sys.sp_executesql @drop_legacy_default_sql;
+        END;
+        ALTER TABLE [$(TABLE_USERS)] DROP COLUMN cpp_server_id;
+    END;
+    IF COL_LENGTH('$(TABLE_USERS)', 'is_accessed') IS NOT NULL
+    BEGIN
+        SET @legacy_default_constraint = NULL;
+        SELECT @legacy_default_constraint = d.name
+        FROM sys.default_constraints d
+        JOIN sys.columns c ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id
+        WHERE d.parent_object_id = OBJECT_ID('$(TABLE_USERS)') AND c.name = 'is_accessed';
+        IF @legacy_default_constraint IS NOT NULL
+        BEGIN
+            SET @drop_legacy_default_sql = N'ALTER TABLE [$(TABLE_USERS)] DROP CONSTRAINT ' + QUOTENAME(@legacy_default_constraint);
+            EXEC sys.sp_executesql @drop_legacy_default_sql;
+        END;
+        ALTER TABLE [$(TABLE_USERS)] DROP COLUMN is_accessed;
+    END;
+    IF COL_LENGTH('$(TABLE_USERS)', 'last_login_at') IS NOT NULL
+    BEGIN
+        SET @legacy_default_constraint = NULL;
+        SELECT @legacy_default_constraint = d.name
+        FROM sys.default_constraints d
+        JOIN sys.columns c ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id
+        WHERE d.parent_object_id = OBJECT_ID('$(TABLE_USERS)') AND c.name = 'last_login_at';
+        IF @legacy_default_constraint IS NOT NULL
+        BEGIN
+            SET @drop_legacy_default_sql = N'ALTER TABLE [$(TABLE_USERS)] DROP CONSTRAINT ' + QUOTENAME(@legacy_default_constraint);
+            EXEC sys.sp_executesql @drop_legacy_default_sql;
+        END;
+        ALTER TABLE [$(TABLE_USERS)] DROP COLUMN last_login_at;
+    END;
+
+    -- tag_number 컬럼 및 고유 제약조건 추가
+    IF COL_LENGTH('$(TABLE_USERS)', 'tag_number') IS NULL
+    BEGIN
+        ALTER TABLE [$(TABLE_USERS)] ADD tag_number INT NOT NULL DEFAULT 0;
+    END;
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_Users_Nickname_TagNumber' AND object_id = OBJECT_ID('$(TABLE_USERS)'))
+    BEGIN
+        ALTER TABLE [$(TABLE_USERS)] ADD CONSTRAINT [UQ_Users_Nickname_TagNumber] UNIQUE NONCLUSTERED (nickname, tag_number);
+    END;
+
+    -- 인증 무결성 제약조건 추가
+    IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_$(TABLE_USERS)_Auth')
+       AND COL_LENGTH(N'[$(TABLE_USERS)]',N'orcid') IS NULL
+    BEGIN
+        ALTER TABLE [$(TABLE_USERS)] ADD CONSTRAINT [CK_$(TABLE_USERS)_Auth] CHECK (status = 'WITHDRAWN' OR password_hash IS NOT NULL OR (oauth_provider IS NOT NULL AND oauth_id IS NOT NULL));
+    END;
+    
+    -- role 제약조건 임시 해제 후 타입 변경 및 제약조건 재설정
+    DECLARE @def_name NVARCHAR(128);
+    SELECT @def_name = d.name
+    FROM sys.default_constraints d
+    JOIN sys.columns c ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id
+    WHERE d.parent_object_id = OBJECT_ID('$(TABLE_USERS)') AND c.name = 'role';
+    IF @def_name IS NOT NULL
+        EXEC('ALTER TABLE [$(TABLE_USERS)] DROP CONSTRAINT [' + @def_name + '];');
+
+    IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_$(TABLE_USERS)_Role')
+        ALTER TABLE [$(TABLE_USERS)] DROP CONSTRAINT [CK_$(TABLE_USERS)_Role];
+
+    UPDATE [$(TABLE_USERS)] SET role = 'ROLE_USER' WHERE role IS NULL;
+    ALTER TABLE [$(TABLE_USERS)] ALTER COLUMN role NVARCHAR(20) NOT NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.default_constraints d JOIN sys.columns c ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id WHERE d.parent_object_id = OBJECT_ID('$(TABLE_USERS)') AND c.name = 'role')
+        ALTER TABLE [$(TABLE_USERS)] ADD CONSTRAINT [DF_$(TABLE_USERS)_role] DEFAULT 'ROLE_USER' FOR role;
+    IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_$(TABLE_USERS)_Role')
+        ALTER TABLE [$(TABLE_USERS)] ADD CONSTRAINT [CK_$(TABLE_USERS)_Role] CHECK (role IN ('ROLE_USER', 'ROLE_ADMIN'));
+
+    -- status 제약조건 임시 해제 후 타입 변경 및 제약조건 재설정
+    SELECT @def_name = d.name
+    FROM sys.default_constraints d
+    JOIN sys.columns c ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id
+    WHERE d.parent_object_id = OBJECT_ID('$(TABLE_USERS)') AND c.name = 'status';
+    IF @def_name IS NOT NULL
+        EXEC('ALTER TABLE [$(TABLE_USERS)] DROP CONSTRAINT [' + @def_name + '];');
+
+    IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_$(TABLE_USERS)_Status')
+        ALTER TABLE [$(TABLE_USERS)] DROP CONSTRAINT [CK_$(TABLE_USERS)_Status];
+
+    ALTER TABLE [$(TABLE_USERS)] ALTER COLUMN status NVARCHAR(20) NOT NULL;
+    IF NOT EXISTS (SELECT 1 FROM sys.default_constraints d JOIN sys.columns c ON d.parent_object_id = c.object_id AND d.parent_column_id = c.column_id WHERE d.parent_object_id = OBJECT_ID('$(TABLE_USERS)') AND c.name = 'status')
+        ALTER TABLE [$(TABLE_USERS)] ADD CONSTRAINT [DF_$(TABLE_USERS)_status] DEFAULT 'ACTIVE' FOR status;
+    IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_$(TABLE_USERS)_Status')
+        ALTER TABLE [$(TABLE_USERS)] ADD CONSTRAINT [CK_$(TABLE_USERS)_Status] CHECK (status IN ('ACTIVE', 'SUSPENDED', 'WITHDRAWN'));
+
+    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_$(TABLE_USERS)_OAuth' AND object_id = OBJECT_ID('$(TABLE_USERS)'))
+        DROP INDEX [IX_$(TABLE_USERS)_OAuth] ON [$(TABLE_USERS)];
+
+    -- Avoid ALTER COLUMN when the schema is already correct: SQL Server rejects
+    -- the no-op alteration while the unique OAuth identity index depends on it.
+    IF EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('$(TABLE_USERS)')
+          AND name = 'oauth_provider'
+          AND (system_type_id <> 231 OR max_length <> 100 OR is_nullable <> 1)
+    )
+    BEGIN
+        IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_$(TABLE_USERS)_OAuthIdentity' AND object_id = OBJECT_ID('$(TABLE_USERS)'))
+            DROP INDEX [UX_$(TABLE_USERS)_OAuthIdentity] ON [$(TABLE_USERS)];
+        ALTER TABLE [$(TABLE_USERS)] ALTER COLUMN oauth_provider NVARCHAR(50) NULL;
+    END;
+
+    -- UQ_Users_Email 인덱스/제약조건 이름 동기화
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_Users_Email' AND object_id = OBJECT_ID('$(TABLE_USERS)'))
+    BEGIN
+        IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_$(TABLE_USERS)_Email' AND object_id = OBJECT_ID('$(TABLE_USERS)'))
+        BEGIN
+            EXEC sp_rename '$(TABLE_USERS).UQ_$(TABLE_USERS)_Email', 'UQ_Users_Email', 'INDEX';
+        END
+        ELSE
+        BEGIN
+            ALTER TABLE [$(TABLE_USERS)] ADD CONSTRAINT [UQ_Users_Email] UNIQUE NONCLUSTERED (email);
+        END
+    END;
+END
+GO
+
+-- 회원 테이블 비 클러스터 인덱스 생성
+-- (1) (oauth_provider, oauth_id) - oauth_provider가 NULL이 아닌 것만 인덱싱
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_$(TABLE_USERS)_OAuth' AND object_id = OBJECT_ID('$(TABLE_USERS)'))
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_$(TABLE_USERS)_OAuth] ON [$(TABLE_USERS)] (oauth_provider, oauth_id)
+    WHERE oauth_provider IS NOT NULL;
+END
+GO
+
+-- (2) (nickname)
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_$(TABLE_USERS)_Nickname' AND object_id = OBJECT_ID('$(TABLE_USERS)'))
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_$(TABLE_USERS)_Nickname] ON [$(TABLE_USERS)] (nickname);
+END
+GO
+
+-- 9. 워크스페이스 정보 테이블 (워크스페이스 서버 할당 및 상태 관리, PK: workspace_id, FK: redis_server(redis_id), FK: cpp_server(server_id))
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = '$(TABLE_WORKSPACE_INFO)')
+BEGIN
+    CREATE TABLE [$(TABLE_WORKSPACE_INFO)] (
+        workspace_id  INT           IDENTITY(1,1) NOT NULL, -- 워크스페이스 고유 ID (PK, 클러스터드 인덱스)
+        redis_id      INT           NULL,                  -- Redis 서버 ID (FK → redis_server.redis_id)
+        cpp_server_id INT           NULL,                  -- C++ 실시간 서버 ID (FK → cpp_server.server_id)
+        is_cached     BIT           NOT NULL DEFAULT 0,    -- 캐시 여부 (NULL 불가, 0: False, 1: True)
+        created_at    DATETIME2     NOT NULL DEFAULT SYSUTCDATETIME(),
+        updated_at    DATETIME2     NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT [PK_$(TABLE_WORKSPACE_INFO)] PRIMARY KEY CLUSTERED (workspace_id),
+        CONSTRAINT [FK_$(TABLE_WORKSPACE_INFO)_$(TABLE_REDIS_SERVER)] FOREIGN KEY (redis_id)
+            REFERENCES [$(TABLE_REDIS_SERVER)] (redis_id)
+            ON DELETE NO ACTION
+            ON UPDATE NO ACTION,
+        CONSTRAINT [FK_$(TABLE_WORKSPACE_INFO)_$(TABLE_CPP_SERVER)] FOREIGN KEY (cpp_server_id)
+            REFERENCES [$(TABLE_CPP_SERVER)] (server_id)
+            ON DELETE NO ACTION
+            ON UPDATE NO ACTION
+    );
+END
+ELSE
+BEGIN
+    IF COL_LENGTH('$(TABLE_WORKSPACE_INFO)', 'redis_id') IS NULL
+    BEGIN
+        ALTER TABLE [$(TABLE_WORKSPACE_INFO)] ADD redis_id INT NULL;
+    END;
+    IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_$(TABLE_WORKSPACE_INFO)_$(TABLE_REDIS_SERVER)')
+    BEGIN
+        ALTER TABLE [$(TABLE_WORKSPACE_INFO)] ADD CONSTRAINT [FK_$(TABLE_WORKSPACE_INFO)_$(TABLE_REDIS_SERVER)]
+            FOREIGN KEY (redis_id) REFERENCES [$(TABLE_REDIS_SERVER)] (redis_id)
+            ON DELETE NO ACTION ON UPDATE NO ACTION;
+    END;
+
+    IF COL_LENGTH('$(TABLE_WORKSPACE_INFO)', 'cpp_server_id') IS NULL
+    BEGIN
+        ALTER TABLE [$(TABLE_WORKSPACE_INFO)] ADD cpp_server_id INT NULL;
+    END;
+    IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_$(TABLE_WORKSPACE_INFO)_$(TABLE_CPP_SERVER)')
+    BEGIN
+        ALTER TABLE [$(TABLE_WORKSPACE_INFO)] ADD CONSTRAINT [FK_$(TABLE_WORKSPACE_INFO)_$(TABLE_CPP_SERVER)]
+            FOREIGN KEY (cpp_server_id) REFERENCES [$(TABLE_CPP_SERVER)] (server_id)
+            ON DELETE NO ACTION ON UPDATE NO ACTION;
+    END;
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_$(TABLE_WORKSPACE_INFO)_is_cached' AND object_id = OBJECT_ID('$(TABLE_WORKSPACE_INFO)'))
+BEGIN
+    CREATE NONCLUSTERED INDEX [IX_$(TABLE_WORKSPACE_INFO)_is_cached] ON [$(TABLE_WORKSPACE_INFO)] (is_cached);
+END
+GO
+
+-- 10. 세션 테이블 (PK: user_id, FK: users(user_id), FK: cpp_server(server_id), FK: workspace_info(workspace_id))
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'user_sessions')
+BEGIN
+    CREATE TABLE [user_sessions] (
+        user_id              INT               NOT NULL,
+        cpp_server_id        INT               NULL,
+        workspace_id         INT               NULL,
+        is_accessed          BIT               NOT NULL DEFAULT 0,
+        last_login_at        DATETIME2         NULL,
+        updated_at           DATETIME2         NOT NULL DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT [PK_user_sessions] PRIMARY KEY CLUSTERED (user_id),
+        CONSTRAINT [FK_user_sessions_users] FOREIGN KEY (user_id) REFERENCES [$(TABLE_USERS)] (user_id) ON DELETE NO ACTION ON UPDATE NO ACTION,
+        CONSTRAINT [FK_user_sessions_$(TABLE_CPP_SERVER)] FOREIGN KEY (cpp_server_id) REFERENCES [$(TABLE_CPP_SERVER)] (server_id) ON DELETE NO ACTION ON UPDATE NO ACTION,
+        CONSTRAINT [FK_user_sessions_workspace_info] FOREIGN KEY (workspace_id) REFERENCES [$(TABLE_WORKSPACE_INFO)] (workspace_id) ON DELETE NO ACTION ON UPDATE NO ACTION
+    );
+END
+ELSE
+BEGIN
+    IF COL_LENGTH('user_sessions', 'is_accessed') IS NULL
+    BEGIN
+        ALTER TABLE [user_sessions] ADD is_accessed BIT NOT NULL DEFAULT 0;
+    END;
+    IF COL_LENGTH('user_sessions', 'workspace_id') IS NULL
+    BEGIN
+        ALTER TABLE [user_sessions] ADD workspace_id INT NULL;
+        ALTER TABLE [user_sessions] ADD CONSTRAINT [FK_user_sessions_workspace_info] FOREIGN KEY (workspace_id) REFERENCES [$(TABLE_WORKSPACE_INFO)] (workspace_id) ON DELETE NO ACTION ON UPDATE NO ACTION;
+    END;
+    IF NOT EXISTS (SELECT 1 FROM sys.default_constraints WHERE parent_object_id = OBJECT_ID('user_sessions') AND parent_column_id = COLUMNPROPERTY(OBJECT_ID('user_sessions'), 'updated_at', 'ColumnId'))
+    BEGIN
+        ALTER TABLE [user_sessions] ADD CONSTRAINT [DF_user_sessions_updated_at] DEFAULT SYSUTCDATETIME() FOR updated_at;
+    END;
+END
+GO
+
+-- 코드 전체가 (server_ip, server_port)를 서버의 자연키로 사용하므로 기존
+-- 3열 유니크 키와 중복 행을 같은 기준으로 정규화한다.
+UPDATE [user_sessions]
+SET workspace_id = NULL, cpp_server_id = NULL, updated_at = SYSUTCDATETIME()
+WHERE is_accessed = 0 AND (workspace_id IS NOT NULL OR cpp_server_id IS NOT NULL);
+
+DECLARE @ServerDuplicates TABLE (drop_id INT PRIMARY KEY, keep_id INT NOT NULL);
+INSERT INTO @ServerDuplicates (drop_id, keep_id)
+SELECT server_id, keep_id
+FROM (
+    SELECT server_id,
+           MIN(server_id) OVER (PARTITION BY server_ip, server_port) AS keep_id,
+           ROW_NUMBER() OVER (PARTITION BY server_ip, server_port ORDER BY server_id) AS rn
+    FROM [$(TABLE_CPP_SERVER)]
+) ranked
+WHERE rn > 1;
+
+UPDATE w SET cpp_server_id = d.keep_id
+FROM [$(TABLE_WORKSPACE_INFO)] w
+JOIN @ServerDuplicates d ON w.cpp_server_id = d.drop_id;
+
+UPDATE s SET cpp_server_id = d.keep_id
+FROM [user_sessions] s
+JOIN @ServerDuplicates d ON s.cpp_server_id = d.drop_id;
+
+DELETE s
+FROM [$(TABLE_CPP_SERVER)] s
+JOIN @ServerDuplicates d ON s.server_id = d.drop_id;
+
+IF EXISTS (
+    SELECT 1 FROM sys.key_constraints
+    WHERE parent_object_id = OBJECT_ID('$(TABLE_CPP_SERVER)')
+      AND name = 'UQ_$(TABLE_CPP_SERVER)_ip_port'
+)
+BEGIN
+    ALTER TABLE [$(TABLE_CPP_SERVER)] DROP CONSTRAINT [UQ_$(TABLE_CPP_SERVER)_ip_port];
+END;
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.key_constraints
+    WHERE parent_object_id = OBJECT_ID('$(TABLE_CPP_SERVER)')
+      AND name = 'UQ_$(TABLE_CPP_SERVER)_ip_port'
+)
+BEGIN
+    ALTER TABLE [$(TABLE_CPP_SERVER)] ADD CONSTRAINT [UQ_$(TABLE_CPP_SERVER)_ip_port]
+        UNIQUE NONCLUSTERED (server_ip, server_port);
+END;
+GO
+-- 세션 정리 및 서버 장애 복구 쿼리에 필요한 인덱스.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_user_sessions_workspace_accessed' AND object_id = OBJECT_ID('user_sessions'))
+    CREATE NONCLUSTERED INDEX [IX_user_sessions_workspace_accessed] ON [user_sessions] (workspace_id, is_accessed);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_user_sessions_cpp_server' AND object_id = OBJECT_ID('user_sessions'))
+    CREATE NONCLUSTERED INDEX [IX_user_sessions_cpp_server] ON [user_sessions] (cpp_server_id);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_$(TABLE_WORKSPACE_INFO)_cpp_server' AND object_id = OBJECT_ID('$(TABLE_WORKSPACE_INFO)'))
+    CREATE NONCLUSTERED INDEX [IX_$(TABLE_WORKSPACE_INFO)_cpp_server] ON [$(TABLE_WORKSPACE_INFO)] (cpp_server_id);
+GO
+
+-- Durable VM cleanup tasks survive workspace deletion and backend restarts.
+IF OBJECT_ID(N'dbo.workspace_runtime_cleanup', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.workspace_runtime_cleanup (
+        workspace_id     INT       NOT NULL PRIMARY KEY,
+        created_at       DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+        attempt_count    INT       NOT NULL DEFAULT 0,
+        next_attempt_at  DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+    );
+    CREATE INDEX IX_workspace_runtime_cleanup_due
+        ON dbo.workspace_runtime_cleanup (next_attempt_at, workspace_id);
+END;
+GO
+
+-- Backend SQL is limited to row-level DML. Schema migrations and account
+-- management continue to run through the administrator-only init path.
+IF DATABASE_PRINCIPAL_ID('irade_runtime') IS NULL
+    CREATE ROLE [irade_runtime];
+IF IS_ROLEMEMBER('irade_runtime', '$(DB_USER)') <> 1
+    ALTER ROLE [irade_runtime] ADD MEMBER [$(DB_USER)];
+GRANT SELECT, INSERT, UPDATE, DELETE ON SCHEMA::[dbo] TO [irade_runtime];
+GO
+
+-- 11. 데이터베이스 소유자, 런타임 권한 및 생성 테이블 확인
+SELECT name AS database_name, SUSER_SNAME(owner_sid) AS owner_name FROM sys.databases WHERE name = '$(DB_NAME)';
+SELECT USER_NAME() AS runtime_user, IS_ROLEMEMBER('irade_runtime', '$(DB_USER)') AS is_runtime_member,
+       IS_ROLEMEMBER('db_owner', '$(DB_USER)') AS is_db_owner;
+SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE';
+GO
+
+-- One Google (or future vendor) identity can belong to only one FreLog user.
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+SET CONCAT_NULL_YIELDS_NULL ON;
+SET NUMERIC_ROUNDABORT OFF;
+SET XACT_ABORT ON;
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id = OBJECT_ID(N'[$(TABLE_USERS)]') AND name = N'UX_$(TABLE_USERS)_OAuthIdentity')
+BEGIN
+    CREATE UNIQUE NONCLUSTERED INDEX [UX_$(TABLE_USERS)_OAuthIdentity]
+      ON [$(TABLE_USERS)] (oauth_provider, oauth_id)
+      WHERE oauth_provider IS NOT NULL AND oauth_id IS NOT NULL;
+END;
+GO
+
+-- Optional account TOTP; seeds encrypted by application, recovery codes hashed.
+SET XACT_ABORT ON;
+IF OBJECT_ID(N'dbo.user_mfa', N'U') IS NULL
+BEGIN
+ CREATE TABLE dbo.user_mfa (
+  user_id INT NOT NULL PRIMARY KEY REFERENCES [$(TABLE_USERS)](user_id),
+  enabled BIT NOT NULL DEFAULT 0,
+  secret VARCHAR(512) NULL,
+  pending_secret VARCHAR(512) NULL,
+  pending_expires DATETIME2 NULL,
+  last_step BIGINT NOT NULL DEFAULT -1,
+  version VARCHAR(36) NULL,
+  recovery_hashes VARCHAR(2048) NULL,
+  failures INT NOT NULL DEFAULT 0,
+  locked_until DATETIME2 NULL,
+  CONSTRAINT CK_UserMfa_Enabled CHECK (enabled=0 OR (secret IS NOT NULL AND version IS NOT NULL))
+ );
+END;
+IF OBJECT_ID(N'dbo.auth_mfa_challenges', N'U') IS NULL
+BEGIN
+ CREATE TABLE dbo.auth_mfa_challenges (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  user_id INT NOT NULL REFERENCES [$(TABLE_USERS)](user_id),
+  version VARCHAR(36) NULL,
+  client_ip VARCHAR(64) NULL,
+  expires_at DATETIME2 NULL,
+  used BIT NOT NULL DEFAULT 0
+ );
+ CREATE INDEX IX_MfaChallenge_Expires ON dbo.auth_mfa_challenges(expires_at);
+END;
+GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.user_mfa TO [$(DB_USER)];
+GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.auth_mfa_challenges TO [$(DB_USER)];
+GO
+
+-- Registration ownership proof: no account is created until a grant is consumed.
+SET XACT_ABORT ON;
+IF OBJECT_ID(N'dbo.auth_email_verification',N'U') IS NULL
+BEGIN
+ CREATE TABLE dbo.auth_email_verification (
+  email NVARCHAR(255) NOT NULL PRIMARY KEY,
+  challenge_hash VARCHAR(64) NULL,
+  code_hash VARCHAR(64) NULL,
+  expires_at DATETIME2 NULL,
+  attempts INT NOT NULL DEFAULT 0,
+  last_sent_at DATETIME2 NULL,
+  window_start DATETIME2 NULL,
+  sends INT NOT NULL DEFAULT 0,
+  grant_hash VARCHAR(64) NULL,
+  grant_expires_at DATETIME2 NULL,
+  consumed BIT NOT NULL DEFAULT 0
+ );
+ CREATE INDEX IX_EmailProof_Expires ON dbo.auth_email_verification(expires_at);
+END;
+IF OBJECT_ID(N'dbo.auth_email_ip_quota',N'U') IS NULL
+BEGIN
+ CREATE TABLE dbo.auth_email_ip_quota (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  window_start DATETIME2 NULL,
+  sends INT NOT NULL DEFAULT 0
+ );
+END;
+GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.auth_email_verification TO [$(DB_USER)];
+GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.auth_email_ip_quota TO [$(DB_USER)];
+GO
+
+IF COL_LENGTH(N'[$(TABLE_USERS)]', N'email_verified_at') IS NULL
+ ALTER TABLE [$(TABLE_USERS)] ADD email_verified_at DATETIME2 NULL;
+GO
+
+-- Withdrawn users retain historical references but no longer need login credentials.
+-- Active and suspended accounts must still have password or OAuth credentials.
+SET XACT_ABORT ON;
+-- A rerun must not replace the ORCID-aware constraint with the legacy rule.
+IF COL_LENGTH(N'[$(TABLE_USERS)]',N'orcid') IS NULL
+BEGIN
+BEGIN TRANSACTION;
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE parent_object_id=OBJECT_ID(N'[$(TABLE_USERS)]') AND name=N'CK_$(TABLE_USERS)_Auth')
+    ALTER TABLE [$(TABLE_USERS)] DROP CONSTRAINT [CK_$(TABLE_USERS)_Auth];
+ALTER TABLE [$(TABLE_USERS)] WITH CHECK ADD CONSTRAINT [CK_$(TABLE_USERS)_Auth]
+    CHECK (status = 'WITHDRAWN' OR password_hash IS NOT NULL OR (oauth_provider IS NOT NULL AND oauth_id IS NOT NULL));
+COMMIT TRANSACTION;
+END;
+GO
+
+-- WebAuthn public credentials only. Private keys and biometrics never reach this database.
+SET XACT_ABORT ON;
+IF OBJECT_ID(N'dbo.user_passkeys', N'U') IS NULL
+BEGIN
+ CREATE TABLE dbo.user_passkeys (
+  id VARCHAR(36) NOT NULL PRIMARY KEY,
+  credential_hash VARCHAR(64) NOT NULL UNIQUE,
+  credential_id VARCHAR(2048) NOT NULL,
+  user_id INT NOT NULL REFERENCES dbo.[$(TABLE_USERS)](user_id),
+  user_handle VARCHAR(64) NOT NULL,
+  public_key VARCHAR(4096) NOT NULL,
+  signature_count BIGINT NOT NULL,
+  name NVARCHAR(80) NOT NULL,
+  created_at DATETIME2 NOT NULL,
+  last_used_at DATETIME2 NULL
+ );
+ CREATE INDEX IX_user_passkeys_user ON dbo.user_passkeys(user_id,created_at);
+ CREATE INDEX IX_user_passkeys_handle ON dbo.user_passkeys(user_handle);
+END;
+IF OBJECT_ID(N'dbo.auth_passkey_challenges', N'U') IS NULL
+BEGIN
+ CREATE TABLE dbo.auth_passkey_challenges (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  purpose VARCHAR(12) NOT NULL,
+  user_id INT NULL REFERENCES dbo.[$(TABLE_USERS)](user_id),
+  client_ip VARCHAR(64) NOT NULL,
+  request_json VARCHAR(MAX) NOT NULL,
+  created_at DATETIME2 NOT NULL,
+  expires_at DATETIME2 NOT NULL,
+  used BIT NOT NULL DEFAULT 0
+ );
+ CREATE INDEX IX_passkey_challenge_expiry ON dbo.auth_passkey_challenges(expires_at);
+ CREATE INDEX IX_passkey_challenge_ip ON dbo.auth_passkey_challenges(client_ip,created_at);
+END;
+GO
+
+-- Provider subjects are opaque, case-sensitive strings (not email addresses).
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+SET CONCAT_NULL_YIELDS_NULL ON;
+SET NUMERIC_ROUNDABORT OFF;
+SET XACT_ABORT ON;
+IF EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID(N'[$(TABLE_USERS)]') AND name=N'oauth_id' AND collation_name<>N'Latin1_General_100_BIN2')
+BEGIN
+ BEGIN TRANSACTION;
+ IF EXISTS (SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(N'[$(TABLE_USERS)]') AND name=N'IX_$(TABLE_USERS)_OAuth')
+  DROP INDEX [IX_$(TABLE_USERS)_OAuth] ON [$(TABLE_USERS)];
+ IF EXISTS (SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(N'[$(TABLE_USERS)]') AND name=N'UX_$(TABLE_USERS)_OAuthIdentity')
+  DROP INDEX [UX_$(TABLE_USERS)_OAuthIdentity] ON [$(TABLE_USERS)];
+ IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE parent_object_id=OBJECT_ID(N'[$(TABLE_USERS)]') AND name=N'CK_$(TABLE_USERS)_Auth')
+  ALTER TABLE [$(TABLE_USERS)] DROP CONSTRAINT [CK_$(TABLE_USERS)_Auth];
+ ALTER TABLE [$(TABLE_USERS)] ALTER COLUMN oauth_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NULL;
+ IF COL_LENGTH(N'[$(TABLE_USERS)]',N'orcid') IS NOT NULL
+  EXEC(N'ALTER TABLE [$(TABLE_USERS)] WITH CHECK ADD CONSTRAINT [CK_$(TABLE_USERS)_Auth]
+   CHECK (status=''WITHDRAWN'' OR password_hash IS NOT NULL OR (oauth_provider IS NOT NULL AND oauth_id IS NOT NULL)
+    OR (orcid IS NOT NULL AND LEN(orcid)=19 AND orcid_issuer IS NOT NULL
+        AND orcid_issuer IN (''https://orcid.org'',''https://sandbox.orcid.org'')))');
+ ELSE
+ ALTER TABLE [$(TABLE_USERS)] WITH CHECK ADD CONSTRAINT [CK_$(TABLE_USERS)_Auth]
+  CHECK (status='WITHDRAWN' OR password_hash IS NOT NULL OR (oauth_provider IS NOT NULL AND oauth_id IS NOT NULL));
+ CREATE NONCLUSTERED INDEX [IX_$(TABLE_USERS)_OAuth] ON [$(TABLE_USERS)] (oauth_provider,oauth_id) WHERE oauth_provider IS NOT NULL;
+ CREATE UNIQUE NONCLUSTERED INDEX [UX_$(TABLE_USERS)_OAuthIdentity] ON [$(TABLE_USERS)] (oauth_provider,oauth_id) WHERE oauth_provider IS NOT NULL AND oauth_id IS NOT NULL;
+ COMMIT TRANSACTION;
+END;
+GO
+
+-- Irreversibly anonymize withdrawn accounts; active accounts are not modified.
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+SET CONCAT_NULL_YIELDS_NULL ON;
+SET NUMERIC_ROUNDABORT OFF;
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
+IF EXISTS(SELECT 1 FROM sys.key_constraints WHERE parent_object_id=OBJECT_ID(N'[$(TABLE_USERS)]') AND name=N'UQ_Users_Email')
+ ALTER TABLE [$(TABLE_USERS)] DROP CONSTRAINT [UQ_Users_Email];
+IF EXISTS(SELECT 1 FROM sys.key_constraints WHERE parent_object_id=OBJECT_ID(N'[$(TABLE_USERS)]') AND name=N'UQ_$(TABLE_USERS)_Email')
+ ALTER TABLE [$(TABLE_USERS)] DROP CONSTRAINT [UQ_$(TABLE_USERS)_Email];
+IF EXISTS(SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(N'[$(TABLE_USERS)]') AND name=N'UQ_Users_Email')
+ DROP INDEX [UQ_Users_Email] ON [$(TABLE_USERS)];
+ALTER TABLE [$(TABLE_USERS)] ALTER COLUMN email NVARCHAR(255) NULL;
+CREATE UNIQUE NONCLUSTERED INDEX [UQ_Users_Email] ON [$(TABLE_USERS)](email) WHERE email IS NOT NULL;
+IF OBJECT_ID(N'dbo.auth_email_verification',N'U') IS NOT NULL
+ DELETE p FROM dbo.auth_email_verification p JOIN [$(TABLE_USERS)] u ON p.email=u.email WHERE u.status='WITHDRAWN';
+IF OBJECT_ID(N'dbo.auth_mfa_challenges',N'U') IS NOT NULL
+ DELETE p FROM dbo.auth_mfa_challenges p JOIN [$(TABLE_USERS)] u ON p.user_id=u.user_id WHERE u.status='WITHDRAWN';
+IF OBJECT_ID(N'dbo.user_mfa',N'U') IS NOT NULL
+ DELETE p FROM dbo.user_mfa p JOIN [$(TABLE_USERS)] u ON p.user_id=u.user_id WHERE u.status='WITHDRAWN';
+IF OBJECT_ID(N'dbo.auth_passkey_challenges',N'U') IS NOT NULL
+ DELETE p FROM dbo.auth_passkey_challenges p JOIN [$(TABLE_USERS)] u ON p.user_id=u.user_id WHERE u.status='WITHDRAWN';
+IF OBJECT_ID(N'dbo.user_passkeys',N'U') IS NOT NULL
+ DELETE p FROM dbo.user_passkeys p JOIN [$(TABLE_USERS)] u ON p.user_id=u.user_id WHERE u.status='WITHDRAWN';
+IF OBJECT_ID(N'dbo.user_sessions',N'U') IS NOT NULL
+ DELETE p FROM dbo.user_sessions p JOIN [$(TABLE_USERS)] u ON p.user_id=u.user_id WHERE u.status='WITHDRAWN';
+UPDATE [$(TABLE_USERS)] SET email=NULL,password_hash=NULL,oauth_provider=NULL,oauth_id=NULL,
+ email_verified_at=NULL,password_changed_at=NULL,nickname=N'삭제된 계정',tag_number=user_id,role='ROLE_USER'
+ WHERE status='WITHDRAWN';
+IF NOT EXISTS(SELECT 1 FROM sys.check_constraints WHERE parent_object_id=OBJECT_ID(N'[$(TABLE_USERS)]') AND name=N'CK_$(TABLE_USERS)_EmailRequired')
+ AND COL_LENGTH(N'[$(TABLE_USERS)]',N'orcid') IS NULL
+ ALTER TABLE [$(TABLE_USERS)] WITH CHECK ADD CONSTRAINT [CK_$(TABLE_USERS)_EmailRequired] CHECK(status='WITHDRAWN' OR email IS NOT NULL);
+COMMIT TRANSACTION;
+GO
+
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+SET CONCAT_NULL_YIELDS_NULL ON;
+SET NUMERIC_ROUNDABORT OFF;
+SET XACT_ABORT ON;
+-- Local, normalized avatar location only; never store vendor access tokens or remote signed URLs.
+IF COL_LENGTH(N'[$(TABLE_USERS)]',N'profile_image_url') IS NULL
+ ALTER TABLE [$(TABLE_USERS)] ADD profile_image_url NVARCHAR(512) NULL;
+GO
+UPDATE [$(TABLE_USERS)] SET profile_image_url=NULL WHERE status='WITHDRAWN';
+GO
+
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+SET CONCAT_NULL_YIELDS_NULL ON;
+SET NUMERIC_ROUNDABORT OFF;
+SET XACT_ABORT ON;
+IF OBJECT_ID(N'dbo.auth_qr_logins',N'U') IS NULL
+BEGIN
+ CREATE TABLE dbo.auth_qr_logins (
+  id VARCHAR(36) NOT NULL PRIMARY KEY,
+  poll_hash VARCHAR(64) NOT NULL,
+  approve_hash VARCHAR(64) NOT NULL,
+  browser_hash VARCHAR(64) NOT NULL,
+  display_code VARCHAR(6) NOT NULL,
+  requester_ip VARCHAR(64) NOT NULL,
+  device_label VARCHAR(120) NOT NULL,
+  status VARCHAR(12) NOT NULL,
+  created_at DATETIME2 NOT NULL,
+  expires_at DATETIME2 NOT NULL,
+  last_poll DATETIME2 NULL,
+  user_id INT NULL REFERENCES dbo.[$(TABLE_USERS)](user_id),
+  mfa_version VARCHAR(36) NULL,
+  failures INT NOT NULL DEFAULT 0
+ );
+ CREATE INDEX IX_QrLogin_IpCreated ON dbo.auth_qr_logins(requester_ip,created_at);
+ CREATE INDEX IX_QrLogin_Expiry ON dbo.auth_qr_logins(expires_at);
+ CREATE INDEX IX_QrLogin_User ON dbo.auth_qr_logins(user_id);
+END;
+GO
+
+-- Additive migration. No existing account is linked by email, name or unverified ORCID input.
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+SET CONCAT_NULL_YIELDS_NULL ON;
+SET NUMERIC_ROUNDABORT OFF;
+SET XACT_ABORT ON;
+IF COL_LENGTH(N'[$(TABLE_USERS)]',N'orcid') IS NULL
+ ALTER TABLE [$(TABLE_USERS)] ADD orcid VARCHAR(19) NULL;
+IF COL_LENGTH(N'[$(TABLE_USERS)]',N'orcid_issuer') IS NULL
+ ALTER TABLE [$(TABLE_USERS)] ADD orcid_issuer VARCHAR(64) NULL;
+GO
+IF NOT EXISTS(SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(N'[$(TABLE_USERS)]') AND name=N'UQ_Users_OrcidIssuer')
+ CREATE UNIQUE NONCLUSTERED INDEX UQ_Users_OrcidIssuer ON [$(TABLE_USERS)](orcid_issuer,orcid) WHERE orcid IS NOT NULL AND orcid_issuer IS NOT NULL;
+IF OBJECT_ID(N'dbo.auth_orcid_attempts',N'U') IS NULL
+BEGIN
+ CREATE TABLE dbo.auth_orcid_attempts (
+  id VARCHAR(64) NOT NULL PRIMARY KEY,
+  browser_hash VARCHAR(64) NOT NULL,
+  target_user_id BIGINT NULL,
+  workspace_id INT NULL,
+  expires_at DATETIME2 NOT NULL,
+  consumed BIT NOT NULL
+ );
+ CREATE INDEX IX_OrcidAttempt_Expiry ON dbo.auth_orcid_attempts(expires_at);
+END;
+GO
+
+-- Permit authenticated ORCID-only accounts while preserving email requirements
+-- for ordinary password/social accounts and the existing erasure exception.
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+SET CONCAT_NULL_YIELDS_NULL ON;
+SET NUMERIC_ROUNDABORT OFF;
+SET XACT_ABORT ON;
+IF COL_LENGTH(N'[$(TABLE_USERS)]',N'orcid') IS NULL
+ OR COL_LENGTH(N'[$(TABLE_USERS)]',N'orcid_issuer') IS NULL
+ THROW 51000, 'Apply the IRADE ORCID identity migration first', 1;
+BEGIN TRANSACTION;
+IF EXISTS(SELECT 1 FROM sys.check_constraints WHERE parent_object_id=OBJECT_ID(N'[$(TABLE_USERS)]') AND name=N'CK_$(TABLE_USERS)_Auth')
+ ALTER TABLE [$(TABLE_USERS)] DROP CONSTRAINT [CK_$(TABLE_USERS)_Auth];
+IF EXISTS(SELECT 1 FROM sys.check_constraints WHERE parent_object_id=OBJECT_ID(N'[$(TABLE_USERS)]') AND name=N'CK_$(TABLE_USERS)_EmailRequired')
+ ALTER TABLE [$(TABLE_USERS)] DROP CONSTRAINT [CK_$(TABLE_USERS)_EmailRequired];
+ALTER TABLE [$(TABLE_USERS)] WITH CHECK ADD CONSTRAINT [CK_$(TABLE_USERS)_Auth]
+ CHECK (
+  status='WITHDRAWN' OR password_hash IS NOT NULL
+  OR (oauth_provider IS NOT NULL AND oauth_id IS NOT NULL)
+  OR (orcid IS NOT NULL AND LEN(orcid)=19 AND orcid_issuer IS NOT NULL
+      AND orcid_issuer IN ('https://orcid.org','https://sandbox.orcid.org'))
+ );
+ALTER TABLE [$(TABLE_USERS)] WITH CHECK ADD CONSTRAINT [CK_$(TABLE_USERS)_EmailRequired]
+ CHECK (
+  status='WITHDRAWN' OR email IS NOT NULL
+  OR (orcid IS NOT NULL AND LEN(orcid)=19 AND orcid_issuer IS NOT NULL
+      AND orcid_issuer IN ('https://orcid.org','https://sandbox.orcid.org'))
+ );
+COMMIT TRANSACTION;
+GO

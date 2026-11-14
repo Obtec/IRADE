@@ -1,0 +1,24 @@
+[Unit]
+Description=IRADE collaborative research workspace
+After=network-online.target agora-runtime-manager.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=steam
+Group=steam
+WorkingDirectory=/home/steam/Github/IRADE/web
+ExecStart=/usr/bin/node scripts/serve-https.mjs --cert /home/steam/.local/share/project-agora/tls-20261013/fullchain.pem --key /home/steam/.local/share/project-agora/tls-20261013/privkey.pem --host 127.0.0.1 --port 8090 --base-path /irade/ --studio-path /opt/irade-web/releases/20261113-orcid/studio
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=1G
+TasksMax=64
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

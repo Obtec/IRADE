@@ -1,0 +1,67 @@
+name: irade-gateway
+
+services:
+  nginx:
+    image: nginx:stable-alpine
+    container_name: irade-nginx
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    environment:
+      FRONTEND_MODE: ${FRONTEND_MODE:-production}
+      NGINX_TRUSTED_PROXY_IP: ${NGINX_TRUSTED_PROXY_IP:-127.0.0.1}
+      NGINX_HTTPS_PORT: ${NGINX_HTTPS_PORT:-8453}
+      BROKER_TLS_SERVER_NAME: ${BROKER_TLS_SERVER_NAME:-irade-broker}
+      NGINX_ENVSUBST_FILTER: ^(FRONTEND_MODE|NGINX_HTTPS_PORT|BROKER_TLS_SERVER_NAME|NGINX_TRUSTED_PROXY_IP)$
+    ports:
+      - "127.0.0.1:${NGINX_HTTPS_PORT:-8453}:443"
+    volumes:
+      - ./nginx/10-validate-mode.sh:/docker-entrypoint.d/10-validate-mode.sh:ro
+      - ./nginx/cpp-routes.conf:/etc/nginx/routes/cpp-routes.conf:ro
+      - ./nginx/irade.conf.example:/etc/nginx/templates/default.conf.template:ro
+      - frontend-dist:/usr/share/nginx/html:ro
+      - type: bind
+        source: ${NGINX_TLS_CERT_DIR:-./.local-certs/https}/fullchain.pem
+        target: /etc/nginx/ssl/irade/fullchain.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NGINX_TLS_CERT_DIR:-./.local-certs/https}/privkey.pem
+        target: /etc/nginx/ssl/irade/privkey.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NGINX_TLS_CERT_DIR:-./.local-certs/https}/root-ca.pem
+        target: /etc/nginx/ssl/irade/ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      irade-services:
+        ipv4_address: ${NGINX_BACKEND_IP:-10.29.0.250}
+      irade-web: {}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--cacert", "/etc/nginx/ssl/irade/ca.pem", "https://localhost/nginx-health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  irade-services:
+    external: true
+    name: irade-services
+  irade-web:
+    name: irade-web
+    ipam:
+      config:
+        - subnet: ${IRADE_WEB_SUBNET:-10.30.0.0/16}
+
+volumes:
+  frontend-dist:
+    name: irade-frontend-dist

@@ -1,0 +1,63 @@
+# Deploy one copy on each host: one primary, two replicas, one Sentinel per
+# host. Host networking lets Sentinel advertise directly reachable node IPs.
+services:
+  redis-node:
+    image: redis:8.6.7
+    container_name: irade-redis-node
+    hostname: ${REDIS_NODE_HOSTNAME:?REDIS_NODE_HOSTNAME is required}
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      REDIS_NODE_PRIMARY_HOST: ${REDIS_NODE_PRIMARY_HOST:-}
+      REDIS_NODE_PRIMARY_PORT: ${REDIS_NODE_PRIMARY_PORT:-6379}
+      REDIS_NODE_APPENDONLY: "${REDIS_NODE_APPENDONLY:-yes}"
+      REDIS_NODE_ANNOUNCE_IP: ${REDIS_NODE_ANNOUNCE_IP:?REDIS_NODE_ANNOUNCE_IP must be reachable from every node and client}
+      REDIS_NODE_BIND_IP: ${REDIS_NODE_BIND_IP:-${REDIS_NODE_ANNOUNCE_IP:?REDIS_NODE_ANNOUNCE_IP is required}}
+      REDIS_NODE_PORT: ${REDIS_NODE_PORT:-6379}
+      REDIS_SENTINEL_PORT: ${REDIS_SENTINEL_PORT:-26379}
+    entrypoint: ["/bin/sh", "/usr/local/bin/redis-node-entrypoint.sh"]
+    volumes:
+      - ./redis-node-entrypoint.sh:/usr/local/bin/redis-node-entrypoint.sh:ro
+      - ./redis-healthcheck.sh:/usr/local/bin/redis-healthcheck.sh:ro
+      - ${REDIS_TLS_CERTS_DIR:-./tls/server}:/run/secrets/redis-tls:ro
+      - redis_node_data:/data
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/redis-healthcheck.sh", "node"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis-sentinel:
+    image: redis:8.6.7
+    container_name: irade-redis-sentinel
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      REDIS_SENTINEL_MASTER_HOST: ${REDIS_SENTINEL_MASTER_HOST:?REDIS_SENTINEL_MASTER_HOST must be the initial primary's reachable IP or DNS name}
+      REDIS_SENTINEL_ANNOUNCE_IP: ${REDIS_NODE_ANNOUNCE_IP:?REDIS_NODE_ANNOUNCE_IP is required}
+      REDIS_SENTINEL_BIND_IP: ${REDIS_SENTINEL_BIND_IP:-${REDIS_NODE_ANNOUNCE_IP:?REDIS_NODE_ANNOUNCE_IP is required}}
+      REDIS_SENTINEL_PORT: ${REDIS_SENTINEL_PORT:-26379}
+    entrypoint: ["/bin/sh", "/usr/local/bin/sentinel-entrypoint.sh"]
+    volumes:
+      - ./sentinel-entrypoint.sh:/usr/local/bin/sentinel-entrypoint.sh:ro
+      - ./redis-healthcheck.sh:/usr/local/bin/redis-healthcheck.sh:ro
+      - ${REDIS_TLS_CERTS_DIR:-./tls/server}:/run/secrets/redis-tls:ro
+      - redis_sentinel_data:/data
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/redis-healthcheck.sh", "sentinel"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      redis-node:
+        condition: service_healthy
+
+volumes:
+  redis_node_data:
+  redis_sentinel_data:

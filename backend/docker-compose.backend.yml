@@ -1,0 +1,305 @@
+name: irade-backend
+
+services:
+  service-tls-init:
+    image: eclipse-temurin:26-jdk
+    user: "0:0"
+    restart: "no"
+    network_mode: none
+    entrypoint: ["/bin/sh", "/prepare-service-tls.sh"]
+    volumes:
+      - type: bind
+        source: ${NGINX_TLS_CERT_DIR:?Set NGINX_TLS_CERT_DIR}/internal
+        target: /source
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./docker/prepare-service-tls.sh:/prepare-service-tls.sh:ro
+      - spring-tls:/target/spring
+      - cpp-tls:/target/cpp
+      - frontend-tls:/target/frontend
+      - type: bind
+        source: ${SQL_TLS_CA_CERT:?Set SQL_TLS_CA_CERT to the SQL issuing CA file}
+        target: /source-sql-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${NGINX_TLS_CERT_DIR:?Set NGINX_TLS_CERT_DIR}/root-ca.pem
+        target: /source-ca.pem
+        read_only: true
+        bind:
+          create_host_path: false
+
+  spring:
+    image: irade-spring:local
+    build:
+      context: .
+      dockerfile: docker/spring.Dockerfile
+    container_name: irade-spring
+    env_file:
+      - path: ${ORCID_ENV_FILE:-./.secrets/orcid.env}
+        required: false
+        format: raw
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001
+    volumes:
+      - spring-tls:/run/tls:ro
+      - type: volume
+        source: spring-resources
+        target: /home/irade/irade/workspace-resource
+      - type: bind
+        source: /run/agora-runtime
+        target: /run/agora-runtime
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ES_CA_CERT:?Set ES_CA_CERT to the host path of the Elasticsearch CA certificate}
+        target: /run/certs/elasticsearch-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${REDIS_TLS_CA_CERT:?Set REDIS_TLS_CA_CERT to the host path of the Redis CA certificate}
+        target: /run/certs/redis-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      SERVER_ADDRESS: 0.0.0.0
+      SERVER_PORT: "8080"
+      JAVA_TOOL_OPTIONS: -Djavax.net.ssl.trustStore=/run/tls/truststore -Djavax.net.ssl.trustStorePassword=changeit
+      SERVICE_TLS_CERT: /run/tls/fullchain.pem
+      SERVICE_TLS_KEY: /run/tls/privkey.pem
+      SERVICE_TLS_CA: /run/tls/ca.pem
+      DB_NAME: ${DB_NAME:-irade_db}
+      DB_USER: ${DB_USER:-irade_user}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      DB_ENCRYPT: ${DB_ENCRYPT:-true}
+      DB_TRUST_SERVER_CERTIFICATE: ${DB_TRUST_SERVER_CERTIFICATE:-false}
+      DB_MULTI_SUBNET_FAILOVER: ${DB_MULTI_SUBNET_FAILOVER:-true}
+      DB_HOST: ${DOCKER_DB_HOST:-irade-mssql}
+      DB_PORT: ${DOCKER_DB_PORT:-1433}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-86400000}
+      ES_HOST: ${DOCKER_ES_HOST:-irade-elasticsearch}
+      ES_PORT: ${DOCKER_ES_PORT:-9200}
+      ES_SCHEME: https
+      ES_CA_CERT: /run/certs/elasticsearch-ca.crt
+      ES_INDEX: ${ES_INDEX:-workspace}
+      ES_IRADE_WORKSPACE_INDEX: ${ES_IRADE_WORKSPACE_INDEX:-workspace}
+      ES_SEARCH_INDEX: ${ES_SEARCH_INDEX:-workspace-search}
+      ES_SEMANTIC_SEARCH_ENABLED: ${ES_SEMANTIC_SEARCH_ENABLED:-true}
+      SEARCH_EMBEDDING_URL: ${SEARCH_EMBEDDING_URL:-https://irade-nginx:8444/internal/search/embedding}
+      ES_SEARCH_LIMIT: ${ES_SEARCH_LIMIT:-100}
+      ES_SEARCH_CANDIDATES: ${ES_SEARCH_CANDIDATES:-500}
+      ES_SEARCH_MIN_SIMILARITY: ${ES_SEARCH_MIN_SIMILARITY:-0.80}
+      ES_USER_NAME: ${ES_USER_NAME:-irade_user}
+      ES_USER_PASSWORD: ${ES_USER_PASSWORD:?Set ES_USER_PASSWORD in .env}
+      ES_LOG_INDEX: ${ES_LOG_INDEX:-irade-logs}
+      ES_LOG_USER_NAME: ${ES_LOG_USER_NAME:-irade_log_writer}
+      ES_LOG_USER_PASSWORD: ${ES_LOG_USER_PASSWORD:-}
+      ES_LOG_BATCH_SIZE: ${ES_LOG_BATCH_SIZE:-100}
+      ES_LOG_FLUSH_INTERVAL_MS: ${ES_LOG_FLUSH_INTERVAL_MS:-1000}
+      HA_FAILOVER_MONITOR_INTERVAL_MS: ${HA_FAILOVER_MONITOR_INTERVAL_MS:-10000}
+      WALL_CPP_API_ORIGIN: ${WALL_CPP_API_ORIGIN:-https://irade-nginx:8444}
+      CPP_WS_PORT_OFFSET: ${CPP_WS_PORT_OFFSET:-2}
+      CPP_INTERNAL_API_TOKEN: ${CPP_INTERNAL_API_TOKEN:?Set CPP_INTERNAL_API_TOKEN in .env}
+      REDIS_USER: ${REDIS_USER:?Set REDIS_USER in .env}
+      REDIS_USER_PASSWORD: ${REDIS_USER_PASSWORD:?Set REDIS_USER_PASSWORD in .env}
+      REDIS_SENTINELS: ${REDIS_SENTINELS:?Set the three Redis Sentinel addresses in .env}
+      REDIS_SENTINEL_MASTER_NAME: ${REDIS_SENTINEL_MASTER_NAME:-irade-master}
+      REDIS_SENTINEL_USER: ${REDIS_SENTINEL_USER:-}
+      REDIS_SENTINEL_PASSWORD: ${REDIS_SENTINEL_PASSWORD:-}
+      REDIS_BROKER_ROUTES: ${REDIS_BROKER_ROUTES:?Run setup-docker.py to configure storage broker routes}
+      REDIS_TLS_ENABLED: "true"
+      REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
+      MAIL_HOST: ${MAIL_HOST:-}
+      MAIL_PORT: ${MAIL_PORT:-587}
+      MAIL_USERNAME: ${MAIL_USERNAME:-}
+      MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      MAIL_SECURITY: ${MAIL_SECURITY:-starttls}
+      EMAIL_VERIFICATION_SECRET: ${EMAIL_VERIFICATION_SECRET:-}
+      PASSKEY_RP_ID: ${PASSKEY_RP_ID:-frelog.p-e.kr}
+      PASSKEY_ORIGIN: ${PASSKEY_ORIGIN:-https://frelog.p-e.kr}
+      MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:-}
+      GOOGLE_OAUTH_ENABLED: ${GOOGLE_OAUTH_ENABLED:-false}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-https://frelog.p-e.kr/api/auth/oauth2/callback/google}
+      NAVER_OAUTH_ENABLED: ${NAVER_OAUTH_ENABLED:-false}
+      NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
+      NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
+      NAVER_REDIRECT_URI: ${NAVER_REDIRECT_URI:-https://frelog.p-e.kr/api/auth/oauth2/callback/naver}
+      KAKAO_OAUTH_ENABLED: ${KAKAO_OAUTH_ENABLED:-false}
+      KAKAO_CLIENT_ID: ${KAKAO_CLIENT_ID:-}
+      KAKAO_CLIENT_SECRET: ${KAKAO_CLIENT_SECRET:-}
+      KAKAO_REDIRECT_URI: ${KAKAO_REDIRECT_URI:-https://frelog.p-e.kr/api/auth/oauth2/callback/kakao}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      CORS_ALLOWED_ORIGIN_PATTERNS: ${CORS_ALLOWED_ORIGIN_PATTERNS:-}
+    networks:
+      - irade-services
+      - oauth-egress
+    depends_on:
+      service-tls-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--cacert", "/run/tls/ca.pem", "https://localhost:8080/api/auth/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  cpp:
+    image: irade-cpp:local
+    build:
+      context: .
+      dockerfile: docker/cpp.Dockerfile
+    container_name: irade-cpp
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m,uid=10001,gid=10001
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      SERVICE_TLS_CERT: /run/tls/fullchain.pem
+      SERVICE_TLS_KEY: /run/tls/privkey.pem
+      SERVICE_TLS_CA: /run/tls/ca.pem
+      APP_ENV: ${APP_ENV:-production}
+      HOST: 0.0.0.0
+      ADVERTISE_IP: ${CPP_DOCKER_ADVERTISE_IP:-irade-cpp}
+      CPP_TRUSTED_PROXY_IPS: ${CPP_TRUSTED_PROXY_IPS:-${NGINX_BACKEND_IP:-10.29.0.250}}
+      PORT: "8000"
+      WS_PORT: "8002"
+      REST_THREAD_POOL: ${REST_THREAD_POOL:-16}
+      CPP_CANVAS_LRU_CAPACITY: ${CPP_CANVAS_LRU_CAPACITY:-256}
+      CPP_CANVAS_LRU_ITEMS_PER_CANVAS: ${CPP_CANVAS_LRU_ITEMS_PER_CANVAS:-64}
+      CPP_INTERNAL_API_TOKEN: ${CPP_INTERNAL_API_TOKEN:?Set CPP_INTERNAL_API_TOKEN in .env}
+      AGORA_RUNTIME_SOCKET: /run/agora-runtime/manager.sock
+      DB_HOST: ${DOCKER_DB_HOST:-irade-mssql}
+      DB_PORT: ${DOCKER_DB_PORT:-1433}
+      DB_NAME: ${DB_NAME:-irade_db}
+      DB_USER: ${DB_USER:-irade_user}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      DB_ENCRYPT: ${DB_ENCRYPT:-true}
+      DB_TRUST_SERVER_CERTIFICATE: ${DB_TRUST_SERVER_CERTIFICATE:-false}
+      ES_HOST: ${DOCKER_ES_HOST:-irade-elasticsearch}
+      ES_PORT: ${DOCKER_ES_PORT:-9200}
+      ES_SCHEME: https
+      ES_CA_CERT: /run/certs/elasticsearch-ca.crt
+      ES_INDEX: ${ES_INDEX:-workspace}
+      ES_IRADE_WORKSPACE_INDEX: ${ES_IRADE_WORKSPACE_INDEX:-workspace}
+      ES_USER_NAME: ${ES_USER_NAME:-irade_user}
+      ES_USER_PASSWORD: ${ES_USER_PASSWORD:?Set ES_USER_PASSWORD in .env}
+      ES_LOG_INDEX: ${ES_LOG_INDEX:-irade-logs}
+      ES_LOG_USER_NAME: ${ES_LOG_USER_NAME:-irade_log_writer}
+      ES_LOG_USER_PASSWORD: ${ES_LOG_USER_PASSWORD:-}
+      ES_LOG_BATCH_SIZE: ${ES_LOG_BATCH_SIZE:-100}
+      ES_LOG_FLUSH_INTERVAL_MS: ${ES_LOG_FLUSH_INTERVAL_MS:-1000}
+      JAVA_HOST: irade-spring
+      JAVA_PORT: "8080"
+      REDIS_USER: ${REDIS_USER:?Set REDIS_USER in .env}
+      REDIS_USER_PASSWORD: ${REDIS_USER_PASSWORD:?Set REDIS_USER_PASSWORD in .env}
+      REDIS_SENTINELS: ${REDIS_SENTINELS:?Set the three Redis Sentinel addresses in .env}
+      REDIS_SENTINEL_MASTER_NAME: ${REDIS_SENTINEL_MASTER_NAME:-irade-master}
+      REDIS_SENTINEL_USER: ${REDIS_SENTINEL_USER:-}
+      REDIS_SENTINEL_PASSWORD: ${REDIS_SENTINEL_PASSWORD:-}
+      REDIS_BROKER_ROUTES: ${REDIS_BROKER_ROUTES:?Run setup-docker.py to configure storage broker routes}
+      REDIS_TLS_ENABLED: "true"
+      REDIS_TLS_CA_CERT: /run/certs/redis-ca.crt
+      DB_FREETDS_CONF: ${DOCKER_DB_FREETDS_CONF:-/etc/freetds/freetds.conf}
+    volumes:
+      - cpp-tls:/run/tls:ro
+      - type: bind
+        source: /run/agora-runtime
+        target: /run/agora-runtime
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${SQL_TLS_CA_CERT:?Set SQL_TLS_CA_CERT to the SQL issuing CA file}
+        target: /run/certs/sql-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ES_CA_CERT:?Set ES_CA_CERT to the host path of the Elasticsearch CA certificate}
+        target: /run/certs/elasticsearch-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${REDIS_TLS_CA_CERT:?Set REDIS_TLS_CA_CERT to the host path of the Redis CA certificate}
+        target: /run/certs/redis-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CPP_FREETDS_CONF_HOST_PATH:-./cpp/config/freetds-docker-tls.conf}
+        target: /etc/freetds/freetds.conf
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - irade-services
+    depends_on:
+      service-tls-init:
+        condition: service_completed_successfully
+      spring:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--cacert", "/run/tls/ca.pem", "https://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+networks:
+  # Spring needs outbound HTTPS for the OIDC token, JWKS and userinfo endpoints.
+  # No ports are published; DB/C++ stay on internal service networks.
+  oauth-egress:
+    name: irade-oauth-egress
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${IRADE_OAUTH_EGRESS_SUBNET:-10.31.0.0/16}
+  irade-services:
+    external: true
+    name: irade-services
+
+volumes:
+  spring-resources:
+    name: irade-backend-spring-resources
+
+  spring-tls:
+    name: irade-spring-tls
+  cpp-tls:
+    name: irade-cpp-tls
+  frontend-tls:
+    name: irade-frontend-tls

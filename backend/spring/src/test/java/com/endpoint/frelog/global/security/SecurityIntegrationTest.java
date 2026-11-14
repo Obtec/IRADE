@@ -1,0 +1,130 @@
+package com.endpoint.frelog.global.security;
+
+import com.endpoint.frelog.domain.user.entity.Role;
+import com.endpoint.frelog.domain.user.entity.User;
+import com.endpoint.frelog.domain.user.entity.UserStatus;
+import com.endpoint.frelog.domain.user.repository.UserRepository;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+import com.endpoint.frelog.domain.canvas.service.CanvasRedisDocumentReader;
+import com.endpoint.frelog.domain.canvas.client.CppServerClient;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.http.HttpHeaders;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.context.WebApplicationContext;
+
+import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import org.springframework.http.MediaType;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@SpringBootTest
+class SecurityIntegrationTest {
+    @Test void unauthenticatedRuntimeStreamIsRejectedBeforeExecution() throws Exception {
+        mockMvc.perform(post("/api/workspaces/1/runtime/execute/stream")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"language\":\"python\",\"code\":\"print(1)\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+
+    @MockitoBean
+    private CppServerClient cppServerClient;
+
+    @MockitoBean
+    private CanvasRedisDocumentReader canvasRedisDocumentReader;
+
+    @Autowired
+    private WebApplicationContext context;
+
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private com.endpoint.frelog.domain.canvas.repository.WorkspaceInfoRepository workspaceInfoRepository;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    @Autowired
+    private JwtTokenProvider jwtTokenProvider;
+
+    private MockMvc mockMvc;
+
+    @BeforeEach
+    void setUp() {
+        mockMvc = MockMvcBuilders
+                .webAppContextSetup(context)
+                .apply(springSecurity())
+                .build();
+
+        workspaceInfoRepository.deleteAll();
+        userRepository.deleteAll();
+    }
+
+    @Test
+    @DisplayName("공개 엔드포인트(/api/auth/health)는 토큰 없이 접근 가능")
+    void publicEndpoint_WithoutToken_Success() throws Exception {
+        mockMvc.perform(get("/api/auth/health"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("UP"));
+    }
+
+    @Test
+    @DisplayName("정적 CSS는 인증 없이 text/css로 제공된다")
+    void staticCss_WithoutToken_ReturnsStylesheet() throws Exception {
+        mockMvc.perform(get("/css/index.css"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith("text/css"));
+    }
+
+    @Test
+    @DisplayName("보호된 엔드포인트(/api/auth/me)에 토큰 없이 접근 시 401 Unauthorized")
+    void protectedEndpoint_WithoutToken_Unauthorized() throws Exception {
+        mockMvc.perform(post("/api/auth/me")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("보호된 엔드포인트(/api/auth/me)에 유효한 JWT 토큰으로 접근 시 200 OK")
+    void protectedEndpoint_WithValidToken_Success() throws Exception {
+        // given
+        User user = new User("jwtuser@irade.com", passwordEncoder.encode("secret123"), "JWT테스터", 1, Role.ROLE_USER);
+        user.setStatus(UserStatus.ACTIVE);
+        User savedUser = userRepository.save(user);
+
+        String token = jwtTokenProvider.createToken(
+                savedUser.getEmail(),
+                savedUser.getTagNumber(),
+                savedUser.getNickname(),
+                savedUser.getRole().name(),
+                "127.0.0.1"
+        );
+
+        // when & then
+        mockMvc.perform(post("/api/auth/me")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"token\":\"" + token + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email").value("jwtuser@irade.com"))
+                .andExpect(jsonPath("$.nickname").value("JWT테스터"));
+    }
+
+    @Test
+    @DisplayName("보호된 엔드포인트에 잘못된 JWT 토큰으로 접근 시 401 Unauthorized")
+    void protectedEndpoint_WithInvalidToken_Unauthorized() throws Exception {
+        mockMvc.perform(post("/api/auth/me")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"token\":\"invalid-token-string\"}"))
+                .andExpect(status().isUnauthorized());
+    }
+}

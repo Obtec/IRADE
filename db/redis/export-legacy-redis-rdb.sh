@@ -1,0 +1,23 @@
+#!/bin/bash
+# Save the current standalone Redis dataset for the Sentinel HA migration.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/.env"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "Redis environment file not found: $ENV_FILE" >&2
+  exit 1
+fi
+
+REDIS_ADMIN_PASS=$(sed -n 's/^REDIS_PASSWORD=//p' "$ENV_FILE" | tail -n 1 | tr -d '\r')
+: "${REDIS_ADMIN_PASS:?REDIS_PASSWORD must be set in redis/.env}"
+SNAPSHOT_PATH="${1:-/tmp/irade-redis-dump.rdb}"
+
+"$SCRIPT_DIR/redis-container-cli.sh" irade-redis-stack admin SAVE
+REDIS_DIR=$("$SCRIPT_DIR/redis-container-cli.sh" irade-redis-stack admin --raw CONFIG GET dir | tail -n 1 | tr -d '\r')
+REDIS_RDB=$("$SCRIPT_DIR/redis-container-cli.sh" irade-redis-stack admin --raw CONFIG GET dbfilename | tail -n 1 | tr -d '\r')
+: "${REDIS_DIR:?Redis did not report its data directory}"
+: "${REDIS_RDB:?Redis did not report its RDB filename}"
+docker cp "irade-redis-stack:$REDIS_DIR/$REDIS_RDB" "$SNAPSHOT_PATH"
+chmod 600 "$SNAPSHOT_PATH"
+echo "Redis snapshot saved to $SNAPSHOT_PATH"

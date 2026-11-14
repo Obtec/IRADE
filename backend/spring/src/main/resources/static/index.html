@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agora Premium Testbed</title>
+    <link rel="icon" type="image/png" href="/favicon.png">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/index.css">
+</head>
+<body>
+
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+
+    <div class="app-container">
+        <header>
+            <h1>✨ Agora Realtime</h1>
+            <div class="user-status" id="userStatus">
+                <span id="userNameText" style="color: var(--text-muted);">로그인 대기 중</span>
+                <button id="logoutBtn" class="btn-outline" style="padding: 6px 12px; font-size: 0.8rem; display: none;" onclick="logout()">로그아웃</button>
+            </div>
+        </header>
+
+        <!-- Auth View -->
+        <div id="authView" class="view active">
+            <div class="auth-container">
+                <h2 id="authTitle">Welcome Back</h2>
+                <p id="authSubtitle">프리미엄 퀄리티의 실시간 브로드캐스트 테스트베드</p>
+                
+                <div class="auth-tabs" style="display:flex; justify-content:center; gap: 10px; margin-bottom: 20px;">
+                    <button id="tabLoginBtn" class="btn-primary" onclick="toggleAuthTab('login')" style="padding: 6px 12px; font-size: 0.8rem;">로그인</button>
+                    <button id="tabSignupBtn" class="btn-outline" onclick="toggleAuthTab('signup')" style="padding: 6px 12px; font-size: 0.8rem;">계정 생성</button>
+                </div>
+
+                <div class="auth-form" id="loginFormBlock">
+                    <input type="email" id="email" placeholder="이메일" autocomplete="username">
+                    <input type="password" id="password" placeholder="비밀번호" autocomplete="current-password">
+                    <button class="btn-primary" onclick="login()" id="loginBtn">
+                        <span id="loginText">로그인 및 시스템 접속</span>
+                        <div class="loader" id="loginLoader"></div>
+                    </button>
+                    
+                </div>
+
+                <div class="auth-form" id="signupFormBlock" style="display: none;">
+                    <input type="email" id="signupEmail" placeholder="이메일">
+                    <input type="password" id="signupPassword" placeholder="비밀번호 (12자 이상, 문자·숫자·특수문자)">
+                    <input type="text" id="signupNickname" placeholder="닉네임">
+                    <button class="btn-primary" onclick="signup()" id="signupBtn">
+                        <span id="signupText">계정 생성</span>
+                        <div class="loader" id="signupLoader"></div>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Dashboard View -->
+        <div id="dashboardView" class="dashboard-layout" style="display: none;">
+            
+            <div class="sidebar">
+                <div>
+                    <h3 class="section-title">새 캔버스 생성</h3>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="newCanvasName" placeholder="캔버스 이름" style="padding: 10px 14px; font-size: 0.85rem;">
+                        <button class="btn-primary" style="padding: 10px 14px;" onclick="createCanvas()">생성</button>
+                    </div>
+                </div>
+
+                <div style="margin-top: 10px; display: flex; flex-direction: column; flex: 1; overflow: hidden;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <h3 class="section-title" style="margin: 0;">내 캔버스 목록</h3>
+                        <button class="btn-outline" style="padding: 4px 8px; font-size: 0.7rem;" onclick="loadCanvases()">🔄</button>
+                    </div>
+                    <div id="canvasList" style="overflow-y: auto; flex: 1; padding-right: 4px;">
+                        <!-- Canvas cards injected here -->
+                    </div>
+                </div>
+            </div>
+
+            <div class="main-content" id="broadcastArea" style="opacity: 0.3; pointer-events: none; transition: all 0.3s;">
+                <div class="chat-header">
+                    <div>
+                        <h2 style="font-size: 1.1rem; font-weight: 600;" id="activeCanvasTitle">캔버스를 선택해주세요</h2>
+                        <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;" id="activeCanvasMeta">선택 시 자동으로 Access API 및 C++ WebSocket 연결이 수행됩니다.</p>
+                    </div>
+                    <div style="display: flex; gap: 12px; align-items: center;">
+                        <span id="connectionBadge" style="display: flex; align-items: center; gap: 6px; font-size: 0.85rem; color: var(--text-muted);">
+                            <div class="status-dot" id="connectionDot"></div> <span id="connectionText">미연결</span>
+                        </span>
+                        <button id="settingsBtn" class="btn-outline" style="padding: 8px 12px; font-size: 0.85rem; display: none;" onclick="openSettingsModal()">⚙️ 설정</button>
+                        <button id="connectBtn" class="btn-primary" style="padding: 8px 16px; font-size: 0.85rem;" onclick="connectActiveCanvas()">접속하기</button>
+                    </div>
+                </div>
+
+                <div class="chat-room-selector">
+                    <label for="chatRoomSelect">채팅방</label>
+                    <select id="chatRoomSelect" onchange="selectChatRoom(this.value)" disabled>
+                        <option value="">WebSocket 접속 후 권한 있는 방을 불러옵니다.</option>
+                    </select>
+                    <span id="chatRoomStatus" role="status">채팅방을 선택하면 내역을 불러옵니다.</span>
+                    <button id="createChatRoomBtn" class="btn-outline" onclick="createChatRoom()" hidden disabled>채팅방 만들기</button>
+                </div>
+
+                <div class="chat-messages" id="chatContainer">
+                    <div class="msg-system">왼쪽 목록에서 캔버스를 선택한 후 접속하세요.</div>
+                </div>
+
+                <div class="chat-input-area">
+                    <input type="text" id="chatInput" placeholder="메시지를 입력하세요... (Enter 키로 전송)" onkeypress="handleChatKey(event)" disabled>
+                    <button class="btn-primary" id="sendBtn" onclick="sendMessage()" disabled>전송</button>
+                </div>
+
+                <section class="item-editor" aria-labelledby="itemEditorTitle">
+                    <div class="item-editor-heading">
+                        <h3 id="itemEditorTitle">캔버스 아이템 조회·편집</h3>
+                        <span id="itemStatus" role="status">WebSocket 접속 후 초기 아이템을 불러옵니다.</span>
+                    </div>
+                    <div class="item-editor-body">
+                        <div class="item-list" id="canvasItemsList">접속하면 권한에 따라 볼 수 있는 초기 아이템이 표시됩니다.</div>
+                        <div class="item-form">
+                            <label for="itemIdInput">아이템 ID</label>
+                            <input type="text" id="itemIdInput" placeholder="예: note-1" disabled>
+                            <label for="itemJsonInput">아이템 JSON (permission 필수)</label>
+                            <textarea id="itemJsonInput" spellcheck="false" disabled></textarea>
+                            <div class="item-actions">
+                                <button class="btn-outline" id="newItemBtn" onclick="newCanvasItem()" disabled>새 아이템</button>
+                                <button class="btn-primary" id="saveItemBtn" onclick="saveCanvasItem()" disabled>추가 / 수정</button>
+                                <button class="btn-danger" id="deleteItemBtn" onclick="deleteCanvasItem()" disabled>삭제</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </div>
+        
+        <!-- Canvas Settings Modal -->
+        <div id="settingsModal" class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" style="display:none;">
+            <div class="settings-panel">
+                <button class="btn-outline" style="position: absolute; top: 15px; right: 15px; border: none; padding: 5px 10px;" onclick="closeSettingsModal()">✕</button>
+                <h3 id="settingsTitle" style="margin-bottom: 12px; font-size: 1.2rem;">⚙️ 캔버스 설정</h3>
+                <p id="settingsStatus" role="status" class="settings-hint">설정을 불러오는 중...</p>
+                
+                <div class="auth-form" style="text-align: left; gap: 12px;">
+                    <div>
+                        <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">이름 변경</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="settingCanvasName" placeholder="새 이름">
+                            <button class="btn-outline" onclick="updateCanvasSetting('name')">변경</button>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">설명 변경</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="settingCanvasDesc" placeholder="설명">
+                            <button class="btn-outline" onclick="updateCanvasSetting('description')">변경</button>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">비밀번호 설정 <span id="passwordStatus"></span></label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="password" id="settingCanvasPwd" placeholder="새 비밀번호" autocomplete="new-password">
+                            <button class="btn-outline" onclick="updateCanvasSetting('password')">설정</button>
+                        </div>
+                    </div>
+                    
+                    <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.1); margin: 10px 0;">
+
+                    <div>
+                        <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 4px;">참여자 관리 (닉네임#태그번호)</label>
+                        <div id="settingsParticipantList" class="settings-participants">불러오는 중...</div>
+                        <div class="settings-participant-inputs">
+                            <input type="text" id="settingParticipantNickname" placeholder="닉네임">
+                            <input type="number" id="settingParticipantTag" min="1" step="1" placeholder="태그 번호">
+                        </div>
+                        <div class="settings-actions">
+                            <button class="btn-outline" onclick="manageParticipant('add')">추가</button>
+                            <button class="btn-danger" onclick="manageParticipant('remove')">제외</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script src="/js/testbed.js"></script>
+</body>
+</html>

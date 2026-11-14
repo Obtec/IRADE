@@ -1,0 +1,56 @@
+#!/bin/bash
+# Execute a Redis command on whichever node Sentinel currently considers the
+# primary. This is for the repository's host-side maintenance tools.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/.env"
+if [ ! -f "$ENV_FILE" ]; then
+  echo "Redis environment file not found: $ENV_FILE" >&2
+  exit 1
+fi
+
+read_env() {
+  sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1 | tr -d '\r'
+}
+
+REDIS_ADMIN_PASS="$(read_env REDIS_PASSWORD)"
+: "${REDIS_ADMIN_PASS:?REDIS_PASSWORD must be set in redis/.env}"
+REDIS_SENTINEL_USER="$(read_env REDIS_SENTINEL_USER)"
+REDIS_SENTINEL_PASS="$(read_env REDIS_SENTINEL_PASSWORD)"
+: "${REDIS_SENTINEL_USER:?REDIS_SENTINEL_USER must be set in redis/.env}"
+: "${REDIS_SENTINEL_PASS:?REDIS_SENTINEL_PASSWORD must be set in redis/.env}"
+REDIS_SENTINELS="$(read_env REDIS_SENTINELS)"
+: "${REDIS_SENTINELS:?REDIS_SENTINELS must be set in redis/.env}"
+for container in irade-redis-primary irade-redis-replica-1 irade-redis-replica-2; do
+  if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || true)" != "true" ]; then
+    continue
+  fi
+
+  role=$("$SCRIPT_DIR/redis-container-cli.sh" "$container" admin \
+    --raw INFO replication 2>/dev/null | sed -n 's/^role://p' | tr -d '\r')
+  if [ "$role" = "master" ]; then
+    exec "$SCRIPT_DIR/redis-container-cli.sh" "$container" admin "$@"
+  fi
+done
+
+if command -v redis-cli >/dev/null 2>&1; then
+  exec "$SCRIPT_DIR/redis-host-cli.sh" admin "$@"
+fi
+
+if [ "$(docker inspect -f '{{.State.Running}}' irade-redis-node 2>/dev/null || true)" = "true" ] \
+  && [ "$(docker inspect -f '{{.State.Running}}' irade-redis-sentinel 2>/dev/null || true)" = "true" ]; then
+  master_name="$(read_env REDIS_SENTINEL_MASTER_NAME)"
+  master_name="${master_name:-irade-master}"
+  master_info=$("$SCRIPT_DIR/redis-container-cli.sh" irade-redis-sentinel sentinel \
+    --raw SENTINEL get-master-addr-by-name "$master_name")
+  master_host=$(printf '%s\n' "$master_info" | sed -n '1p')
+  master_port=$(printf '%s\n' "$master_info" | sed -n '2p')
+  if [ -n "$master_host" ] && [ -n "$master_port" ]; then
+    exec "$SCRIPT_DIR/redis-container-cli.sh" irade-redis-node admin \
+      -h "$master_host" -p "$master_port" "$@"
+  fi
+fi
+
+echo "No running Redis primary found among the Sentinel-managed nodes." >&2
+exit 1

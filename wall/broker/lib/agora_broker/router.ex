@@ -1,0 +1,60 @@
+defmodule AgoraBroker.Router do
+  use Plug.Router
+  plug(:match)
+  plug(Plug.Parsers, parsers: [:json], json_decoder: Jason, length: 4096)
+  plug(:dispatch)
+
+  get "/health" do
+    send_resp(conn, 200, "ok")
+  end
+
+  post "/internal/disconnect" do
+    supplied = get_req_header(conn, "x-agora-internal-token") |> List.first()
+    expected = Application.get_env(:agora_broker, :internal_token, "")
+
+    if is_binary(supplied) and byte_size(expected) >= 32 and
+         Plug.Crypto.secure_compare(supplied, expected) do
+      id = conn.body_params["workspace_id"] || conn.body_params["canvas_id"]
+      scope = conn.body_params["scope"] || "workspace"
+      user_id = conn.body_params["user_id"]
+
+      if (is_nil(id) or (is_integer(id) and id > 0)) and
+           scope == "workspace" and
+           (is_nil(user_id) or (is_integer(user_id) and user_id > 0)) do
+        AgoraBroker.Room.control(id, conn.body_params, scope)
+        send_resp(conn, 202, "accepted")
+      else
+        send_resp(conn, 400, "invalid target")
+      end
+    else
+      send_resp(conn, 401, "unauthorized")
+    end
+  end
+
+  post "/internal/workspace-broadcast" do
+    supplied = get_req_header(conn, "x-agora-internal-token") |> List.first()
+    expected = Application.get_env(:agora_broker, :internal_token, "")
+
+    if is_binary(supplied) and byte_size(expected) >= 32 and
+         Plug.Crypto.secure_compare(supplied, expected) do
+      id = conn.body_params["workspace_id"] || conn.body_params["canvas_id"]
+      scope = conn.body_params["scope"] || "workspace"
+      workspace_id = conn.body_params["workspace_id"]
+
+      if (is_nil(id) or (is_integer(id) and id > 0)) and
+           scope == "workspace" and
+           is_binary(workspace_id) and byte_size(workspace_id) in 1..128 do
+        AgoraBroker.Room.broadcast_workspace(id, conn.body_params, scope)
+        send_resp(conn, 202, "accepted")
+      else
+        send_resp(conn, 400, "invalid workspace broadcast")
+      end
+    else
+      send_resp(conn, 401, "unauthorized")
+    end
+  end
+
+  match _ do
+    send_resp(conn, 404, "not found")
+  end
+end

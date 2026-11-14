@@ -1,0 +1,117 @@
+services:
+  mssql-tls-init:
+    image: mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04
+    platform: linux/amd64
+    user: "0:0"
+    restart: "no"
+    network_mode: none
+    entrypoint: ["/bin/sh", "/prepare-tls-volume.sh", "10001", "server.crt", "server.key", "ca.crt"]
+    volumes:
+      - type: bind
+        source: ${MSSQL_TLS_CERTS_DIR:-./tls}
+        target: /source
+        read_only: true
+        bind:
+          create_host_path: false
+      - mssql_tls:/target
+      - ../ops/prepare-tls-volume.sh:/prepare-tls-volume.sh:ro
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04
+    platform: linux/amd64
+    container_name: irade-mssql
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=${MSSQL_SA_PASSWORD:?MSSQL_SA_PASSWORD is required}
+      - MSSQL_PID=${MSSQL_PID:-Express} # 상용 서비스 시 라이선스 정책 준수 (Express: 무료 운영용, Developer: 개발 전용)
+      - MSSQL_DB=${MSSQL_DB:-irade_db}
+      - MSSQL_USER=${MSSQL_USER:-irade_user}
+      - MSSQL_PASSWORD=${MSSQL_PASSWORD:?MSSQL_PASSWORD is required}
+      - DB_TRUST_SERVER_CERTIFICATE=${DB_TRUST_SERVER_CERTIFICATE:-false}
+      - MSSQL_TLS_ENABLED=true
+      - SSL_CERT_FILE=/run/tls/ca.pem
+      - MSSQL_TLS_CERTIFICATE=/run/tls/fullchain.pem
+      - MSSQL_TLS_KEY=/run/tls/privkey.pem
+      - MSSQL_TABLE_USERS=${MSSQL_TABLE_USERS:-users}
+      - MSSQL_TABLE_REDIS_SERVER=${MSSQL_TABLE_REDIS_SERVER:-redis_server}
+      - MSSQL_TABLE_WORKSPACE_INFO=${MSSQL_TABLE_WORKSPACE_INFO:-workspace_info}
+      - MSSQL_TABLE_CPP_SERVER=${MSSQL_TABLE_CPP_SERVER:-cpp_server}
+
+      - TZ=${TIMEZONE:-Asia/Seoul}
+    ports:
+      # 외부 접속 바인딩 (.env의 MSSQL_EXTERNAL_IP, MSSQL_EXTERNAL_PORT 설정 반영)
+      - "${MSSQL_EXTERNAL_IP:-127.0.0.1}:${MSSQL_EXTERNAL_PORT:-14331}:1433"
+    volumes:
+      - ./start-mssql.sh:/usr/local/bin/start-mssql.sh:ro
+      - mssql_data:/var/opt/mssql
+      - mssql_tls:/run/tls:ro
+    entrypoint: ["/bin/bash", "/usr/local/bin/start-mssql.sh"]
+    command: ["/opt/mssql/bin/sqlservr"]
+    depends_on:
+      mssql-tls-init:
+        condition: service_completed_successfully
+    networks:
+      - irade-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+    healthcheck:
+      test: [ "CMD-SHELL", "SSL_CERT_FILE=/run/tls/ca.pem SQLCMDPASSWORD=\"$${MSSQL_SA_PASSWORD}\" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -Q \"SELECT 1\" || exit 1" ]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  mssql-init:
+    image: mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04
+    platform: linux/amd64
+    container_name: irade-mssql-init
+    restart: "no"
+    env_file:
+      - .env
+    environment:
+      - MSSQL_DB=${MSSQL_DB:-irade_db}
+      - MSSQL_USER=${MSSQL_USER:-irade_user}
+      - MSSQL_PASSWORD=${MSSQL_PASSWORD}
+      - MSSQL_SA_PASSWORD=${MSSQL_SA_PASSWORD}
+      - DB_TRUST_SERVER_CERTIFICATE=${DB_TRUST_SERVER_CERTIFICATE:-false}
+      - MSSQL_TLS_ENABLED=true
+      - SSL_CERT_FILE=/run/tls/ca.pem
+      - MSSQL_TABLE_USERS=${MSSQL_TABLE_USERS:-users}
+      - MSSQL_TABLE_REDIS_SERVER=${MSSQL_TABLE_REDIS_SERVER:-redis_server}
+      - MSSQL_TABLE_WORKSPACE_INFO=${MSSQL_TABLE_WORKSPACE_INFO:-workspace_info}
+      - MSSQL_TABLE_CPP_SERVER=${MSSQL_TABLE_CPP_SERVER:-cpp_server}
+    depends_on:
+      mssql:
+        condition: service_healthy
+    volumes:
+      - ./init-mssql.sql:/init/init-mssql.sql:ro
+      - mssql_tls:/run/tls:ro
+    networks:
+      - irade-net
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - >-
+        SQLCMD_TRUST=();
+        SQLCMDPASSWORD="$$MSSQL_SA_PASSWORD" /opt/mssql-tools18/bin/sqlcmd -S mssql -U sa "$${SQLCMD_TRUST[@]}" -b -I
+        -v DB_NAME="$$MSSQL_DB" DB_USER="$$MSSQL_USER" DB_PASSWORD="$$MSSQL_PASSWORD"
+        TABLE_USERS="$$MSSQL_TABLE_USERS" TABLE_REDIS_SERVER="$$MSSQL_TABLE_REDIS_SERVER"
+        TABLE_WORKSPACE_INFO="$$MSSQL_TABLE_WORKSPACE_INFO" \
+        TABLE_CPP_SERVER="$$MSSQL_TABLE_CPP_SERVER" -i /init/init-mssql.sql
+
+volumes:
+  mssql_tls:
+    name: irade-mssql-tls
+  mssql_data:
+
+networks:
+  irade-net:
+    name: irade-net
+    ipam:
+      config:
+        - subnet: ${IRADE_NET_SUBNET:-10.27.0.0/16}
