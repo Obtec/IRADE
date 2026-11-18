@@ -209,3 +209,9 @@ appendonlydir/
 # Patch & conflict leftovers
 *.orig
 *.rej
+
+# Ad-hoc reference screenshots at repository root (preserve assets/docs in subdirectories)
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp

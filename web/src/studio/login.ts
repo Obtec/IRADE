@@ -11,6 +11,7 @@ let linkToken: string | undefined;
 let completing: Profile | undefined;
 const start = new URL('/api/irade/auth/orcid/start', origin);
 if (workspace) { start.searchParams.set('workspace', String(workspace)); }
+const authEndpoint = (suffix: string): string => `${location.pathname.startsWith('/irade') ? '/irade/api/auth' : '/api/auth'}/${suffix}`;
 function fail(error: unknown): void { const element = get('#login-error'); element.textContent = error instanceof Error ? error.message : String(error); element.hidden = false; }
 async function request<T>(path: string, body?: object, token?: string): Promise<T> {
   const response = await fetch(path, { method: body ? 'POST' : 'GET', credentials: 'same-origin', headers: { ...(body ? { 'Content-Type':'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(25000), redirect: 'error' });
@@ -40,7 +41,7 @@ get('#mfa-form').addEventListener('submit', event => {
   event.preventDefault(); const submit = get<HTMLButtonElement>('#mfa-form button'); submit.disabled = true;
   void (async () => { try {
     const data = new FormData(event.target as HTMLFormElement);
-    const result = await request<Login>('/api/auth/mfa/verify', { challengeToken: challenge, code: String(data.get('code')).trim() });
+    const result = await request<Login>(authEndpoint('mfa/verify'), { challengeToken: challenge, code: String(data.get('code')).trim() });
     if (completing) { finish(result); } else if (result.accessToken) { await link(result.accessToken); } else { throw new Error('인증 응답을 확인할 수 없습니다.'); }
   } catch (error) { fail(error); } finally { submit.disabled = false; } })();
 });
@@ -48,7 +49,7 @@ get('#link-form').addEventListener('submit', event => {
   event.preventDefault(); const form = event.target as HTMLFormElement; const submit = form.querySelector('button')!; submit.disabled = true; get('#login-error').hidden = true;
   void (async () => { try {
     const data = new FormData(form);
-    const result = await request<Login>('/api/auth/login', { email: String(data.get('email')).trim(), password: data.get('password') });
+    const result = await request<Login>(authEndpoint('login'), { email: String(data.get('email')).trim(), password: data.get('password') });
     (form.elements.namedItem('password') as HTMLInputElement).value = '';
     completing = undefined;
     if (verify(result)) { return; }

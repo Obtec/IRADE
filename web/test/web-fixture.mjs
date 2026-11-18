@@ -52,10 +52,13 @@ export async function fixture({ studio } = {}) {
 		key: await readFile(join(temporary, 'key.pem')),
 		cert: await readFile(join(temporary, 'cert.pem')),
 	}, (request, response) => {
-		if (studio && !request.url.startsWith('/api/') && !request.url.startsWith('/wss/')) {
+		if (studio && !request.url.startsWith('/api/') && !request.url.startsWith('/irade/api/auth/') && !request.url.startsWith('/wss/')) {
 			request.url = request.url.replace(/^\/irade(?=\/|\?|$)/, '') || '/';
 			studio(request, response);
 			return;
+		}
+		if (request.url.startsWith('/irade/api/auth/')) {
+			request.url = request.url.slice('/irade'.length);
 		}
 		response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
 		response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');

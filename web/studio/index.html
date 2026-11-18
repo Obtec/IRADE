@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#101315"><meta name="description" content="IRADE — 생각, 증명, 코드가 연결되는 협업 연구 workspace">
+<meta name="theme-color" content="#181818"><meta name="description" content="IRADE — 생각, 증명, 코드가 연결되는 협업 연구 workspace">
 <title>IRADE · Research Workspace</title>
 <link rel="icon" href="/irade-assets/irade-favicon.ico?v=2"><link rel="apple-touch-icon" href="/irade-assets/irade-icon-180.png?v=2"><link rel="manifest" href="/irade-assets/manifest.webmanifest?v=2">
 <link rel="stylesheet" href="/irade-assets/studio/studio.css">
@@ -11,164 +11,260 @@
 <a class="skip-link" href="#main">편집 영역으로 이동</a>
 <div class="app">
   <header class="topbar">
-    <a class="wordmark" href="./" aria-label="IRADE 홈"><img src="/irade-assets/irade-icon-192.png?v=2" alt=""><b>IRADE</b><span>RESEARCH ENVIRONMENT</span></a>
+    <div class="topbar-left">
+      <a class="wordmark" href="./" aria-label="IRADE 홈"><img src="/irade-assets/irade-icon-192.png?v=2" alt=""><b>IRADE</b></a>
+      <button class="topbar-ws-pill" data-action="open" title="Workspace 전환">
+        <span class="topbar-ws-sep">/</span>
+        <span id="topbar-workspace">나의 연구 공간</span>
+      </button>
+    </div>
     <button class="command-trigger" data-action="search"><span class="search-symbol">⌕</span><span>workspace와 셀 검색</span><kbd>Ctrl K</kbd></button>
     <div class="top-actions">
-      <button class="button subtle agent-toggle-btn" id="agent-toggle" type="button" aria-expanded="false" aria-controls="agent-drawer">✦ AI 에이전트</button><button class="icon-button" id="theme-toggle" data-action="theme" title="테마 전환 (Dark / Light)" aria-label="테마 전환">☀</button><button class="icon-button" data-action="inspector" title="컨텍스트 패널 토글" aria-label="컨텍스트 패널 토글">◫</button><button class="icon-button" data-action="focus" title="집중 모드 (Ctrl Shift F)" aria-label="집중 모드">⛶</button><button class="button subtle" id="account" data-action="login">ORCID 로그인 <span>↗</span></button></div>
+      <div class="layout-toggles" role="group" aria-label="패널 표시 전환">
+        <button class="icon-button active" id="sidebar-toggle" data-action="sidebar" title="탐색기 패널 토글" aria-label="탐색기 패널 토글">◧</button>
+        <button class="icon-button" id="bottom-panel-toggle" data-action="bottom-panel" title="출력/활동 하단 패널 토글" aria-label="하단 출력 패널 토글">⬓</button>
+        <button class="icon-button active" id="inspector-toggle" data-action="inspector" title="컨텍스트 패널 토글" aria-label="컨텍스트 패널 토글">◫</button>
+      </div>
+      <button class="button subtle agent-toggle-btn" id="agent-toggle" type="button" aria-expanded="false" aria-controls="agent-drawer">✦ AI 에이전트</button>
+      <button class="icon-button" id="theme-toggle" data-action="theme" title="테마 전환 (Dark / Light)" aria-label="테마 전환">☀</button>
+      <button class="icon-button" data-action="focus" title="집중 모드 (Ctrl Shift F)" aria-label="집중 모드">⛶</button>
+      <button class="button subtle" id="account" data-action="login">ORCID 로그인 <span>↗</span></button>
+    </div>
   </header>
   <div class="body-grid">
     <nav class="activitybar" aria-label="연구 도구">
-      <button class="rail-button active" data-action="workspace" title="Workspace" aria-label="Workspace">▦</button>
+      <button class="rail-button active" data-action="workspace" title="전체 셀 탐색" aria-label="Workspace">▦</button>
       <button class="rail-button" data-action="filter-agent" title="에이전트 대화" aria-label="에이전트 대화">✧</button>
-      <button class="rail-button" data-action="filter-proof" title="증명 셀" aria-label="증명 셀">∀</button>
+      <button class="rail-button" data-action="filter-proof" title="증명 셀 (Lean 4 / Rocq)" aria-label="증명 셀">∀</button>
       <button class="rail-button" data-action="filter-python" title="Python 코드" aria-label="Python 코드">λ</button>
-      <button class="rail-button" data-action="filter-document" title="문서 셀" aria-label="문서 셀">≡</button>
-      <div class="rail-bottom"><button class="rail-button" data-action="help" aria-label="사용 안내" title="사용 안내">?</button><button class="rail-button" data-action="settings" aria-label="환경 설정" title="환경 설정">⚙</button></div>
+      <button class="rail-button" data-action="filter-document" title="문서 셀 (Markdown / HTML)" aria-label="문서 셀">≡</button>
+      <div class="rail-bottom">
+        <button class="rail-button" data-action="help" aria-label="사용 안내" title="사용 안내">?</button>
+        <button class="rail-button" data-action="settings" aria-label="환경 설정" title="환경 설정">⚙</button>
+      </div>
     </nav>
     <aside class="sidebar" aria-label="Workspace 탐색">
-      <div class="sidebar-heading"><span>WORKSPACE</span><button class="icon-button" data-action="open" aria-label="Workspace 전환" title="Workspace 전환">⇄</button></div>
-      <button class="workspace-switch" data-action="open"><span class="workspace-avatar">I</span><span><strong id="workspace-name">나의 연구 공간</strong><small id="workspace-subtitle">workspace를 연결하세요</small></span><span class="chevron">⌄</span></button>
+      <div class="sidebar-heading">
+        <span>EXPLORER</span>
+        <button class="icon-button" data-action="open" aria-label="Workspace 전환" title="Workspace 전환">⇄</button>
+      </div>
+      <button class="workspace-switch" data-action="open">
+        <span class="workspace-avatar">I</span>
+        <span><strong id="workspace-name">나의 연구 공간</strong><small id="workspace-subtitle">workspace를 연결하세요</small></span>
+        <span class="chevron">⌄</span>
+      </button>
       <button class="new-cell-button" data-action="add"><span>＋</span> 새 셀 만들기 <kbd>Alt N</kbd></button>
       <div class="section-label"><span id="cell-list-label">연구 셀</span><span id="cell-count">0</span></div>
       <div id="cell-list" class="cell-list" role="group" aria-label="연구 셀 목록"></div>
-      <div class="sidebar-footer"><div class="tiny-label">CONNECTED THINKING</div><p>대화에서 아이디어로.<br>코드에서 증명으로.</p><div class="sidebar-brand"><img src="/irade-assets/irade-icon-192.png?v=2" alt="IRADE"><span>하나의 workspace,<br>끊김 없는 연구.</span></div></div>
+      <details class="explorer-outline" open>
+        <summary><span>CELL WORKBENCH</span></summary>
+        <div class="sidebar-footer">
+          <p>대화에서 아이디어로.<br>코드에서 증명으로.</p>
+          <div class="sidebar-brand"><img src="/irade-assets/irade-icon-192.png?v=2" alt="IRADE"><span>하나의 workspace,<br>끊김 없는 연구.</span></div>
+        </div>
+      </details>
     </aside>
     <main id="main" class="main" tabindex="-1">
-      <div class="tabbar" role="tablist" aria-label="열린 문서"><button id="overview-tab" class="tab selected" role="tab" aria-selected="true" data-action="overview"><span class="tab-icon">▦</span><span>Overview</span><span class="tab-close" data-action="close-overview" role="button" aria-label="Overview 닫기">×</span></button><div id="cell-tabs"></div><button class="tab-add" data-action="add" aria-label="새 셀">＋</button><div class="tabbar-end"><span class="live-dot"></span><span id="connection-label">연결 대기</span></div></div>
-      <section id="overview" class="overview">
-        <div class="overview-topline"><span class="eyebrow"><i></i> YOUR INTEGRATED RESEARCH SPACE</span><span class="version-label">IRADE / 01</span></div>
-        <div class="hero"><div class="hero-content"><span class="hero-kicker">THINK. PROVE. BUILD.</span><h1>생각의 다음 단계,<br><em>하나의 workspace.</em></h1><p>에이전트와 나눈 대화, 한 줄의 증명, 실행할 코드.<br>연구의 모든 맥락을 하나의 공간에서 이어가세요.</p><div class="hero-actions"><button class="button primary" data-action="open">Workspace 열기 <span>↗</span></button><button class="button ghost" data-action="demo">로컬 체험 <span>→</span></button></div></div><div class="hero-art"><img src="/irade-assets/irade-icon-source.png?v=2" alt="IRADE 프로젝트 심볼"><span class="art-caption">IDEAS → REASONING → DISCOVERY</span></div></div>
-        <div class="overview-section-heading"><h2>연구를 연결하는 네 가지 셀.</h2><span>YOUR RESEARCH, IN CONTEXT</span></div>
-        <div id="type-cards" class="type-cards"></div>
-        <div class="workspace-bottom"><div class="workspace-note"><span class="note-symbol">↔</span><div><h3>함께 생각하고, 같은 맥락을 공유하세요.</h3><p>Agora에 연결하면 같은 workspace의 셀을 실시간으로 함께 편집합니다.</p></div><button class="text-button" data-action="share">공유하기 ↗</button></div><div class="shortcut-note"><span><kbd>Ctrl K</kbd> 빠른 이동</span><span><kbd>Alt N</kbd> 새 셀</span><span><kbd>Ctrl S</kbd> 저장</span></div></div>
-      </section>
-      <section id="cell-view" class="cell-view notebook-view" hidden>
-        <div class="notebook-toolbar">
-          <div class="notebook-title-group">
-            <span class="notebook-file-icon">▤</span>
-            <div>
-              <span class="eyebrow" id="notebook-kind">RESEARCH NOTEBOOK</span>
-              <h1 id="notebook-title">나의 연구 공간</h1>
+      <div class="tabbar" role="tablist" aria-label="열린 문서">
+        <button id="overview-tab" class="tab selected" role="tab" aria-selected="true" data-action="overview"><span class="tab-icon">▦</span><span>Overview</span><span class="tab-close" data-action="close-overview" role="button" aria-label="Overview 닫기">×</span></button>
+        <div id="cell-tabs"></div>
+        <button class="tab-add" data-action="add" aria-label="새 셀">＋</button>
+        <div class="tabbar-end">
+          <span class="live-dot"></span>
+          <span class="tabbar-sync-text" id="tabbar-sync-text">STANDBY</span>
+        </div>
+      </div>
+      <div class="workspace-stage">
+        <section id="overview" class="overview">
+          <div class="overview-topline"><span class="eyebrow"><i></i> YOUR INTEGRATED RESEARCH SPACE</span><span class="version-label">IRADE / 01</span></div>
+          <div class="hero">
+            <div class="hero-content">
+              <span class="hero-kicker">THINK. PROVE. BUILD.</span>
+              <h1>생각의 다음 단계,<br><em>하나의 workspace.</em></h1>
+              <p>에이전트와 나눈 대화, 한 줄의 증명, 실행할 코드.<br>연구의 모든 맥락을 하나의 셀 작업 공간에서 이어가세요.</p>
+              <div class="hero-actions"><button class="button primary" data-action="open">Workspace 열기 <span>↗</span></button><button class="button ghost" data-action="demo">로컬 체험 <span>→</span></button></div>
+            </div>
+            <div class="hero-art"><img src="/irade-assets/irade-icon-source.png?v=2" alt="IRADE 프로젝트 심볼"><span class="art-caption">IDEAS → REASONING → DISCOVERY</span></div>
+          </div>
+          <div class="overview-section-heading"><h2>연구를 연결하는 네 가지 셀.</h2><span>YOUR RESEARCH, IN CONTEXT</span></div>
+          <div id="type-cards" class="type-cards"></div>
+          <div class="workspace-bottom">
+            <div class="workspace-note"><span class="note-symbol">↔</span><div><h3>함께 생각하고, 같은 맥락을 공유하세요.</h3><p>Agora에 연결하면 같은 workspace의 셀을 실시간으로 함께 편집합니다.</p></div><button class="text-button" data-action="share">공유하기 ↗</button></div>
+            <div class="shortcut-note"><span><kbd>Ctrl K</kbd> 빠른 이동</span><span><kbd>Alt N</kbd> 새 셀</span><span><kbd>Ctrl S</kbd> 저장</span></div>
+          </div>
+        </section>
+        <section id="cell-view" class="cell-view notebook-view" hidden>
+          <div class="notebook-toolbar">
+            <div class="notebook-title-group">
+              <span class="notebook-file-icon">▤</span>
+              <div class="notebook-breadcrumb-wrap">
+                <h1 id="notebook-title">나의 연구 공간</h1>
+                <span class="breadcrumb-sep" aria-hidden="true">›</span>
+                <span class="notebook-active-crumb" id="notebook-active-crumb">셀 목록</span>
+                <span class="notebook-kind-tag" id="notebook-kind">RESEARCH NOTEBOOK</span>
+              </div>
+            </div>
+            <div class="notebook-actions">
+              <span id="notebook-peers" class="peer-pill" hidden></span>
+              <span id="cell-save" class="save-label">저장됨</span>
+              <button class="button tiny" data-action="agent">✦ AI 에이전트</button>
+              <button class="button tiny" data-action="run-all">▶ 전체 실행</button>
+              <button class="button tiny" data-action="add">＋ 셀 추가</button>
+              <button class="button tiny" data-action="share">공유 ↗</button>
             </div>
           </div>
-          <div class="notebook-actions">
-            <span id="notebook-peers" class="peer-pill" hidden></span>
-            <span id="cell-save" class="save-label">저장됨</span>
-            <button class="button tiny" data-action="agent">✦ AI 에이전트</button>
-            <button class="button tiny" data-action="run-all">▶ 전체 실행</button>
-            <button class="button tiny" data-action="add">＋ 셀 추가</button>
-            <button class="button tiny" data-action="share">공유 ↗</button>
+          <div id="notebook-scroll" class="notebook-scroll">
+            <div id="notebook-cells" class="notebook-cells"></div>
+            <div class="notebook-add-bar" aria-label="빠른 셀 추가">
+              <span class="add-bar-label">셀 추가</span>
+              <button class="add-chip" data-quick-add="agent"><span class="mint">✧</span> 에이전트</button>
+              <button class="add-chip" data-quick-add="lean"><span class="purple">∀</span> Lean 4</button>
+              <button class="add-chip" data-quick-add="rocq"><span class="purple">⊢</span> Rocq</button>
+              <button class="add-chip" data-quick-add="python"><span class="blue">λ</span> Python</button>
+              <button class="add-chip" data-quick-add="markdown"><span class="sand">≡</span> Markdown</button>
+              <button class="add-chip" data-quick-add="html"><span class="sand">⟨⟩</span> HTML</button>
+            </div>
           </div>
-        </div>
-        <div id="notebook-scroll" class="notebook-scroll">
-          <div id="notebook-cells" class="notebook-cells"></div>
-          <div class="notebook-add-bar" aria-label="빠른 셀 추가">
-            <span class="add-bar-label">셀 추가</span>
-            <button class="add-chip" data-quick-add="agent"><span class="mint">✧</span> 에이전트</button>
-            <button class="add-chip" data-quick-add="lean"><span class="purple">∀</span> Lean 4</button>
-            <button class="add-chip" data-quick-add="rocq"><span class="purple">⊢</span> Rocq</button>
-            <button class="add-chip" data-quick-add="python"><span class="blue">λ</span> Python</button>
-            <button class="add-chip" data-quick-add="markdown"><span class="sand">≡</span> Markdown</button>
-            <button class="add-chip" data-quick-add="html"><span class="sand">⟨⟩</span> HTML</button>
+        </section>
+        <section id="bottom-dock" class="bottom-dock" aria-label="실행 출력 및 활동 패널" hidden>
+          <header class="bottom-dock-head">
+            <div class="bottom-dock-tabs" role="tablist">
+              <button type="button" class="bottom-dock-tab selected" data-dock-tab="output">실행 출력</button>
+              <button type="button" class="bottom-dock-tab" data-dock-tab="activity">활동 로그</button>
+            </div>
+            <span class="bottom-dock-target" id="bottom-dock-target">실행 대기</span>
+            <div class="bottom-dock-actions">
+              <button type="button" class="button tiny" id="bottom-dock-clear">지우기</button>
+              <button type="button" class="icon-button" data-action="bottom-panel" title="하단 패널 닫기" aria-label="하단 패널 닫기">×</button>
+            </div>
+          </header>
+          <div class="bottom-dock-body">
+            <div id="bottom-dock-output" class="bottom-dock-pane"></div>
+            <div id="bottom-dock-activity" class="bottom-dock-pane" hidden></div>
           </div>
-        </div>
-      </section>
+        </section>
+      </div>
     </main>
-    <aside class="inspector" aria-label="연구 컨텍스트"><div class="inspector-tabs"><button class="selected" data-action="context">컨텍스트</button><button data-action="activity">활동</button><button class="icon-button" data-action="inspector" title="패널 닫기" aria-label="컨텍스트 패널 닫기">⊣</button></div><div id="inspector-content"></div><div class="inspector-bottom"><span class="live-dot"></span><div><strong>Powered by Agora</strong><small id="sync-description">실시간 협업을 위한 연구 공간</small></div></div></aside>
+    <aside class="inspector" aria-label="연구 컨텍스트">
+      <div class="inspector-tabs">
+        <button class="selected" data-action="context">컨텍스트</button>
+        <button data-action="activity">활동</button>
+        <button class="icon-button" data-action="inspector" title="패널 닫기" aria-label="컨텍스트 패널 닫기">⊣</button>
+      </div>
+      <div id="inspector-content"></div>
+      <div class="inspector-bottom"><span class="live-dot"></span><div><strong>Powered by Agora</strong><small id="sync-description">실시간 협업을 위한 연구 공간</small></div></div>
+    </aside>
+    <aside class="agent-drawer" id="agent-drawer" aria-label="IRADE AI 에이전트" hidden>
+      <header class="agent-drawer-head">
+        <div class="agent-drawer-title">
+          <strong>✦ AI 에이전트</strong>
+          <span class="agent-pill" id="agent-active-api-badge">k-exaone_v2.5 · 서버 키</span>
+        </div>
+        <div class="agent-drawer-actions">
+          <button class="button tiny" id="agent-clear-history" type="button">새 대화</button>
+          <button class="icon-button" id="agent-close" type="button" aria-label="에이전트 패널 닫기">×</button>
+        </div>
+      </header>
+      <div class="agent-drawer-body">
+        <div class="agent-notice" id="agent-connection-notice" hidden></div>
+        <section class="agent-section" aria-label="API 및 인증">
+          <div class="agent-section-head">
+            <span>API · 인증 키</span>
+            <span class="agent-cred-badge server" id="agent-cred-badge">서버 기본 키 사용 중</span>
+          </div>
+          <label class="agent-field">
+            <span>모델 API 선택</span>
+            <select id="agent-api-select" aria-label="모델 API 선택"></select>
+          </label>
+          <div class="agent-key-row">
+            <input id="agent-api-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="선택한 API용 개인 API 키 입력…">
+            <button class="button tiny" id="agent-api-key-apply" type="button">적용</button>
+            <button class="button tiny" id="agent-api-key-clear" type="button">초기화</button>
+          </div>
+        </section>
+        <section class="agent-section" aria-label="API별 사용량 한도">
+          <div class="agent-section-head">
+            <span id="agent-quota-scope">k-exaone_v2.5 · 서버 기본 키</span>
+            <div>
+              <span id="agent-quota-observed">미조회</span>
+              <button class="button tiny" id="agent-refresh-status" type="button" title="API별 초당·분당·일일 잔여/한도 새로고침">↻ 조회</button>
+            </div>
+          </div>
+          <div class="agent-quota-grid" id="agent-quota-grid"></div>
+          <p class="agent-quota-note" id="agent-quota-note"></p>
+        </section>
+        <details class="agent-section agent-params" id="agent-params-panel">
+          <summary>
+            <span>추론 강도 · 토큰 · 단계 파라미터</span>
+            <span class="agent-pill">세부 설정 ▾</span>
+          </summary>
+          <div class="agent-param-grid">
+            <label class="agent-field">
+              <span>추론 강도 (reasoning)</span>
+              <select id="agent-reasoning">
+                <option value="low">low (빠름)</option>
+                <option value="high">high (균형)</option>
+                <option value="max">max (깊은 추론)</option>
+              </select>
+            </label>
+            <label class="agent-field">
+              <span>응답 토큰 상한 (max_tokens)</span>
+              <input id="agent-max-tokens" type="number" min="512" max="32768" step="256" value="8192">
+            </label>
+            <label class="agent-field">
+              <span>최대 작업 단계 (max_steps)</span>
+              <input id="agent-max-steps" type="number" min="1" max="12" step="1" value="8">
+            </label>
+            <label class="agent-field">
+              <span>Temperature (0 ~ 2)</span>
+              <input id="agent-temperature" type="number" min="0" max="2" step="0.05" value="1">
+            </label>
+            <label class="agent-field">
+              <span>Top-p (0.05 ~ 1)</span>
+              <input id="agent-top-p" type="number" min="0.05" max="1" step="0.05" value="0.95">
+            </label>
+            <div class="agent-field" style="justify-content:flex-end">
+              <button class="button tiny" id="agent-reset-params" type="button">기본값 복원</button>
+            </div>
+          </div>
+          <div class="agent-param-checks">
+            <label><input type="checkbox" id="agent-attach-selected" checked><span>선택한 셀 맥락 첨부</span></label>
+            <label><input type="checkbox" id="agent-include-history" checked><span>이전 대화 맥락 포함</span></label>
+            <label><input type="checkbox" id="agent-allow-delete"><span>셀 삭제 도구 허용 (opt-in)</span></label>
+            <div class="agent-selection-summary" id="agent-selection-summary"></div>
+          </div>
+        </details>
+        <div class="agent-thread" id="agent-thread" aria-live="polite"></div>
+        <pre class="agent-progress" id="agent-progress" hidden></pre>
+      </div>
+      <form class="agent-form" id="agent-form">
+        <textarea id="agent-prompt" placeholder="Workspace 셀 생성, 코드·증명 작성/수정, 문서 정리를 지시하세요… (Ctrl+Enter 실행)"></textarea>
+        <div class="agent-form-foot">
+          <span>MCP 도구로 Workspace 하단에 안전하게 반영됩니다.</span>
+          <button class="button primary" id="agent-submit" type="submit">에이전트 실행 ↵</button>
+        </div>
+      </form>
+    </aside>
   </div>
-  <footer class="statusbar"><div><span class="status-dot"></span><span id="status">workspace를 선택하세요</span><span class="status-divider"></span><span id="workspace-mode">Research Workspace</span></div><div><span id="permission-label"></span><span id="status-cell-count">0 cells</span><span>IRADE</span></div></footer>
+  <footer class="statusbar">
+    <div class="statusbar-left">
+      <span class="status-pill" id="status-pill"><span class="status-dot"></span><span id="connection-label">연결 대기</span></span>
+      <span id="status">workspace를 선택하세요</span>
+      <span class="status-divider"></span>
+      <span id="workspace-mode">Research Workspace</span>
+    </div>
+    <div class="statusbar-right">
+      <span id="status-cell-kind">Overview</span>
+      <span class="status-divider"></span>
+      <span id="status-cursor">Ln 1, Col 1</span>
+      <span class="status-divider"></span>
+      <span id="permission-label"></span>
+      <span id="status-cell-count">0 cells</span>
+      <button type="button" class="statusbar-btn" data-action="bottom-panel" title="출력/활동 패널 열기·닫기">⬓ 출력</button>
+      <span class="statusbar-brand">IRADE</span>
+    </div>
+  </footer>
 </div>
-<aside class="agent-drawer" id="agent-drawer" aria-label="IRADE AI 에이전트" hidden>
-  <header class="agent-drawer-head">
-    <div class="agent-drawer-title">
-      <strong>✦ AI 에이전트</strong>
-      <span class="agent-pill" id="agent-active-api-badge">k-exaone_v2.5 · 서버 키</span>
-    </div>
-    <div class="agent-drawer-actions">
-      <button class="button tiny" id="agent-clear-history" type="button">새 대화</button>
-      <button class="icon-button" id="agent-close" type="button" aria-label="에이전트 패널 닫기">×</button>
-    </div>
-  </header>
-  <div class="agent-drawer-body">
-    <div class="agent-notice" id="agent-connection-notice" hidden></div>
-    <section class="agent-section" aria-label="API 및 인증">
-      <div class="agent-section-head">
-        <span>API · 인증 키</span>
-        <span class="agent-cred-badge server" id="agent-cred-badge">서버 기본 키 사용 중</span>
-      </div>
-      <label class="agent-field">
-        <span>모델 API 선택</span>
-        <select id="agent-api-select" aria-label="모델 API 선택"></select>
-      </label>
-      <div class="agent-key-row">
-        <input id="agent-api-key-input" type="password" autocomplete="off" spellcheck="false" placeholder="선택한 API용 개인 API 키 입력…">
-        <button class="button tiny" id="agent-api-key-apply" type="button">적용</button>
-        <button class="button tiny" id="agent-api-key-clear" type="button">초기화</button>
-      </div>
-    </section>
-    <section class="agent-section" aria-label="API별 사용량 한도">
-      <div class="agent-section-head">
-        <span id="agent-quota-scope">k-exaone_v2.5 · 서버 기본 키</span>
-        <div>
-          <span id="agent-quota-observed">미조회</span>
-          <button class="button tiny" id="agent-refresh-status" type="button" title="API별 초당·분당·일일 잔여/한도 새로고침">↻ 조회</button>
-        </div>
-      </div>
-      <div class="agent-quota-grid" id="agent-quota-grid"></div>
-      <p class="agent-quota-note" id="agent-quota-note"></p>
-    </section>
-    <details class="agent-section agent-params" id="agent-params-panel">
-      <summary>
-        <span>추론 강도 · 토큰 · 단계 파라미터</span>
-        <span class="agent-pill">세부 설정 ▾</span>
-      </summary>
-      <div class="agent-param-grid">
-        <label class="agent-field">
-          <span>추론 강도 (reasoning)</span>
-          <select id="agent-reasoning">
-            <option value="low">low (빠름)</option>
-            <option value="high">high (균형)</option>
-            <option value="max">max (깊은 추론)</option>
-          </select>
-        </label>
-        <label class="agent-field">
-          <span>응답 토큰 상한 (max_tokens)</span>
-          <input id="agent-max-tokens" type="number" min="512" max="32768" step="256" value="8192">
-        </label>
-        <label class="agent-field">
-          <span>최대 작업 단계 (max_steps)</span>
-          <input id="agent-max-steps" type="number" min="1" max="12" step="1" value="8">
-        </label>
-        <label class="agent-field">
-          <span>Temperature (0 ~ 2)</span>
-          <input id="agent-temperature" type="number" min="0" max="2" step="0.05" value="1">
-        </label>
-        <label class="agent-field">
-          <span>Top-p (0.05 ~ 1)</span>
-          <input id="agent-top-p" type="number" min="0.05" max="1" step="0.05" value="0.95">
-        </label>
-        <div class="agent-field" style="justify-content:flex-end">
-          <button class="button tiny" id="agent-reset-params" type="button">기본값 복원</button>
-        </div>
-      </div>
-      <div class="agent-param-checks">
-        <label><input type="checkbox" id="agent-attach-selected" checked><span>선택한 셀 맥락 첨부</span></label>
-        <label><input type="checkbox" id="agent-include-history" checked><span>이전 대화 맥락 포함</span></label>
-        <label><input type="checkbox" id="agent-allow-delete"><span>셀 삭제 도구 허용 (opt-in)</span></label>
-        <div class="agent-selection-summary" id="agent-selection-summary"></div>
-      </div>
-    </details>
-    <div class="agent-thread" id="agent-thread" aria-live="polite"></div>
-    <pre class="agent-progress" id="agent-progress" hidden></pre>
-  </div>
-  <form class="agent-form" id="agent-form">
-    <textarea id="agent-prompt" placeholder="Workspace 셀 생성, 코드·증명 작성/수정, 문서 정리를 지시하세요… (Ctrl+Enter 실행)"></textarea>
-    <div class="agent-form-foot">
-      <span>MCP 도구로 Workspace 하단에 안전하게 반영됩니다.</span>
-      <button class="button primary" id="agent-submit" type="submit">에이전트 실행 ↵</button>
-    </div>
-  </form>
-</aside>
 <dialog id="modal"><div class="modal-heading"><div><span class="eyebrow" id="modal-eyebrow">IRADE WORKSPACE</span><h2 id="modal-title"></h2></div><button class="icon-button" id="modal-close" aria-label="닫기">×</button></div><div id="modal-body"></div></dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 <script type="module" src="/irade-assets/studio/studio.js"></script>

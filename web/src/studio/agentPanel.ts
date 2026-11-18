@@ -302,6 +302,7 @@ export class AgentPanelController {
 
 	open(initialPrompt?: string): void {
 		this.drawer.hidden = false;
+		document.body.classList.add('agent-open');
 		this.toggleButton?.setAttribute('aria-expanded', 'true');
 		this.toggleButton?.classList.add('active');
 		if (initialPrompt !== undefined) {
@@ -316,6 +317,7 @@ export class AgentPanelController {
 
 	close(): void {
 		this.drawer.hidden = true;
+		document.body.classList.remove('agent-open');
 		this.toggleButton?.setAttribute('aria-expanded', 'false');
 		this.toggleButton?.classList.remove('active');
 	}

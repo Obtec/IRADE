@@ -27,6 +27,10 @@ let viewMode: 'overview' | 'notebook' = 'overview';
 let deletingCellId: string | undefined;
 let editingRemote = false;
 let inspectorTab = 'context';
+let bottomDockTab: 'output' | 'activity' = 'output';
+let bottomDockOpen = false;
+let bottomDockUserToggled = false;
+let lastOutputCellId: string | undefined;
 let loadGeneration = 0;
 let activePresenceCellId: string | undefined;
 let toastTimer: ReturnType<typeof setTimeout>;
@@ -84,8 +88,8 @@ for (const language of ['lean4', 'rocq']) {
 }
 monaco.editor.defineTheme('irade-dark', {
   base: 'vs-dark', inherit: true,
-  rules: [{ token: 'comment', foreground: '71717A', fontStyle: 'italic' }, { token: 'keyword', foreground: 'C4B5FD' }, { token: 'string', foreground: '6EE7B7' }, { token: 'number', foreground: 'FCD34D' }, { token: 'operator', foreground: 'A1A1AA' }],
-  colors: { 'editor.background': '#1B1B1F', 'editor.foreground': '#D4D4D8', 'editorLineNumber.foreground': '#52525B', 'editorLineNumber.activeForeground': '#A1A1AA', 'editorCursor.foreground': '#34D399', 'editor.selectionBackground': '#34D39928', 'editor.lineHighlightBackground': '#FFFFFF06', 'editorIndentGuide.background1': '#27272A', 'editorWidget.background': '#18181B', 'editorWidget.border': '#3F3F46', 'editorSuggestWidget.background': '#18181B', 'editorSuggestWidget.border': '#3F3F46', 'focusBorder': '#34D399', 'scrollbarSlider.background': '#52525B40' },
+  rules: [{ token: 'comment', foreground: '6A9955', fontStyle: 'italic' }, { token: 'keyword', foreground: 'C586C0' }, { token: 'string', foreground: 'CE9178' }, { token: 'number', foreground: 'B5CEA8' }, { token: 'operator', foreground: 'D4D4D4' }],
+  colors: { 'editor.background': '#1F1F1F', 'editor.foreground': '#CCCCCC', 'editorLineNumber.foreground': '#6E7681', 'editorLineNumber.activeForeground': '#CCCCCC', 'editorCursor.foreground': '#34D399', 'editor.selectionBackground': '#264F78', 'editor.lineHighlightBackground': '#FFFFFF08', 'editorIndentGuide.background1': '#2B2B2B', 'editorWidget.background': '#252526', 'editorWidget.border': '#3C3C3C', 'editorSuggestWidget.background': '#252526', 'editorSuggestWidget.border': '#3C3C3C', 'focusBorder': '#0078D4', 'scrollbarSlider.background': '#4E4E5240' },
 });
 monaco.editor.defineTheme('irade-light', {
   base: 'vs', inherit: true,
@@ -139,7 +143,9 @@ function report(error: unknown): void {
 }
 function log(message: string): void {
   activities.unshift({ message, time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) });
-  activities.splice(60); if (inspectorTab === 'activity') { renderInspector(); }
+  activities.splice(60);
+  if (inspectorTab === 'activity') { renderInspector(); }
+  renderBottomDock();
 }
 function showModal(title: string, html: string): void {
   $('#modal-title').textContent = title; $('#modal-body').innerHTML = html;
@@ -324,6 +330,7 @@ async function connect(id: number, name: string): Promise<void> {
     $('#connection-label').textContent = state === 'Saving' ? '동기화 중' : connected ? 'WORKSPACE LIVE SYNC' : '연결 중';
     $('#cell-save').textContent = state === 'Saving' ? '저장 중…' : connected ? 'Workspace 동기화됨' : '로컬 변경 유지';
     updatePermissionSummary();
+    syncWorkbenchChrome();
     for (const [cellId, ed] of cellEditors.entries()) {
       const item = cells.find(entry => entry.id === cellId);
       ed.updateOptions({ readOnly: item ? !item.canWrite : !client.canWrite });
@@ -391,6 +398,70 @@ async function connect(id: number, name: string): Promise<void> {
 function visibleCells(): Cell[] {
   return cells.filter(cell => filter === 'all' || cell.kind === filter || filter === 'proof' && ['lean','rocq'].includes(cell.kind) || filter === 'document' && ['markdown','html'].includes(cell.kind));
 }
+function syncWorkbenchChrome(): void {
+  const topbarWs = document.querySelector<HTMLElement>('#topbar-workspace');
+  if (topbarWs) { topbarWs.textContent = workspaceName; }
+  const activeCell = cells.find(cell => cell.id === selected);
+  const crumbEl = document.querySelector<HTMLElement>('#notebook-active-crumb');
+  if (crumbEl) {
+    crumbEl.textContent = activeCell ? `${cellTypes[activeCell.kind].short} · ${activeCell.title}` : '셀 목록';
+  }
+  const statusKind = document.querySelector<HTMLElement>('#status-cell-kind');
+  if (statusKind) {
+    statusKind.textContent = viewMode === 'overview' ? 'Overview' : activeCell ? cellTypes[activeCell.kind].short : 'Notebook';
+  }
+  const pill = document.querySelector<HTMLElement>('#status-pill');
+  if (pill) {
+    pill.classList.toggle('live', connected);
+    pill.classList.toggle('local', !connected && demo);
+  }
+  const tabSync = document.querySelector<HTMLElement>('#tabbar-sync-text');
+  if (tabSync) {
+    tabSync.textContent = connected ? 'LIVE SYNC' : demo ? 'LOCAL' : 'STANDBY';
+  }
+  const dock = document.querySelector<HTMLElement>('#bottom-dock');
+  if (dock) { dock.hidden = !bottomDockOpen; }
+  document.querySelector<HTMLElement>('#sidebar-toggle')?.classList.toggle('active', !document.body.classList.contains('sidebar-hidden'));
+  document.querySelector<HTMLElement>('#bottom-panel-toggle')?.classList.toggle('active', bottomDockOpen);
+  document.querySelector<HTMLElement>('#inspector-toggle')?.classList.toggle('active', !document.body.classList.contains('inspector-hidden'));
+}
+function renderBottomDock(): void {
+  const dock = document.querySelector<HTMLElement>('#bottom-dock');
+  if (!dock) { return; }
+  document.querySelectorAll<HTMLButtonElement>('[data-dock-tab]').forEach(btn => {
+    btn.classList.toggle('selected', btn.dataset.dockTab === bottomDockTab);
+  });
+  const outputPane = document.querySelector<HTMLElement>('#bottom-dock-output');
+  const activityPane = document.querySelector<HTMLElement>('#bottom-dock-activity');
+  if (outputPane) { outputPane.hidden = bottomDockTab !== 'output'; }
+  if (activityPane) { activityPane.hidden = bottomDockTab !== 'activity'; }
+
+  const targetId = selected && cellOutputs.has(selected) ? selected : lastOutputCellId;
+  const targetCell = targetId ? cells.find(item => item.id === targetId) : undefined;
+  const out = targetId ? cellOutputs.get(targetId) : undefined;
+  const targetEl = document.querySelector<HTMLElement>('#bottom-dock-target');
+  if (targetEl) {
+    targetEl.textContent = targetCell && out
+      ? `${cellTypes[targetCell.kind].short} · ${targetCell.title}`
+      : '실행 대기';
+  }
+  if (outputPane) {
+    if (!out || !targetCell) {
+      outputPane.innerHTML = '<div class="bottom-dock-empty">Lean 4 · Rocq · Python 셀에서 <kbd>Shift+Enter</kbd> 또는 <b>▶</b> 버튼을 누르면 실행 결과가 여기에 표시됩니다.</div>';
+    } else if (out.running) {
+      outputPane.innerHTML = `<div class="bottom-dock-status running">⟳ 실행 중… <span>${out.runtime === 'agora-vm' ? 'Agora VM' : 'Host Runner'}</span></div>${out.stdout ? `<pre class="bottom-dock-pre">${escape(out.stdout)}</pre>` : ''}`;
+    } else {
+      const badge = out.status === 'verified' ? '✓ Proof Verified' : out.ok ? '✓ Executed' : out.status === 'timeout' ? '⏱ Timeout' : `✕ Error (exit ${out.exitCode ?? '?'})`;
+      const combined = [out.stdout, out.stderr].filter(part => part && part.trim().length > 0).join('\n').trim() || '(출력 없음)';
+      outputPane.innerHTML = `<div class="bottom-dock-status ${out.ok ? 'ok' : 'err'}"><span>${badge}</span><small>${out.runtime === 'agora-vm' ? 'Agora VM' : 'Host Runner'} · ${out.durationMs}ms</small></div><pre class="bottom-dock-pre">${escape(combined)}</pre>`;
+    }
+  }
+  if (activityPane) {
+    activityPane.innerHTML = activities.length
+      ? activities.slice(0, 30).map(ev => `<div class="bottom-activity-row"><small>${ev.time}</small><span>${escape(ev.message)}</span></div>`).join('')
+      : '<div class="bottom-dock-empty">아직 기록된 workspace 활동이 없습니다.</div>';
+  }
+}
 function renderList(): void {
   $('#workspace-name').textContent = workspaceName;
   $('#cell-count').textContent = String(cells.length); $('#status-cell-count').textContent = `${cells.length} cells`;
@@ -405,6 +476,7 @@ function renderList(): void {
   $('#overview-tab').hidden = !overviewOpen;
   $('#overview-tab').classList.toggle('selected', viewMode === 'overview');
   $('#overview-tab').setAttribute('aria-selected', String(viewMode === 'overview'));
+  syncWorkbenchChrome();
 }
 function ensureModel(cell: Cell): monaco.editor.ITextModel {
   let model = models.get(cell.id);
@@ -457,6 +529,8 @@ function isExecutable(kind: CellKind): boolean {
   return kind === 'python' || kind === 'lean' || kind === 'rocq';
 }
 function renderCellOutput(id: string): void {
+  lastOutputCellId = id;
+  renderBottomDock();
   const card = document.querySelector<HTMLElement>(`[data-nb-cell="${CSS.escape(id)}"]`);
   if (!card) { return; }
   const container = card.querySelector<HTMLElement>(`[data-nb-output="${CSS.escape(id)}"]`);
@@ -485,6 +559,7 @@ function renderCellOutput(id: string): void {
     cellOutputs.delete(id);
     renderCellOutput(id);
     renderInspector();
+    renderBottomDock();
   });
 }
 async function executeOnHost(kind: CellKind, code: string): Promise<ExecutionOutput> {
@@ -800,8 +875,13 @@ function renderNotebook(): void {
         }
       });
       ed.onDidChangeCursorPosition(event => {
+        const pos = `Ln ${event.position.lineNumber}, Col ${event.position.column}`;
         const cursorEl = card!.querySelector(`[data-nb-cursor="${CSS.escape(cell.id)}"]`);
-        if (cursorEl) { cursorEl.textContent = `Ln ${event.position.lineNumber}, Col ${event.position.column}`; }
+        if (cursorEl) { cursorEl.textContent = pos; }
+        if (selected === cell.id) {
+          const statusCursor = document.querySelector<HTMLElement>('#status-cursor');
+          if (statusCursor) { statusCursor.textContent = pos; }
+        }
       });
       cellEditors.set(cell.id, ed);
 
@@ -897,14 +977,20 @@ function syncActiveCellCard(): void {
   document.querySelectorAll<HTMLElement>('[data-nb-cell]').forEach(el => {
     el.classList.toggle('active', el.dataset.nbCell === selected);
   });
+  syncWorkbenchChrome();
+  renderBottomDock();
 }
 function openNotebook(): void {
   viewMode = 'notebook';
   $('#overview').hidden = true;
   $('#cell-view').hidden = false;
+  if (!bottomDockUserToggled && window.innerWidth > 760) {
+    bottomDockOpen = true;
+  }
   renderNotebook();
   renderList();
   renderInspector();
+  renderBottomDock();
 }
 function selectCell(id: string, scrollBlock: ScrollLogicalPosition = 'center'): void {
   const cell = cells.find(cell => cell.id === id); if (!cell) { return; }
@@ -922,8 +1008,12 @@ function overview(): void {
   viewMode = 'overview';
   $('#overview').hidden = false;
   $('#cell-view').hidden = true;
+  if (!bottomDockUserToggled) {
+    bottomDockOpen = false;
+  }
   renderList();
   renderInspector();
+  renderBottomDock();
 }
 function renderInspector(): void {
   document.querySelectorAll('.inspector-tabs>button').forEach(button => button.classList.toggle('selected', button.getAttribute('data-action') === inspectorTab));
@@ -1107,9 +1197,11 @@ async function action(name: string): Promise<void> {
     else { $('#overview').hidden = true; $('#cell-view').hidden = false; renderNotebook(); renderList(); }
   }
   else if (name === 'search') { search(); }
-  else if (name === 'focus') { document.body.classList.toggle('focus'); }
+  else if (name === 'focus') { document.body.classList.toggle('focus'); syncWorkbenchChrome(); }
   else if (name === 'theme') { applyTheme(currentTheme() === 'light' ? 'dark' : 'light'); }
-  else if (name === 'inspector') { document.body.classList.toggle('inspector-hidden'); }
+  else if (name === 'sidebar') { document.body.classList.toggle('sidebar-hidden'); syncWorkbenchChrome(); }
+  else if (name === 'bottom-panel') { bottomDockUserToggled = true; bottomDockOpen = !bottomDockOpen; renderBottomDock(); syncWorkbenchChrome(); }
+  else if (name === 'inspector') { document.body.classList.toggle('inspector-hidden'); syncWorkbenchChrome(); }
   else if (name === 'delete') { await deleteCell(); }
   else if (name === 'export') { exportCell(); }
   else if (name === 'message') { message(); }
@@ -1128,6 +1220,23 @@ async function action(name: string): Promise<void> {
 }
 document.addEventListener('click', event => {
   const target = event.target as Element;
+  const dockTab = target.closest<HTMLButtonElement>('button[data-dock-tab]');
+  if (dockTab) {
+    bottomDockTab = dockTab.dataset.dockTab === 'activity' ? 'activity' : 'output';
+    renderBottomDock();
+    return;
+  }
+  if (target.closest('#bottom-dock-clear')) {
+    if (bottomDockTab === 'activity') {
+      activities.length = 0;
+      if (inspectorTab === 'activity') { renderInspector(); }
+    } else if (lastOutputCellId) {
+      cellOutputs.delete(lastOutputCellId);
+      renderCellOutput(lastOutputCellId);
+    }
+    renderBottomDock();
+    return;
+  }
   const quickAdd = target.closest<HTMLButtonElement>('button[data-quick-add]');
   if (quickAdd) { void addCell(quickAdd.dataset.quickAdd as CellKind).catch(report); return; }
   const actionEl = target.closest<HTMLElement>('[data-action]');

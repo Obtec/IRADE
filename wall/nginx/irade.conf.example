@@ -187,6 +187,18 @@ server {
     location = /ide { return 308 /irade/$is_args$args; }
     location /ide/ { return 308 /irade/$is_args$args; }
     location = /irade { return 308 /irade/$is_args$args; }
+    location ^~ /irade/api/auth/ {
+        set $spring_host irade-spring;
+        rewrite ^/irade/api/(.*)$ /api/$1 break;
+        proxy_hide_header Strict-Transport-Security;
+        proxy_ssl_name irade-spring;
+        proxy_pass https://$spring_host:8080;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Port $irade_public_port;
+    }
     location /irade/ {
         set $web_host irade-web;
         rewrite ^/irade/(.*)$ /$1 break;
