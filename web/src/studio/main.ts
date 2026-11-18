@@ -4,8 +4,24 @@ import 'monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution.js';
 import 'monaco-editor/esm/vs/basic-languages/html/html.contribution.js';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
-import { AgoraClient } from '../client.ts';
+import { AgoraClient, AgoraError } from '../client.ts';
 import { AgentPanelController } from './agentPanel.ts';
+import { DockArcadeController } from './dockGames.ts';
+import { PerfMonitorController } from './perfMonitor.ts';
+import {
+  AGENT_AVATAR_SVG,
+  CHAT_INITIAL_VISIBLE,
+  CHAT_LOAD_STEP,
+  appendAgentMessage,
+  avatarMonogram,
+  createStarterAgentDoc,
+  formatChatBodyHtml,
+  formatChatTime,
+  parseAgentMessages,
+  peerAvatarTone,
+  resolveChatAlignment,
+  type ChatViewerIdentity,
+} from './agentChat.ts';
 import { replacement } from '../document.ts';
 import { ResearchWorkspace, cellTypes, cellTitle, type Cell, type CellKind } from './workspace.ts';
 
@@ -23,18 +39,24 @@ let demo = false;
 let connected = false;
 let filter = 'all';
 let overviewOpen = true;
-let viewMode: 'overview' | 'notebook' = 'overview';
+let viewMode: 'overview' | 'notebook' | 'empty' = 'overview';
 let deletingCellId: string | undefined;
 let editingRemote = false;
 let inspectorTab = 'context';
-let bottomDockTab: 'output' | 'activity' = 'output';
+let rightPaneMode: 'agent' | 'inspector' = 'agent';
+let bottomDockTab: 'output' | 'activity' | 'games' = 'output';
 let bottomDockOpen = false;
 let bottomDockUserToggled = false;
+let dockArcade: DockArcadeController | undefined;
+let perfMonitor: PerfMonitorController | undefined;
+let dockHeightBeforeGames: string | null = null;
+let dockGamesTargetText = '스네이크 · 0점';
 let lastOutputCellId: string | undefined;
 let loadGeneration = 0;
 let activePresenceCellId: string | undefined;
 let toastTimer: ReturnType<typeof setTimeout>;
 interface ExecutionOutput {
+  execOrder?: number;
   running?: boolean;
   ok: boolean;
   exitCode: number | null;
@@ -46,12 +68,32 @@ interface ExecutionOutput {
 }
 const models = new Map<string, monaco.editor.ITextModel>();
 const cellEditors = new Map<string, monaco.editor.IStandaloneCodeEditor>();
+const manualCellHeights = new Map<string, number>();
 const previewCells = new Set<string>();
+const previewDocs = new WeakMap<HTMLIFrameElement, string>();
+const previewTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let previewRenderSeq = 0;
 const cellOutputs = new Map<string, ExecutionOutput>();
+const cellExecOrders = new Map<string, number>();
+let executionSeq = 0;
+const chatSessionKey = 'irade.chat.sid';
+const selfSessionId = sessionStorage.getItem(chatSessionKey) || (() => {
+  const sid = crypto.randomUUID().slice(0, 8);
+  sessionStorage.setItem(chatSessionKey, sid);
+  return sid;
+})();
+let selfProfile: { uid?: string; name: string } = { name: '연구자' };
+const livePeerCids = new Set<string>();
+const chatVisibleCounts = new Map<string, number>();
+const chatPendingAi = new Map<string, string>();
+const chatAiMode = new Map<string, boolean>();
+const chatDemoSpeaker = new Map<string, 'self' | 'peer'>();
+const chatLastSnapshot = new Map<string, { count: number; tailKey: string }>();
+const chatFeedActivePeers = new Map<string, number>();
 const activities: { message: string; time: string }[] = [];
 const modal = $<HTMLDialogElement>('#modal');
 const starters: Record<CellKind, string> = {
-  agent: '# 연구 대화\n\n## 사용자\n연구할 질문과 배경을 기록하세요.\n\n## 에이전트\n에이전트와 나눈 응답을 여기에 보관하세요.\n',
+  agent: createStarterAgentDoc(),
   lean: '-- 새로운 정리\n\ntheorem add_zero_identity (n : Nat) : n + 0 = n := by\n  rfl\n\n#check add_zero_identity\n',
   rocq: '(* 새로운 증명 *)\n\nTheorem add_zero_identity : forall n : nat, n + 0 = n.\nProof.\n  intros n.\n  induction n; simpl; auto.\nQed.\n',
   python: '# 새로운 실험\n\ndef square(n):\n    return n * n\n\nvalues = [square(n) for n in range(6)]\nprint("Squares:", values)\n',
@@ -82,7 +124,7 @@ const starters: Record<CellKind, string> = {
 for (const language of ['lean4', 'rocq']) {
   monaco.languages.register({ id: language });
   monaco.languages.setMonarchTokensProvider(language, {
-    keywords: language === 'lean4' ? ['theorem','lemma','def','example','by','rfl','simp','exact','intro','intros','apply','rw','induction','case','cases','import','namespace','end','structure','where','have','let','fun','forall','sorry'] : ['Theorem','Lemma','Definition','Proof','Qed','Defined','Admitted','Require','Import','forall','intros','reflexivity','simpl','auto','apply','rewrite','induction','destruct','exact'],
+    keywords: language === 'lean4' ? ['theorem', 'lemma', 'def', 'example', 'by', 'rfl', 'simp', 'exact', 'intro', 'intros', 'apply', 'rw', 'induction', 'case', 'cases', 'import', 'namespace', 'end', 'structure', 'where', 'have', 'let', 'fun', 'forall', 'sorry'] : ['Theorem', 'Lemma', 'Definition', 'Proof', 'Qed', 'Defined', 'Admitted', 'Require', 'Import', 'forall', 'intros', 'reflexivity', 'simpl', 'auto', 'apply', 'rewrite', 'induction', 'destruct', 'exact'],
     tokenizer: { root: [[/--.*$/, 'comment'], [/\(\*/, 'comment', '@comment'], [/"(?:[^"\\]|\\.)*"/, 'string'], [/\b\d+\b/, 'number'], [/[a-zA-Z_][\w']*/, { cases: { '@keywords': 'keyword', '@default': 'identifier' } }], [/[∀∃⊢→←↔λ:=+*<>]+/, 'operator']], comment: [[/[^(*]+/, 'comment'], [/\*\)/, 'comment', '@pop'], [/[(*]/, 'comment']] },
   });
 }
@@ -105,6 +147,8 @@ function applyTheme(next: 'dark' | 'light'): void {
   const toggle = document.querySelector<HTMLButtonElement>('#theme-toggle');
   if (toggle) { toggle.textContent = next === 'light' ? '☾' : '☀'; }
   for (const id of previewCells) { renderCellPreview(id); }
+  dockArcade?.syncUi();
+  perfMonitor?.syncUi();
 }
 applyTheme(localStorage.getItem(themeKey) === 'light' ? 'light' : 'dark');
 function notify(message: string, error = false): void {
@@ -147,11 +191,30 @@ function log(message: string): void {
   if (inspectorTab === 'activity') { renderInspector(); }
   renderBottomDock();
 }
-function showModal(title: string, html: string): void {
+function syncMonitorTriggerState(active: boolean): void {
+  const btn = document.querySelector<HTMLButtonElement>('#monitor-toggle');
+  if (!btn) { return; }
+  btn.classList.toggle('active', active);
+  btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+}
+function stopPerfMonitor(): void {
+  if (perfMonitor) {
+    perfMonitor.dispose();
+    perfMonitor = undefined;
+  }
+  syncMonitorTriggerState(false);
+}
+function showModal(title: string, html: string, wide = false): void {
+  stopPerfMonitor();
+  modal.classList.toggle('modal-wide', wide);
   $('#modal-title').textContent = title; $('#modal-body').innerHTML = html;
   if (!modal.open) { modal.showModal(); }
 }
 $('#modal-close').addEventListener('click', () => modal.close());
+modal.addEventListener('close', () => {
+  modal.classList.remove('modal-wide');
+  stopPerfMonitor();
+});
 modal.addEventListener('click', event => { if (event.target === modal) { const bounds = modal.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) { modal.close(); } } });
 async function api<T>(path: string, body?: object): Promise<T> {
   const response = await fetch(origin + path, { method: body ? 'POST' : 'GET', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), redirect: 'error', signal: AbortSignal.timeout(20000) });
@@ -160,6 +223,17 @@ async function api<T>(path: string, body?: object): Promise<T> {
   return result as T;
 }
 function updateAccount(): void { $('#account').textContent = token ? 'ORCID · 계정' : 'ORCID 로그인 ↗'; }
+async function refreshSelfProfile(): Promise<void> {
+  if (!token) {
+    selfProfile = { name: demo ? '나 (체험)' : '연구자' };
+    return;
+  }
+  const me = await api<{ userId: number; name: string; orcid: string; issuer: string }>('/api/irade/auth/me');
+  selfProfile = { uid: String(me.userId), name: me.name || me.orcid || '연구자' };
+  for (const cell of cells) {
+    if (cell.kind === 'agent') { renderAgentChat(cell.id, { scrollToBottom: false }); }
+  }
+}
 async function signIn(): Promise<boolean> {
   if (workspace?.pending) { await workspace.flush(); }
   const url = new URL('/irade/login', origin);
@@ -222,31 +296,53 @@ async function openWorkspace(): Promise<void> {
   $('#workspace-search').addEventListener('input', () => {
     const version = ++searchVersion; clearTimeout(searchTimer);
     const value = $<HTMLInputElement>('#workspace-search').value;
-    searchTimer = setTimeout(() => { void (async () => {
-      const result = await api<{ workspaceId: number; name: string; description?: string }[]>('/api/irade/workspaces?q=' + encodeURIComponent(value));
-      if (version === searchVersion && modal.open && $('#workspace-choices')) { available = result.map(convert); render(); }
-    })().catch(report); }, 250);
+    searchTimer = setTimeout(() => {
+      void (async () => {
+        const result = await api<{ workspaceId: number; name: string; description?: string }[]>('/api/irade/workspaces?q=' + encodeURIComponent(value));
+        if (version === searchVersion && modal.open && $('#workspace-choices')) { available = result.map(convert); render(); }
+      })().catch(report);
+    }, 250);
   });
-  $('#join-workspace').addEventListener('click', () => { void (async () => {
-    const value = await ask('공유 workspace 열기', 'Workspace ID 또는 공유 링크'); if (!value) { return; }
-    let id = Number(value.trim());
-    if (!id) { try { const url = new URL(value); if (url.protocol === 'agora:') { if (url.hostname !== location.hostname) { throw new Error(); } id = Number(url.username); } else { if (url.origin !== origin) { throw new Error(); } id = Number(url.searchParams.get('workspace')); } } catch { throw new Error('현재 Agora 서버의 workspace 링크를 입력하세요.'); } }
-    await connect(id, available.find(canvas => canvas.canvas_id === id)?.canvas_name || `Workspace ${id}`);
-  })().catch(report); });
-  $('#create-workspace').addEventListener('click', () => { void (async () => {
-    const name = await ask('새 연구 workspace', 'Workspace 이름'); if (!name?.trim()) { return; }
-    const result = convert(await api<{ workspaceId: number; name: string; description?: string }>('/api/irade/workspaces', { name: name.trim(), description: 'IRADE 연구 workspace' }));
-    await connect(result.canvas_id, result.canvas_name || name.trim());
-  })().catch(report); });
+  $('#join-workspace').addEventListener('click', () => {
+    void (async () => {
+      const value = await ask('공유 workspace 열기', 'Workspace ID 또는 공유 링크'); if (!value) { return; }
+      let id = Number(value.trim());
+      if (!id) { try { const url = new URL(value); if (url.protocol === 'agora:') { if (url.hostname !== location.hostname) { throw new Error(); } id = Number(url.username); } else { if (url.origin !== origin) { throw new Error(); } id = Number(url.searchParams.get('workspace')); } } catch { throw new Error('현재 Agora 서버의 workspace 링크를 입력하세요.'); } }
+      const matchedName = available.find(canvas => canvas.canvas_id === id)?.canvas_name || await resolveWorkspaceName(id);
+      await connect(id, matchedName);
+    })().catch(report);
+  });
+  $('#create-workspace').addEventListener('click', () => {
+    void (async () => {
+      const name = await ask('새 연구 workspace', 'Workspace 이름'); if (!name?.trim()) { return; }
+      const result = convert(await api<{ workspaceId: number; name: string; description?: string }>('/api/irade/workspaces', { name: name.trim(), description: 'IRADE 연구 workspace' }));
+      await connect(result.canvas_id, result.canvas_name || name.trim());
+    })().catch(report);
+  });
 }
 function clearModels(): void {
   activePresenceCellId = undefined;
   for (const ed of cellEditors.values()) { ed.setModel(null); ed.dispose(); }
   cellEditors.clear();
+  manualCellHeights.clear();
+  for (const t of previewTimers.values()) { clearTimeout(t); }
+  previewTimers.clear();
   previewCells.clear();
   cellOutputs.clear();
+  lastOutputCellId = undefined;
+  cellExecOrders.clear();
+  executionSeq = 0;
+  livePeerCids.clear();
+  chatVisibleCounts.clear();
+  chatPendingAi.clear();
+  chatAiMode.clear();
+  chatDemoSpeaker.clear();
+  chatLastSnapshot.clear();
+  chatFeedActivePeers.clear();
   for (const model of models.values()) { model.dispose(); }
   models.clear();
+  const notebookCells = document.querySelector<HTMLElement>('#notebook-cells');
+  if (notebookCells) { notebookCells.innerHTML = ''; }
   const peersEl = document.querySelector<HTMLElement>('#notebook-peers');
   if (peersEl) { peersEl.hidden = true; peersEl.textContent = ''; }
 }
@@ -311,9 +407,48 @@ function syncPresenceUI(): void {
     const editors = byCell.get(cellId) || [];
     container.innerHTML = editors.slice(0, 2).map(name => `<span class="nb-presence-chip"><span class="nb-presence-dot"></span>${escape(name)} 편집 중</span>`).join('');
   });
+  document.querySelectorAll<HTMLElement>('[data-chat-typing]').forEach(bar => {
+    const cellId = bar.dataset.chatTyping!;
+    const editors = byCell.get(cellId) || [];
+    const prevCount = chatFeedActivePeers.get(cellId) || 0;
+    chatFeedActivePeers.set(cellId, editors.length);
+    if (!editors.length) {
+      bar.hidden = true;
+      bar.textContent = '';
+    } else {
+      bar.hidden = false;
+      bar.innerHTML = `<span class="chat-typing-dots"><span></span><span></span><span></span></span><span>${escape(editors.slice(0, 2).join(', '))} 님이 입력 중…</span>`;
+      if (prevCount === 0) {
+        const feed = document.querySelector<HTMLElement>(`[data-chat-feed="${CSS.escape(cellId)}"]`);
+        if (feed) { scrollChatFeedToBottom(feed); }
+      }
+    }
+  });
   if (inspectorTab === 'context') { renderInspector(); }
 }
-async function connect(id: number, name: string): Promise<void> {
+async function resolveWorkspaceName(id: number): Promise<string> {
+  let cached: string | undefined;
+  try {
+    const saved = JSON.parse(sessionStorage.getItem('irade.research.lastWorkspace') || 'null') as { id?: number; name?: string } | null;
+    if (saved?.id === id && typeof saved.name === 'string' && saved.name.trim() && saved.name !== `Workspace ${id}`) {
+      cached = saved.name.trim();
+    }
+  } catch { /* ignore invalid cache */ }
+  if (token) {
+    try {
+      const item = await api<{ workspaceId: number; name?: string }>(`/api/irade/workspaces/${id}`);
+      if (item?.name?.trim()) { return item.name.trim(); }
+    } catch {
+      try {
+        const list = await api<{ workspaceId: number; name?: string }[]>('/api/irade/workspaces');
+        const matched = list.find(entry => entry.workspaceId === id);
+        if (matched?.name?.trim()) { return matched.name.trim(); }
+      } catch { /* fallback below */ }
+    }
+  }
+  return cached || `Workspace ${id}`;
+}
+async function connect(id: number, name: string, restoreView = false): Promise<void> {
   if (!Number.isSafeInteger(id) || id <= 0) { throw new Error('올바른 workspace ID를 입력하세요.'); }
   if (workspace?.pending) { await workspace.flush(); }
   const generation = ++loadGeneration;
@@ -338,7 +473,7 @@ async function connect(id: number, name: string): Promise<void> {
     syncPresenceUI();
     if (state === 'Connected' && current.pending) { void current.flush().catch(report); }
     agentPanel.onWorkspaceChanged();
-    if (!['Connected','Saving','Connecting','Reconnecting'].includes(state)) { report(new Error(state)); }
+    if (!['Connected', 'Saving', 'Connecting', 'Reconnecting'].includes(state)) { report(new Error(state)); }
   };
   current.onIdentityChange = () => {
     if (generation !== loadGeneration) { return; }
@@ -367,6 +502,19 @@ async function connect(id: number, name: string): Promise<void> {
     if (viewMode === 'notebook') { renderNotebook(); }
   };
   current.onText = cell => {
+    cells = current.cells;
+    if (cell.kind === 'agent') {
+      const parsed = parseAgentMessages(cell.text);
+      for (const msg of parsed.messages) {
+        if (msg.cid && msg.cid !== selfSessionId) { livePeerCids.add(msg.cid); }
+      }
+      renderAgentChat(cell.id, { scrollToBottom: true });
+      updateCellCardMeta(cell.id);
+      renderList();
+      if (selected === cell.id) { renderInspector(); }
+      log(`${cellTypes[cell.kind].short} 셀의 새 대화 메시지를 동기화했습니다.`);
+      return;
+    }
     const model = models.get(cell.id);
     if (model && model.getValue() !== cell.text) {
       editingRemote = true;
@@ -385,9 +533,15 @@ async function connect(id: number, name: string): Promise<void> {
     }
   };
   const url = new URL(location.href); url.searchParams.set('workspace', String(id)); history.replaceState(null, '', url);
-  openNotebook(); renderList();
+  if (token && !selfProfile.uid) { await refreshSelfProfile().catch(() => { }); }
+  const savedView = restoreView ? sessionStorage.getItem(`irade.research.view:${id}`) : null;
+  if (savedView === 'overview') { overview(); } else { openNotebook(); }
+  renderList();
   await current.load();
   if (generation !== loadGeneration) { return; }
+  for (const cell of cells) {
+    if (cell.kind === 'agent') { renderAgentChat(cell.id, { scrollToBottom: true }); }
+  }
   sessionStorage.setItem('irade.research.lastWorkspace', JSON.stringify({ id, name }));
   $('#workspace-subtitle').textContent = `Agora Canvas · #${id}`;
   $('#workspace-mode').textContent = 'Agora Canvas'; $('#sync-description').textContent = '각 셀은 Canvas 객체 ID·권한 ACL로 실시간 동기화';
@@ -396,7 +550,7 @@ async function connect(id: number, name: string): Promise<void> {
   log(`${name} Canvas workspace를 연결했습니다.`); notify('Agora Canvas 실시간 협업에 연결했습니다.');
 }
 function visibleCells(): Cell[] {
-  return cells.filter(cell => filter === 'all' || cell.kind === filter || filter === 'proof' && ['lean','rocq'].includes(cell.kind) || filter === 'document' && ['markdown','html'].includes(cell.kind));
+  return cells.filter(cell => filter === 'all' || cell.kind === filter || filter === 'proof' && ['lean', 'rocq'].includes(cell.kind) || filter === 'document' && ['markdown', 'html'].includes(cell.kind));
 }
 function syncWorkbenchChrome(): void {
   const topbarWs = document.querySelector<HTMLElement>('#topbar-workspace');
@@ -408,7 +562,13 @@ function syncWorkbenchChrome(): void {
   }
   const statusKind = document.querySelector<HTMLElement>('#status-cell-kind');
   if (statusKind) {
-    statusKind.textContent = viewMode === 'overview' ? 'Overview' : activeCell ? cellTypes[activeCell.kind].short : 'Notebook';
+    statusKind.textContent = viewMode === 'overview'
+      ? 'Overview'
+      : viewMode === 'empty'
+        ? 'Empty'
+        : activeCell
+          ? cellTypes[activeCell.kind].short
+          : 'Notebook';
   }
   const pill = document.querySelector<HTMLElement>('#status-pill');
   if (pill) {
@@ -421,9 +581,59 @@ function syncWorkbenchChrome(): void {
   }
   const dock = document.querySelector<HTMLElement>('#bottom-dock');
   if (dock) { dock.hidden = !bottomDockOpen; }
-  document.querySelector<HTMLElement>('#sidebar-toggle')?.classList.toggle('active', !document.body.classList.contains('sidebar-hidden'));
-  document.querySelector<HTMLElement>('#bottom-panel-toggle')?.classList.toggle('active', bottomDockOpen);
-  document.querySelector<HTMLElement>('#inspector-toggle')?.classList.toggle('active', !document.body.classList.contains('inspector-hidden'));
+  const resizerBottom = document.querySelector<HTMLElement>('#resizer-bottom');
+  if (resizerBottom) { resizerBottom.hidden = !bottomDockOpen; }
+  dockArcade?.setVisible(bottomDockOpen && bottomDockTab === 'games');
+  const setLayoutToggle = (selector: string, open: boolean): void => {
+    const btn = document.querySelector<HTMLElement>(selector);
+    if (!btn) { return; }
+    btn.classList.toggle('active', open);
+    btn.setAttribute('aria-pressed', open ? 'true' : 'false');
+  };
+  const sidebarOpen = !document.body.classList.contains('sidebar-hidden');
+  const rightOpen = document.body.classList.contains('agent-open') || !document.body.classList.contains('inspector-hidden');
+  setLayoutToggle('#sidebar-toggle', sidebarOpen);
+  setLayoutToggle('#bottom-panel-toggle', bottomDockOpen);
+  setLayoutToggle('#inspector-toggle', rightOpen);
+}
+function ensureDockArcade(): DockArcadeController | undefined {
+  if (dockArcade) { return dockArcade; }
+  const pane = document.querySelector<HTMLElement>('#bottom-dock-games');
+  if (!pane) { return undefined; }
+  dockArcade = new DockArcadeController(
+    pane,
+    label => {
+      dockGamesTargetText = label;
+      const targetEl = document.querySelector<HTMLElement>('#bottom-dock-target');
+      if (targetEl && bottomDockTab === 'games') { targetEl.textContent = label; }
+    },
+    expanded => {
+      document.documentElement.style.setProperty('--bottom-dock-height', expanded ? '430px' : '304px');
+    },
+  );
+  return dockArcade;
+}
+function switchBottomDockTab(nextTab: 'output' | 'activity' | 'games'): void {
+  const rootStyle = document.documentElement.style;
+  if (nextTab === 'games' && bottomDockTab !== 'games') {
+    dockHeightBeforeGames = rootStyle.getPropertyValue('--bottom-dock-height') || '';
+    const curHeight = document.querySelector<HTMLElement>('#bottom-dock')?.getBoundingClientRect().height || 176;
+    if (curHeight < 290) {
+      rootStyle.setProperty('--bottom-dock-height', '304px');
+    }
+  } else if (nextTab !== 'games' && bottomDockTab === 'games' && dockHeightBeforeGames !== null) {
+    if (dockHeightBeforeGames) {
+      rootStyle.setProperty('--bottom-dock-height', dockHeightBeforeGames);
+    } else {
+      rootStyle.removeProperty('--bottom-dock-height');
+    }
+    dockHeightBeforeGames = null;
+  }
+  bottomDockTab = nextTab;
+  bottomDockOpen = true;
+  bottomDockUserToggled = true;
+  syncWorkbenchChrome();
+  renderBottomDock();
 }
 function renderBottomDock(): void {
   const dock = document.querySelector<HTMLElement>('#bottom-dock');
@@ -433,27 +643,43 @@ function renderBottomDock(): void {
   });
   const outputPane = document.querySelector<HTMLElement>('#bottom-dock-output');
   const activityPane = document.querySelector<HTMLElement>('#bottom-dock-activity');
+  const gamesPane = document.querySelector<HTMLElement>('#bottom-dock-games');
   if (outputPane) { outputPane.hidden = bottomDockTab !== 'output'; }
   if (activityPane) { activityPane.hidden = bottomDockTab !== 'activity'; }
+  if (gamesPane) { gamesPane.hidden = bottomDockTab !== 'games'; }
+
+  const arcade = bottomDockTab === 'games' ? ensureDockArcade() : dockArcade;
+  arcade?.setVisible(bottomDockOpen && bottomDockTab === 'games');
+
+  const clearBtn = document.querySelector<HTMLButtonElement>('#bottom-dock-clear');
+  if (clearBtn) {
+    clearBtn.textContent = bottomDockTab === 'games' ? '새 게임' : '지우기';
+  }
 
   const targetId = selected && cellOutputs.has(selected) ? selected : lastOutputCellId;
   const targetCell = targetId ? cells.find(item => item.id === targetId) : undefined;
   const out = targetId ? cellOutputs.get(targetId) : undefined;
   const targetEl = document.querySelector<HTMLElement>('#bottom-dock-target');
   if (targetEl) {
-    targetEl.textContent = targetCell && out
-      ? `${cellTypes[targetCell.kind].short} · ${targetCell.title}`
-      : '실행 대기';
+    if (bottomDockTab === 'games') {
+      targetEl.textContent = dockGamesTargetText;
+    } else {
+      const orderPrefix = out?.execOrder ? `#${out.execOrder} · ` : '';
+      targetEl.textContent = targetCell && out
+        ? `${orderPrefix}${cellTypes[targetCell.kind].short} · ${targetCell.title}`
+        : '실행 대기';
+    }
   }
   if (outputPane) {
     if (!out || !targetCell) {
-      outputPane.innerHTML = '<div class="bottom-dock-empty">Lean 4 · Rocq · Python 셀에서 <kbd>Shift+Enter</kbd> 또는 <b>▶</b> 버튼을 누르면 실행 결과가 여기에 표시됩니다.</div>';
+      outputPane.innerHTML = '<div class="bottom-dock-empty">Lean 4 · Rocq · Python 셀에서 <kbd>Shift+Enter</kbd> 또는 <b>▶</b> 버튼을 누르면 실행 결과가 여기에 표시됩니다. <button type="button" class="text-button" data-open-dock-games>🎮 미니게임(스네이크·테트리스) 열기 →</button></div>';
     } else if (out.running) {
-      outputPane.innerHTML = `<div class="bottom-dock-status running">⟳ 실행 중… <span>${out.runtime === 'agora-vm' ? 'Agora VM' : 'Host Runner'}</span></div>${out.stdout ? `<pre class="bottom-dock-pre">${escape(out.stdout)}</pre>` : ''}`;
+      outputPane.innerHTML = `<div class="bottom-dock-status running">[*] 실행 중… <span>${out.runtime === 'agora-vm' ? 'Agora VM' : 'Host Runner'}</span></div>${out.stdout ? `<pre class="bottom-dock-pre">${escape(out.stdout)}</pre>` : ''}`;
     } else {
       const badge = out.status === 'verified' ? '✓ Proof Verified' : out.ok ? '✓ Executed' : out.status === 'timeout' ? '⏱ Timeout' : `✕ Error (exit ${out.exitCode ?? '?'})`;
       const combined = [out.stdout, out.stderr].filter(part => part && part.trim().length > 0).join('\n').trim() || '(출력 없음)';
-      outputPane.innerHTML = `<div class="bottom-dock-status ${out.ok ? 'ok' : 'err'}"><span>${badge}</span><small>${out.runtime === 'agora-vm' ? 'Agora VM' : 'Host Runner'} · ${out.durationMs}ms</small></div><pre class="bottom-dock-pre">${escape(combined)}</pre>`;
+      const seqLabel = out.execOrder ? `실행 #${out.execOrder} · ` : '';
+      outputPane.innerHTML = `<div class="bottom-dock-status ${out.ok ? 'ok' : 'err'}"><span>${seqLabel}${badge}</span><small>${out.runtime === 'agora-vm' ? 'Agora VM' : 'Host Runner'} · ${out.durationMs}ms</small></div><pre class="bottom-dock-pre">${escape(combined)}</pre>`;
     }
   }
   if (activityPane) {
@@ -470,7 +696,7 @@ function renderList(): void {
   $('#cell-list').innerHTML = visible.map(cell => `<button class="cell-list-item ${cell.id === selected ? 'selected' : ''}" data-cell="${escape(cell.id)}"><span class="mini-type ${cellTypes[cell.kind].color}">${cellTypes[cell.kind].icon}</span><span><strong>${escape(cell.title)}</strong><small>${cell.locked ? '🔒 ' : ''}${cellTypes[cell.kind].short} · ${String(cells.indexOf(cell) + 1).padStart(2, '0')} · ${escape(permissionSummary(cell))}</small></span></button>`).join('') || `<p class="empty-list">${workspace || demo ? '아직 셀이 없습니다.<br>새 셀로 연구를 시작하세요.' : '대화, 증명, 코드, 문서.<br>연구의 맥락이 여기에 모입니다.'}</p>`;
   const hasWorkspaceTab = Boolean(workspace || demo);
   $('#cell-tabs').innerHTML = hasWorkspaceTab
-    ? `<button class="tab ${viewMode === 'notebook' ? 'selected' : ''}" role="tab" aria-selected="${viewMode === 'notebook'}" data-action="notebook"><span class="mint">▤</span><span>${escape(workspaceName)}</span></button>`
+    ? `<button class="tab ${viewMode === 'notebook' ? 'selected' : ''}" role="tab" aria-selected="${viewMode === 'notebook'}" data-action="notebook"><span class="mint">▤</span><span>${escape(workspaceName)}</span><span class="tab-close" data-action="close-workspace" role="button" aria-label="Workspace 닫기" title="Workspace 연결 닫기">×</span></button>`
     : '';
   document.querySelectorAll<HTMLButtonElement>('[data-cell]').forEach(button => button.addEventListener('click', () => selectCell(button.dataset.cell!)));
   $('#overview-tab').hidden = !overviewOpen;
@@ -489,7 +715,7 @@ function ensureModel(cell: Cell): monaco.editor.ITextModel {
         const text = model!.getValue();
         if (workspace) { workspace.edit(cell.id, text); } else { cell.text = text; cell.title = cellTitle(cell.kind, text); persistScratch(); }
         updateCellCardMeta(cell.id); renderList();
-        if (previewCells.has(cell.id)) { renderCellPreview(cell.id); }
+        if (previewCells.has(cell.id)) { scheduleCellPreview(cell.id); }
       } catch (error) { report(error); }
     });
   }
@@ -524,12 +750,326 @@ function updateCellCardMeta(id: string): void {
   if (upBtn) { upBtn.disabled = idx <= 0 || (workspace ? !cell.canWrite : false); }
   const downBtn = card.querySelector<HTMLButtonElement>(`[data-cell-move-down="${CSS.escape(id)}"]`);
   if (downBtn) { downBtn.disabled = idx < 0 || idx >= cells.length - 1 || (workspace ? !cell.canWrite : false); }
+  if (cell.kind === 'agent') {
+    syncAgentComposerAccess(card, cell);
+  }
+  syncCellExecBadge(id);
+  const canAddBelow = workspace ? workspace.client.canWrite : true;
+  card.querySelectorAll<HTMLButtonElement>('[data-insert-kind]').forEach(btn => {
+    btn.disabled = !canAddBelow;
+  });
+}
+
+function syncCellExecBadge(id: string): void {
+  const card = document.querySelector<HTMLElement>(`[data-nb-cell="${CSS.escape(id)}"]`);
+  const badge = card?.querySelector<HTMLElement>(`[data-exec-order="${CSS.escape(id)}"]`);
+  if (!badge) { return; }
+  const out = cellOutputs.get(id);
+  const order = cellExecOrders.get(id) ?? out?.execOrder;
+  badge.classList.remove('idle', 'running', 'done');
+  if (out?.running) {
+    badge.classList.add('running');
+    badge.textContent = '[*]';
+    badge.title = '실행 중…';
+  } else if (typeof order === 'number' && order > 0) {
+    badge.classList.add('done');
+    badge.textContent = `실행 #${order}`;
+    badge.title = `${order}번째로 실행됨`;
+  } else {
+    badge.classList.add('idle');
+    badge.textContent = '[ · ]';
+    badge.title = '아직 실행되지 않음';
+  }
+}
+
+function viewerIdentity(): ChatViewerIdentity {
+  return { uid: selfProfile.uid, cid: selfSessionId, name: selfProfile.name };
+}
+
+function scrollChatFeedToBottom(feed: HTMLElement): void {
+  feed.dataset.suppressAutoLoad = '1';
+  feed.scrollTop = feed.scrollHeight;
+  const assignedAt = feed.scrollTop;
+  requestAnimationFrame(() => {
+    const userScrolledAway = Math.abs(feed.scrollTop - assignedAt) >= 16;
+    if (!userScrolledAway) {
+      feed.scrollTop = feed.scrollHeight;
+    }
+    delete feed.dataset.suppressAutoLoad;
+    if (userScrolledAway && feed.scrollTop <= 24) {
+      const cellId = feed.dataset.chatFeed;
+      if (cellId) { loadOlderAgentMessages(cellId); }
+    }
+  });
+}
+
+function applyChatFeedHeight(card: HTMLElement, cellId: string): void {
+  const feed = card.querySelector<HTMLElement>(`[data-chat-feed="${CSS.escape(cellId)}"]`);
+  if (!feed) { return; }
+  const manual = manualCellHeights.get(cellId);
+  if (manual) {
+    feed.style.height = `${manual}px`;
+    feed.style.maxHeight = `${manual}px`;
+  } else {
+    feed.style.removeProperty('height');
+    feed.style.removeProperty('max-height');
+  }
+}
+
+function syncAgentComposerAccess(card: HTMLElement, cell: Cell): void {
+  const canWrite = workspace ? cell.canWrite : !cell.locked;
+  const aiBusy = chatPendingAi.has(cell.id);
+  const input = card.querySelector<HTMLTextAreaElement>(`[data-chat-input="${CSS.escape(cell.id)}"]`);
+  const sendBtn = card.querySelector<HTMLButtonElement>(`[data-chat-send="${CSS.escape(cell.id)}"]`);
+  const sendOnlyBtn = card.querySelector<HTMLButtonElement>(`[data-chat-send-only="${CSS.escape(cell.id)}"]`);
+  const aiToggle = card.querySelector<HTMLInputElement>(`[data-chat-ai-toggle="${CSS.escape(cell.id)}"]`);
+  const collabHint = card.querySelector<HTMLElement>('.chat-collab-hint');
+  if (collabHint) {
+    collabHint.textContent = connected ? '공동 참여자 · 실시간 입력 동기화' : '로컬 대화 체험 모드';
+  }
+  if (input) {
+    input.disabled = !canWrite;
+    input.placeholder = !canWrite
+      ? '이 대화 셀은 잠겨 있거나 읽기 전용입니다.'
+      : 'AI 에이전트 또는 공동 연구자에게 메시지를 입력하세요… (Enter 전송, Shift+Enter 줄바꿈)';
+  }
+  if (sendBtn) {
+    sendBtn.disabled = !canWrite || aiBusy;
+    sendBtn.textContent = aiBusy ? 'AI 생성 중…' : '전송 ↵';
+  }
+  if (sendOnlyBtn) {
+    sendOnlyBtn.disabled = !canWrite;
+  }
+  if (aiToggle) {
+    aiToggle.disabled = !canWrite;
+    const enabled = chatAiMode.get(cell.id) ?? connected;
+    aiToggle.checked = enabled;
+  }
+}
+
+function loadOlderAgentMessages(cellId: string): void {
+  const cell = cells.find(c => c.id === cellId && c.kind === 'agent');
+  const card = document.querySelector<HTMLElement>(`[data-nb-cell="${CSS.escape(cellId)}"]`);
+  const feed = card?.querySelector<HTMLElement>(`[data-chat-feed="${CSS.escape(cellId)}"]`);
+  if (!cell || !feed) { return; }
+  const { messages } = parseAgentMessages(cell.text);
+  const curLimit = chatVisibleCounts.get(cellId) ?? CHAT_INITIAL_VISIBLE;
+  if (curLimit >= messages.length) { return; }
+  const prevScrollHeight = feed.scrollHeight;
+  const prevScrollTop = feed.scrollTop;
+  chatVisibleCounts.set(cellId, Math.min(messages.length, curLimit + CHAT_LOAD_STEP));
+  renderAgentChat(cellId, {
+    scrollToBottom: false,
+    preserveFrom: { scrollHeight: prevScrollHeight, scrollTop: prevScrollTop },
+  });
+}
+
+function renderAgentChat(
+  cellId: string,
+  opts?: { scrollToBottom?: boolean; preserveFrom?: { scrollHeight: number; scrollTop: number } },
+): void {
+  const cell = cells.find(c => c.id === cellId && c.kind === 'agent');
+  const card = document.querySelector<HTMLElement>(`[data-nb-cell="${CSS.escape(cellId)}"]`);
+  const feed = card?.querySelector<HTMLElement>(`[data-chat-feed="${CSS.escape(cellId)}"]`);
+  if (!cell || !card || !feed) { return; }
+
+  const { messages } = parseAgentMessages(cell.text);
+  const viewer = viewerIdentity();
+  for (const msg of messages) {
+    if (msg.cid && msg.cid !== selfSessionId) { livePeerCids.add(msg.cid); }
+  }
+
+  const limit = chatVisibleCounts.get(cellId) ?? CHAT_INITIAL_VISIBLE;
+  const shownStart = Math.max(0, messages.length - limit);
+  const shown = messages.slice(shownStart);
+  const remaining = shownStart;
+
+  const loadMoreHtml = remaining > 0
+    ? `<div class="chat-load-more-wrap"><button type="button" class="chat-load-more" data-chat-load-more="${escape(cellId)}">↑ 이전 대화 ${remaining}개 중 ${Math.min(CHAT_LOAD_STEP, remaining)}개 더 불러오기</button></div>`
+    : '';
+
+  const rowsHtml = shown.length
+    ? shown.map(msg => {
+      const align = resolveChatAlignment(msg, viewer, livePeerCids);
+      const timeText = formatChatTime(msg.ts);
+      const displayName = align === 'assistant' ? (msg.author || 'IRADE AI') : (msg.author || (align === 'peer' ? '상대방' : '나'));
+      const avatarHtml = align === 'assistant'
+        ? `<div class="chat-avatar chat-avatar-agent" title="IRADE AI 에이전트">${AGENT_AVATAR_SVG}</div>`
+        : align === 'self'
+          ? `<div class="chat-avatar chat-avatar-self" title="${escape(displayName)}">${escape(avatarMonogram(displayName))}</div>`
+          : `<div class="chat-avatar chat-avatar-peer ${peerAvatarTone(msg.uid || displayName)}" title="${escape(displayName)}">${escape(avatarMonogram(displayName))}</div>`;
+      const roleTag = align === 'assistant'
+        ? `<span class="chat-role-badge ai">${escape(msg.model || 'AI')}</span>`
+        : align === 'peer'
+          ? '<span class="chat-role-badge peer">참여자</span>'
+          : align === 'self'
+            ? '<span class="chat-role-badge self">나</span>'
+            : '<span class="chat-role-badge">안내</span>';
+      return `<div class="chat-row is-${align}" data-chat-msg-id="${escape(msg.id)}">${align === 'self' ? '' : avatarHtml}<div class="chat-bubble-col"><div class="chat-bubble-meta"><span class="chat-author">${escape(displayName)}</span>${roleTag}${timeText ? `<span class="chat-time">${escape(timeText)}</span>` : ''}</div><div class="chat-bubble-card">${formatChatBodyHtml(msg.body)}</div></div>${align === 'self' ? avatarHtml : ''}</div>`;
+    }).join('')
+    : '<div class="chat-empty-state">아직 대화가 없습니다. 아래 입력창에서 질문하거나 참여자와 대화를 시작해 보세요.</div>';
+
+  const pendingProgress = chatPendingAi.get(cellId);
+  const typingBubbleHtml = pendingProgress !== undefined
+    ? `<div class="chat-row is-assistant is-typing"><div class="chat-avatar chat-avatar-agent" title="IRADE AI 에이전트">${AGENT_AVATAR_SVG}</div><div class="chat-bubble-col"><div class="chat-bubble-meta"><span class="chat-author">IRADE AI</span><span class="chat-role-badge ai">응답 생성 중</span></div><div class="chat-bubble-card"><div class="chat-typing-dots"><span></span><span></span><span></span></div>${pendingProgress ? `<div class="chat-progress-note">${escape(pendingProgress)}</div>` : ''}</div></div></div>`
+    : '';
+
+  feed.innerHTML = `${loadMoreHtml}${rowsHtml}${typingBubbleHtml}`;
+
+  feed.querySelector<HTMLButtonElement>(`[data-chat-load-more="${CSS.escape(cellId)}"]`)?.addEventListener('click', e => {
+    e.stopPropagation();
+    loadOlderAgentMessages(cellId);
+  });
+
+  const speakerSlot = card.querySelector<HTMLElement>(`[data-chat-speaker-slot="${CSS.escape(cellId)}"]`);
+  if (speakerSlot) {
+    if (connected) {
+      speakerSlot.innerHTML = `<span class="chat-identity-chip"><b>${escape(selfProfile.name)}</b> (나) · 상대방 입력 가능</span>`;
+    } else {
+      const currentSpeaker = chatDemoSpeaker.get(cellId) || 'self';
+      speakerSlot.innerHTML = `<label class="chat-speaker-picker">작성자 <select data-chat-speaker="${escape(cellId)}"><option value="self" ${currentSpeaker === 'self' ? 'selected' : ''}>나</option><option value="peer" ${currentSpeaker === 'peer' ? 'selected' : ''}>상대방 (참여자)</option></select></label>`;
+      speakerSlot.querySelector<HTMLSelectElement>(`[data-chat-speaker="${CSS.escape(cellId)}"]`)?.addEventListener('change', e => {
+        const val = (e.currentTarget as HTMLSelectElement).value === 'peer' ? 'peer' : 'self';
+        chatDemoSpeaker.set(cellId, val);
+      });
+    }
+  }
+
+  const modelEl = card.querySelector<HTMLElement>(`[data-chat-model="${CSS.escape(cellId)}"]`);
+  if (modelEl) { modelEl.textContent = agentPanel.getActiveApiLabel(); }
+
+  const cursorEl = card.querySelector<HTMLElement>(`[data-nb-cursor="${CSS.escape(cellId)}"]`);
+  if (cursorEl) {
+    cursorEl.textContent = remaining > 0 ? `대화 ${messages.length}개 (최근 ${shown.length}개)` : `대화 ${messages.length}개`;
+  }
+
+  const tailMsg = messages[messages.length - 1];
+  chatLastSnapshot.set(cellId, {
+    count: messages.length,
+    tailKey: tailMsg ? `${tailMsg.id}:${tailMsg.body.length}:${pendingProgress ? 1 : 0}` : (pendingProgress ? 'pending' : ''),
+  });
+
+  applyChatFeedHeight(card, cellId);
+  syncAgentComposerAccess(card, cell);
+
+  if (opts?.preserveFrom) {
+    feed.dataset.suppressAutoLoad = '1';
+    const delta = feed.scrollHeight - opts.preserveFrom.scrollHeight;
+    feed.scrollTop = Math.max(0, opts.preserveFrom.scrollTop + delta);
+    requestAnimationFrame(() => { delete feed.dataset.suppressAutoLoad; });
+  } else if (opts?.scrollToBottom) {
+    scrollChatFeedToBottom(feed);
+  }
+}
+
+function commitAgentCellText(cellId: string, nextText: string): void {
+  const cell = cells.find(c => c.id === cellId && c.kind === 'agent');
+  if (!cell) { return; }
+  if (workspace) {
+    workspace.edit(cellId, nextText);
+    cells = workspace.cells;
+    void workspace.flush().catch(report);
+  } else {
+    cell.text = nextText;
+    cell.title = cellTitle(cell.kind, nextText);
+    persistScratch();
+  }
+  updateCellCardMeta(cellId);
+  renderList();
+  if (selected === cellId) { renderInspector(); }
+}
+
+async function submitAgentChatMessage(cellId: string, forceNoAi = false): Promise<void> {
+  const cell = cells.find(c => c.id === cellId && c.kind === 'agent');
+  const card = document.querySelector<HTMLElement>(`[data-nb-cell="${CSS.escape(cellId)}"]`);
+  const input = card?.querySelector<HTMLTextAreaElement>(`[data-chat-input="${CSS.escape(cellId)}"]`);
+  if (!cell || !card || !input) { return; }
+
+  const canWrite = workspace ? cell.canWrite : !cell.locked;
+  if (!canWrite) {
+    notify(errorLabels[cell.locked ? 'ITEM_LOCKED' : 'ITEM_WRITE_DENIED'], true);
+    return;
+  }
+
+  const text = input.value.trim();
+  if (!text) { return; }
+
+  const prevMessages = parseAgentMessages(cell.text).messages;
+  const history = prevMessages
+    .filter((entry): entry is typeof entry & { role: 'user' | 'assistant' } => entry.role === 'user' || entry.role === 'assistant')
+    .slice(-12)
+    .map(entry => ({ role: entry.role, content: entry.body.slice(0, 8000) }));
+
+  const isDemoPeer = !connected && chatDemoSpeaker.get(cellId) === 'peer';
+  const msgEntry = {
+    role: 'user' as const,
+    uid: connected ? selfProfile.uid : (isDemoPeer ? 'peer' : 'self'),
+    cid: selfSessionId,
+    author: connected ? selfProfile.name : (isDemoPeer ? '상대방' : (selfProfile.name || '나')),
+    ts: Date.now(),
+    body: text,
+  };
+
+  input.value = '';
+  const updatedText = appendAgentMessage(cell.text, msgEntry);
+  commitAgentCellText(cellId, updatedText);
+  renderAgentChat(cellId, { scrollToBottom: true });
+
+  const aiEnabled = !forceNoAi && (chatAiMode.get(cellId) ?? connected);
+  if (!aiEnabled) { return; }
+
+  if (!workspace || !connected) {
+    notify('AI 자동 응답은 Workspace에 연결한 뒤 사용할 수 있습니다.');
+    return;
+  }
+  if (chatPendingAi.has(cellId)) {
+    notify('이 대화에서 AI 에이전트가 응답을 생성 중입니다.');
+    return;
+  }
+
+  chatPendingAi.set(cellId, '에이전트에게 요청을 전송했습니다…');
+  renderAgentChat(cellId, { scrollToBottom: true });
+  try {
+    const res = await agentPanel.runCellPrompt(cellId, text, history, chunk => {
+      const prev = chatPendingAi.get(cellId) || '';
+      const next = (prev ? `${prev}\n` : '') + chunk.trimEnd();
+      chatPendingAi.set(cellId, next.length > 400 ? next.slice(-400) : next);
+      renderAgentChat(cellId, { scrollToBottom: true });
+    });
+    chatPendingAi.delete(cellId);
+    const latestCell = cells.find(c => c.id === cellId) || cell;
+    const withAnswer = appendAgentMessage(latestCell.text, {
+      role: 'assistant',
+      uid: 'irade-agent',
+      author: 'IRADE AI',
+      model: res.model || res.api,
+      limited: res.limited,
+      ts: Date.now(),
+      body: res.answer,
+    });
+    commitAgentCellText(cellId, withAnswer);
+    renderAgentChat(cellId, { scrollToBottom: true });
+  } catch (error) {
+    chatPendingAi.delete(cellId);
+    const errMsg = error instanceof Error ? error.message : String(error);
+    notify(errMsg, true);
+    const latestCell = cells.find(c => c.id === cellId) || cell;
+    const withNotice = appendAgentMessage(latestCell.text, {
+      role: 'system',
+      author: '시스템 안내',
+      ts: Date.now(),
+      body: `AI 응답 생성 중 오류가 발생했습니다: ${errMsg}`,
+    });
+    commitAgentCellText(cellId, withNotice);
+    renderAgentChat(cellId, { scrollToBottom: true });
+  }
 }
 function isExecutable(kind: CellKind): boolean {
   return kind === 'python' || kind === 'lean' || kind === 'rocq';
 }
 function renderCellOutput(id: string): void {
   lastOutputCellId = id;
+  syncCellExecBadge(id);
   renderBottomDock();
   const card = document.querySelector<HTMLElement>(`[data-nb-cell="${CSS.escape(id)}"]`);
   if (!card) { return; }
@@ -547,16 +1087,18 @@ function renderCellOutput(id: string): void {
   if (out.running) {
     const streamPre = out.stdout ? `<pre class="nb-output-pre">${escape(out.stdout)}</pre>` : '';
     const envNote = out.runtime === 'agora-vm' ? '<span>Agora VM · Broker/C++ 스트리밍…</span>' : '';
-    container.innerHTML = `<div class="nb-output-head"><span class="nb-output-badge">⟳ 실행 중…</span>${envNote}</div>${streamPre}`;
+    container.innerHTML = `<div class="nb-output-head"><span class="nb-output-badge"><span class="nb-output-order">[*]</span> ⟳ 실행 중…</span>${envNote}</div>${streamPre}`;
     return;
   }
   const badge = out.status === 'verified' ? '✓ Proof Verified' : out.ok ? '✓ Executed' : out.status === 'timeout' ? '⏱ Timeout' : `✕ Error (exit ${out.exitCode ?? '?'})`;
   const envLabel = out.runtime === 'agora-vm' ? 'Agora VM · ' : out.runtime === 'host' ? 'Host Runner · ' : '';
   const combined = [out.stdout, out.stderr].filter(part => part && part.trim().length > 0).join('\n').trim() || '(출력 없음)';
-  container.innerHTML = `<div class="nb-output-head"><span class="nb-output-badge ${out.ok ? 'ok' : 'err'}">${badge}</span><span>${envLabel}${out.durationMs}ms · <button type="button" class="text-button" data-clear-output="${escape(id)}">지우기</button></span></div><pre class="nb-output-pre">${escape(combined)}</pre>`;
+  const seqChip = out.execOrder ? `<span class="nb-output-order">실행 #${out.execOrder}</span> ` : '';
+  container.innerHTML = `<div class="nb-output-head"><span class="nb-output-badge ${out.ok ? 'ok' : 'err'}">${seqChip}${badge}</span><span>${envLabel}${out.durationMs}ms · <button type="button" class="text-button" data-clear-output="${escape(id)}">지우기</button></span></div><pre class="nb-output-pre">${escape(combined)}</pre>`;
   container.querySelector(`[data-clear-output="${CSS.escape(id)}"]`)?.addEventListener('click', e => {
     e.stopPropagation();
     cellOutputs.delete(id);
+    cellExecOrders.delete(id);
     renderCellOutput(id);
     renderInspector();
     renderBottomDock();
@@ -568,14 +1110,17 @@ async function executeOnHost(kind: CellKind, code: string): Promise<ExecutionOut
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ kind, code }),
-    signal: AbortSignal.timeout(25000),
+    signal: AbortSignal.timeout(30000),
   });
   const contentType = response.headers.get('content-type') || '';
   if (!response.ok || !contentType.includes('application/json')) {
-    throw new Error(`로컬 실행 엔드포인트를 사용할 수 없습니다 (${response.status}). Workspace에 연결해 Agora VM으로 실행하세요.`);
+    throw new Error(`실행 엔드포인트를 사용할 수 없습니다 (${response.status}).`);
   }
   const result = await response.json() as ExecutionOutput;
   return { ...result, runtime: 'host' };
+}
+function isVmFallbackError(codeOrMessage: string): boolean {
+  return /RUNTIME_MANAGER_UNAVAILABLE|RUNTIME_VM_UNAVAILABLE|RUNTIME_KERNEL_UNAVAILABLE|RUNTIME_NOT_CONNECTED|RUNTIME_REQUEST_INVALID|RUNTIME_REQUEST_TOO_LARGE|RUNTIME_RESPONSE_TOO_LARGE|RUNTIME_TIMEOUT|RUNTIME_UNSUPPORTED_LANGUAGE|UNSUPPORTED_LANGUAGE|CONNECTION_FAILED|DISCONNECTED|VM 커널|전달하지 못했습니다/.test(codeOrMessage);
 }
 async function executeInAgoraVm(id: string, kind: 'python' | 'lean' | 'rocq', code: string): Promise<ExecutionOutput> {
   const active = workspace!;
@@ -586,10 +1131,10 @@ async function executeInAgoraVm(id: string, kind: 'python' | 'lean' | 'rocq', co
   let payloadCode = code;
   if (kind === 'lean') {
     language = 'bash';
-    payloadCode = `LEAN_BIN=$(command -v lean || ([ -x "$HOME/.elan/bin/lean" ] && echo "$HOME/.elan/bin/lean") || ([ -x "/root/.elan/bin/lean" ] && echo "/root/.elan/bin/lean") || true)\n[ -n "$LEAN_BIN" ] || exit 127\n"$LEAN_BIN" --stdin << '${marker}'\n${code}\n${marker}\n`;
+    payloadCode = `LEAN_BIN=$(command -v lean || ([ -x "$HOME/.elan/bin/lean" ] && echo "$HOME/.elan/bin/lean") || ([ -x "/root/.elan/bin/lean" ] && echo "/root/.elan/bin/lean") || ls -1 /opt/elan/toolchains/*/bin/lean 2>/dev/null | head -n1 || true)\n[ -n "$LEAN_BIN" ] || exit 127\n"$LEAN_BIN" --version >/dev/null 2>&1 || exit 127\n"$LEAN_BIN" --stdin 2>&1 << '${marker}'\n${code}\n${marker}\n`;
   } else if (kind === 'rocq') {
     language = 'bash';
-    payloadCode = `COQC_BIN=$(command -v coqc || true)\n[ -n "$COQC_BIN" ] || exit 127\nTMP_DIR=$(mktemp -d)\ntrap 'rm -rf "$TMP_DIR"' EXIT\ncat << '${marker}' > "$TMP_DIR/Cell.v"\n${code}\n${marker}\n"$COQC_BIN" "$TMP_DIR/Cell.v"\n`;
+    payloadCode = `COQC_BIN=$(command -v coqc || true)\n[ -n "$COQC_BIN" ] || exit 127\n"$COQC_BIN" --version >/dev/null 2>&1 || exit 127\nTMP_DIR=$(mktemp -d)\ntrap 'rm -rf "$TMP_DIR"' EXIT\ncat << '${marker}' > "$TMP_DIR/Cell.v"\n${code}\n${marker}\n"$COQC_BIN" "$TMP_DIR/Cell.v" 2>&1\n`;
   }
   let streamed = '';
   let data;
@@ -609,44 +1154,114 @@ async function executeInAgoraVm(id: string, kind: 'python' | 'lean' | 'rocq', co
       renderCellOutput(id);
     }, id);
   } catch (error) {
-    const raw = error instanceof Error ? error.message : String(error);
-    throw new Error(formatErrorLabel(raw));
+    const raw = error instanceof AgoraError
+      ? `${error.code} ${error.serverMessage || ''}`.trim()
+      : (error instanceof Error ? error.message : String(error));
+    if (isVmFallbackError(raw)) {
+      return await executeOnHost(kind, code);
+    }
+    throw new Error(error instanceof AgoraError ? (error.serverMessage || formatErrorLabel(error.code)) : formatErrorLabel(raw));
   }
   if (data.error && typeof data.exitCode !== 'number') {
-    throw new Error(data.message || formatErrorLabel(data.error));
+    const msg = data.message || formatErrorLabel(data.error);
+    if (isVmFallbackError(String(data.error)) || isVmFallbackError(msg)) {
+      return await executeOnHost(kind, code);
+    }
+    throw new Error(msg);
   }
   const exitCode = typeof data.exitCode === 'number' ? data.exitCode : 1;
-  if ((kind === 'lean' || kind === 'rocq') && exitCode === 127) {
+  const outputText = String(data.output ?? streamed ?? '');
+  const ok = !data.timedOut && !data.error && exitCode === 0;
+  if (exitCode === 127 || exitCode === 126 || (!ok && !data.timedOut && !outputText.trim() && !data.error)) {
     try {
       return await executeOnHost(kind, code);
     } catch {
-      const binName = kind === 'lean' ? 'Lean 4 (lean)' : 'Rocq (coqc)';
-      return {
-        ok: false,
-        exitCode: 127,
-        stdout: '',
-        stderr: `Agora VM(${binName})에 해당 증명 도구가 설치되어 있지 않습니다 (exit 127). VM 이미지에 ${binName} 설치가 필요합니다.`,
-        durationMs: Date.now() - started,
-        status: 'error',
-        runtime: 'agora-vm',
-      };
+      if (exitCode === 127 || exitCode === 126) {
+        const binName = kind === 'lean' ? 'Lean 4 (lean)' : kind === 'rocq' ? 'Rocq (coqc)' : 'Python 3';
+        return {
+          ok: false,
+          exitCode,
+          stdout: '',
+          stderr: `Agora VM(${binName})에 해당 실행 도구가 설치되어 있지 않습니다 (exit ${exitCode}).`,
+          durationMs: Date.now() - started,
+          status: 'error',
+          runtime: 'agora-vm',
+        };
+      }
     }
   }
   const durationMs = Date.now() - started;
-  const outputText = String(data.output ?? streamed ?? '');
-  const ok = !data.timedOut && !data.error && exitCode === 0;
   const isProof = kind === 'lean' || kind === 'rocq';
   return {
     ok,
     exitCode,
     stdout: ok ? (outputText || (isProof ? '✓ Proof verified in Agora VM (0 errors)' : '')) : '',
-    stderr: ok ? '' : (outputText || data.message || (data.error ? formatErrorLabel(data.error) : '실행 중 오류가 발생했습니다.')),
+    stderr: ok ? '' : (outputText || data.message || (data.error ? formatErrorLabel(data.error) : `실행이 종료되었습니다 (exit ${exitCode}).`)),
     durationMs,
     status: data.timedOut ? 'timeout' : ok ? (isProof ? 'verified' : 'success') : 'error',
     runtime: 'agora-vm',
   };
 }
-async function runCell(id: string): Promise<void> {
+function advanceAfterExecution(id: string): void {
+  if (viewMode !== 'notebook') { return; }
+  const visible = visibleCells();
+  const idx = visible.findIndex(item => item.id === id);
+  if (idx < 0) { return; }
+  const scrollBox = document.querySelector<HTMLElement>('#notebook-scroll');
+  if (idx + 1 < visible.length) {
+    const next = visible[idx + 1];
+    selected = next.id;
+    syncActiveCellCard();
+    renderList();
+    renderInspector();
+    agentPanel.onSelectionChanged();
+    requestAnimationFrame(() => {
+      const nextCard = document.querySelector<HTMLElement>(`[data-nb-cell="${CSS.escape(next.id)}"]`);
+      if (nextCard && scrollBox) {
+        const sRect = scrollBox.getBoundingClientRect();
+        const cRect = nextCard.getBoundingClientRect();
+        const nextTop = cRect.top - sRect.top + scrollBox.scrollTop;
+        const nextBottom = cRect.bottom - sRect.top + scrollBox.scrollTop;
+        const minVisibleTop = Math.max(scrollBox.scrollTop, nextBottom - scrollBox.clientHeight + 48);
+        const preferredTop = Math.max(0, nextTop - 150);
+        const targetTop = Math.min(
+          Math.max(0, scrollBox.scrollHeight - scrollBox.clientHeight),
+          Math.max(minVisibleTop, preferredTop),
+        );
+        if (targetTop > scrollBox.scrollTop + 4) {
+          scrollBox.scrollTo({ top: targetTop, behavior: 'smooth' });
+        }
+      } else {
+        nextCard?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+      if (next.kind === 'agent') {
+        nextCard?.querySelector<HTMLTextAreaElement>(`[data-chat-input="${CSS.escape(next.id)}"]`)?.focus({ preventScroll: true });
+      } else {
+        const textarea = nextCard?.querySelector<HTMLTextAreaElement>('.monaco-editor textarea.inputarea');
+        if (textarea) { textarea.focus({ preventScroll: true }); }
+        else { cellEditors.get(next.id)?.focus(); }
+      }
+    });
+  } else {
+    requestAnimationFrame(() => {
+      const curCard = document.querySelector<HTMLElement>(`[data-nb-cell="${CSS.escape(id)}"]`);
+      if (curCard && scrollBox) {
+        const sRect = scrollBox.getBoundingClientRect();
+        const cRect = curCard.getBoundingClientRect();
+        const cardBottom = cRect.bottom - sRect.top + scrollBox.scrollTop;
+        if (cardBottom + 36 > scrollBox.scrollTop + scrollBox.clientHeight) {
+          const target = Math.min(
+            Math.max(0, scrollBox.scrollHeight - scrollBox.clientHeight),
+            cardBottom - scrollBox.clientHeight + 52,
+          );
+          scrollBox.scrollTo({ top: Math.max(scrollBox.scrollTop, target), behavior: 'smooth' });
+        }
+      }
+    });
+  }
+}
+
+async function runCell(id: string, advanceOnFinish = true): Promise<void> {
   const cell = cells.find(item => item.id === id);
   if (!cell || !isExecutable(cell.kind)) { return; }
   if (workspace && !cell.canExecute) {
@@ -656,16 +1271,25 @@ async function runCell(id: string): Promise<void> {
   const code = models.get(id)?.getValue() ?? cell.text;
   const runBtn = document.querySelector<HTMLButtonElement>(`[data-cell-run="${CSS.escape(id)}"]`);
   if (runBtn) { runBtn.disabled = true; }
-  cellOutputs.set(id, { running: true, ok: true, exitCode: null, stdout: '', stderr: '', durationMs: 0, status: 'running', runtime: workspace ? 'agora-vm' : 'host' });
+  if (window.innerWidth > 760) {
+    switchBottomDockTab('output');
+  }
+  const prevOrder = cellExecOrders.get(id);
+  cellOutputs.set(id, { execOrder: prevOrder, running: true, ok: true, exitCode: null, stdout: '', stderr: '', durationMs: 0, status: 'running', runtime: workspace ? 'agora-vm' : 'host' });
   renderCellOutput(id);
   try {
     const result = workspace
       ? await executeInAgoraVm(id, cell.kind as 'python' | 'lean' | 'rocq', code)
       : await executeOnHost(cell.kind, code);
-    cellOutputs.set(id, result);
-    log(`${cellTypes[cell.kind].short} 셀을 ${result.runtime === 'agora-vm' ? 'Agora VM(Broker·C++ WS)에서 ' : ''}${result.ok ? '실행/검증' : '실행(오류)'}했습니다 (${result.durationMs}ms).`);
+    const seq = ++executionSeq;
+    cellExecOrders.set(id, seq);
+    cellOutputs.set(id, { ...result, execOrder: seq });
+    log(`[실행 #${seq}] ${cellTypes[cell.kind].short} 셀을 ${result.runtime === 'agora-vm' ? 'Agora VM(Broker·C++ WS)에서 ' : ''}${result.ok ? '실행/검증' : '실행(오류)'}했습니다 (${result.durationMs}ms).`);
   } catch (error) {
+    const seq = ++executionSeq;
+    cellExecOrders.set(id, seq);
     cellOutputs.set(id, {
+      execOrder: seq,
       ok: false,
       exitCode: 1,
       stdout: '',
@@ -677,23 +1301,67 @@ async function runCell(id: string): Promise<void> {
     if (runBtn) { runBtn.disabled = false; }
     renderCellOutput(id);
     renderInspector();
+    if (advanceOnFinish && cells.some(item => item.id === id)) {
+      advanceAfterExecution(id);
+    }
   }
 }
 async function runAllCells(): Promise<void> {
-  const targets = visibleCells().filter(cell => isExecutable(cell.kind));
-  if (!targets.length) { notify('실행할 수 있는 Python, Lean 4 또는 Rocq 셀이 없습니다.'); return; }
-  for (const cell of targets) {
-    await runCell(cell.id);
+  const ordered = visibleCells().filter(cell => isExecutable(cell.kind) || cell.kind === 'html');
+  if (!ordered.length) {
+    notify('실행할 수 있는 Python, Lean 4, Rocq 또는 HTML 셀이 없습니다.');
+    return;
   }
-  notify(`${targets.length}개 셀 실행을 완료했습니다.`);
+  let execCount = 0;
+  let htmlCount = 0;
+  for (let i = 0; i < ordered.length; i += 1) {
+    const cell = ordered[i];
+    const isLast = i === ordered.length - 1;
+    if (cell.kind === 'html') {
+      htmlCount += 1;
+      renderHtmlCell(cell.id, isLast);
+    } else {
+      execCount += 1;
+      await runCell(cell.id, isLast);
+    }
+  }
+  notify(`${execCount}개 코드 셀 실행${htmlCount ? ` · ${htmlCount}개 HTML 렌더링` : ''}을 완료했습니다.`);
+}
+function renderHtmlCell(id: string, advanceOnFinish = true): void {
+  previewCells.add(id);
+  const btn = document.querySelector<HTMLButtonElement>(`[data-cell-preview="${CSS.escape(id)}"]`);
+  if (btn) { btn.textContent = '미리보기 닫기'; }
+  const seq = ++executionSeq;
+  cellExecOrders.set(id, seq);
+  syncCellExecBadge(id);
+  renderCellPreview(id);
+  renderInspector();
+  log(`[실행 #${seq}] HTML 셀을 렌더링했습니다.`);
+  if (advanceOnFinish) {
+    advanceAfterExecution(id);
+  }
+}
+function scheduleCellPreview(id: string): void {
+  clearTimeout(previewTimers.get(id));
+  const cell = cells.find(item => item.id === id);
+  if (cell?.kind === 'html') {
+    previewTimers.set(id, setTimeout(() => {
+      previewTimers.delete(id);
+      renderCellPreview(id);
+    }, 120));
+    return;
+  }
+  renderCellPreview(id);
 }
 function renderCellPreview(id: string): void {
+  clearTimeout(previewTimers.get(id));
+  previewTimers.delete(id);
   const cell = cells.find(item => item.id === id);
   const frame = document.querySelector<HTMLIFrameElement>(`[data-nb-preview="${CSS.escape(id)}"]`);
   if (!cell || !frame) { return; }
-  const visible = previewCells.has(id) && ['markdown','html','agent'].includes(cell.kind);
+  const visible = previewCells.has(id) && ['markdown', 'html'].includes(cell.kind);
   frame.hidden = !visible;
-  if (!visible) { return; }
+  if (!visible) { delete frame.dataset.renderedHtml; return; }
   const light = currentTheme() === 'light';
   if (cell.kind === 'html') {
     frame.setAttribute('sandbox', 'allow-scripts');
@@ -702,12 +1370,36 @@ function renderCellPreview(id: string): void {
     const baseStyle = light
       ? '<style>html,body{margin:0;padding:16px;font-family:system-ui,-apple-system,sans-serif;color:#18181b;background:#ffffff;box-sizing:border-box}*,*::before,*::after{box-sizing:border-box}</style>'
       : '<style>html,body{margin:0;padding:16px;font-family:system-ui,-apple-system,sans-serif;color:#f4f4f5;background:#1b1b1f;box-sizing:border-box}*,*::before,*::after{box-sizing:border-box}</style>';
-    frame.srcdoc = isFullDoc ? raw : `<!doctype html><html lang="ko"><head><meta charset="UTF-8"><meta name="color-scheme" content="${light ? 'light' : 'dark'}">${baseStyle}</head><body>${raw}</body></html>`;
+    const htmlDoc = isFullDoc
+      ? raw
+      : `<!doctype html><html lang="ko"><head><meta charset="UTF-8"><meta name="color-scheme" content="${light ? 'light' : 'dark'}">${baseStyle}</head><body>${raw}</body></html>`;
+    if (frame.dataset.renderedHtml === htmlDoc && frame.src) {
+      return;
+    }
+    frame.dataset.renderedHtml = htmlDoc;
+    previewDocs.set(frame, htmlDoc);
+    if (!frame.dataset.previewBound) {
+      frame.dataset.previewBound = '1';
+      frame.addEventListener('load', () => {
+        if (frame.dataset.awaitingPreview !== '1') { return; }
+        frame.dataset.awaitingPreview = '';
+        const pendingHtml = previewDocs.get(frame);
+        if (pendingHtml !== undefined) {
+          frame.contentWindow?.postMessage({ type: 'irade:render-html', html: pendingHtml }, '*');
+        }
+      });
+    }
+    frame.removeAttribute('srcdoc');
+    frame.dataset.awaitingPreview = '1';
+    const previewBase = location.pathname.startsWith('/irade') ? '/irade/preview' : '/preview';
+    frame.src = `${previewBase}?r=${++previewRenderSeq}`;
     return;
   }
+  frame.removeAttribute('src');
+  frame.dataset.awaitingPreview = '';
   frame.setAttribute('sandbox', '');
   const source = marked.parse(models.get(id)?.getValue() ?? cell.text, { async: false });
-  const safe = DOMPurify.sanitize(source, { FORBID_TAGS: ['script','style','form','iframe','object','embed','base','link','meta'], FORBID_ATTR: ['style','srcset'] });
+  const safe = DOMPurify.sanitize(source, { FORBID_TAGS: ['script', 'style', 'form', 'iframe', 'object', 'embed', 'base', 'link', 'meta'], FORBID_ATTR: ['style', 'srcset'] });
   const css = light
     ? 'body{font:13.5px/1.8 system-ui,sans-serif;color:#27272a;background:#ffffff;padding:18px 22px;margin:0;overflow-wrap:anywhere}h1,h2,h3{font-weight:600;line-height:1.4;color:#18181b}h1{font-size:20px}h2{font-size:17px;border-bottom:1px solid #e7e5e4;padding-bottom:6px;margin-top:20px}a{color:#059669}code{background:#f3f2ee;padding:2px 6px;border-radius:4px}pre{padding:12px;background:#faf9f6;border:1px solid #e7e5e4;border-radius:8px;overflow:auto}pre code{padding:0;background:none}blockquote{border-left:2px solid #059669;padding-left:14px;color:#78716c}table{border-collapse:collapse;width:100%}th,td{border:1px solid #e7e5e4;padding:6px 10px}img{max-width:100%}'
     : 'body{font:13.5px/1.8 system-ui,sans-serif;color:#d4d4d8;background:#1b1b1f;padding:18px 22px;margin:0;overflow-wrap:anywhere}h1,h2,h3{font-weight:600;line-height:1.4;color:#f4f4f5}h1{font-size:20px}h2{font-size:17px;border-bottom:1px solid #27272a;padding-bottom:6px;margin-top:20px}a{color:#34d399}code{background:#27272a;padding:2px 6px;border-radius:4px}pre{padding:12px;background:#141417;border:1px solid #27272a;border-radius:8px;overflow:auto}pre code{padding:0;background:none}blockquote{border-left:2px solid #34d399;padding-left:14px;color:#a1a1aa}table{border-collapse:collapse;width:100%}th,td{border:1px solid #3f3f46;padding:6px 10px}img{max-width:100%}';
@@ -723,15 +1415,23 @@ function openCellPermissionModal(id: string): void {
   const canEdit = workspace ? cell.canWrite : !cell.locked;
   const canExec = workspace ? cell.canExecute : true;
   const groupHtml = groups.length
-    ? groups.map(group => `<label class="perm-group-item"><input type="checkbox" name="perm-group" value="${escape(group)}" ${current.has(group) ? 'checked' : ''} ${isAdmin ? '' : 'disabled'}><span>${escape(group)}</span></label>`).join('')
+    ? groups.map(group => {
+      const groupLabel = workspace ? group : `${group} (로컬 세션)`;
+      return `<label class="perm-group-item ${isAdmin ? '' : 'disabled'}"><input type="checkbox" name="perm-group" value="${escape(group)}" ${current.has(group) ? 'checked' : ''} ${isAdmin ? '' : 'disabled'}><span>${escape(groupLabel)}</span></label>`;
+    }).join('')
     : '<p class="empty-search">할당된 Canvas 그룹이 없습니다.</p>';
-  const lockNotice = !isAdmin && workspace
-    ? '<p class="modal-copy">그룹 접근 권한 변경은 Workspace 관리자만 가능합니다. 쓰기 권한자는 잠금 상태를 전환할 수 있습니다.</p>'
-    : '<p class="modal-copy">Agora Canvas 객체 단위로 읽기·쓰기·실행 그룹과 잠금 상태를 제어합니다.</p>';
+  const lockNotice = !workspace
+    ? '<p class="modal-copy">로컬 체험 셀의 잠금 상태를 설정합니다. 그룹별 ACL 제어는 Agora 공유 Workspace에서 사용할 수 있습니다.</p>'
+    : !isAdmin
+      ? '<p class="modal-copy">그룹 접근 권한 변경은 Workspace 관리자만 가능합니다. 쓰기 권한자는 잠금 상태를 전환할 수 있습니다.</p>'
+      : '<p class="modal-copy">Agora Canvas 객체 단위로 읽기·쓰기·실행 그룹과 잠금 상태를 제어합니다.</p>';
   showModal(`셀 객체 권한 · ${cell.title}`, `${lockNotice}
-    <div class="perm-id-row">
-      <input id="perm-item-id" readonly value="${escape(cell.id)}" aria-label="Canvas Workspace Item ID">
-      <button type="button" class="button ghost" id="perm-copy-id">ID 복사</button>
+    <div class="field">
+      <span class="perm-field-label">객체 ID</span>
+      <div class="perm-id-row">
+        <input id="perm-item-id" readonly value="${escape(cell.id)}" aria-label="Canvas Workspace Item ID">
+        <button type="button" class="button ghost" id="perm-copy-id">ID 복사</button>
+      </div>
     </div>
     <div class="perm-caps">
       <span class="perm-cap allowed">읽기 ✓</span>
@@ -740,15 +1440,15 @@ function openCellPermissionModal(id: string): void {
       ${isAdmin ? '<span class="perm-cap allowed">Admin</span>' : ''}
     </div>
     <form id="perm-form">
-      <label class="perm-group-item"><input type="checkbox" id="perm-locked" ${cell.locked ? 'checked' : ''} ${canUnlock ? '' : 'disabled'}><span>셀 잠금 (잠금 시 쓰기·이동·삭제 제한)</span></label>
-      <div class="field"><span>허용 그룹 ACL</span><div class="perm-group-list">${groupHtml}</div></div>
+      <label class="perm-group-item ${canUnlock ? '' : 'disabled'}"><input type="checkbox" id="perm-locked" ${cell.locked ? 'checked' : ''} ${canUnlock ? '' : 'disabled'}><span>셀 잠금 (쓰기·이동·삭제 제한)</span></label>
+      <div class="field"><span class="perm-field-label">허용 그룹 ACL</span><div class="perm-group-list">${groupHtml}</div></div>
       <div class="form-actions">
         <button type="button" class="button ghost" id="perm-cancel">닫기</button>
         ${(isAdmin || canUnlock) ? '<button type="submit" class="button primary">권한 저장</button>' : ''}
       </div>
     </form>`);
   $('#perm-copy-id').addEventListener('click', () => {
-    void navigator.clipboard.writeText(cell.id).then(() => notify('Canvas 객체 ID를 복사했습니다.')).catch(() => {});
+    void navigator.clipboard.writeText(cell.id).then(() => notify('Canvas 객체 ID를 복사했습니다.')).catch(() => { });
   });
   $('#perm-cancel').addEventListener('click', () => modal.close());
   $('#perm-form').addEventListener('submit', event => {
@@ -781,10 +1481,16 @@ function openCellPermissionModal(id: string): void {
 }
 
 function renderNotebook(): void {
+  const container = $('#notebook-cells');
+  if (!(workspace || demo)) {
+    for (const ed of cellEditors.values()) { ed.setModel(null); ed.dispose(); }
+    cellEditors.clear();
+    container.innerHTML = '';
+    return;
+  }
   if (viewMode !== 'notebook') { return; }
   $('#notebook-title').textContent = workspaceName;
   $('#notebook-kind').textContent = demo ? 'LOCAL PLAYGROUND NOTEBOOK' : connected ? 'AGORA WORKSPACE NOTEBOOK' : 'RESEARCH NOTEBOOK';
-  const container = $('#notebook-cells');
   const visible = visibleCells();
   const visibleIds = new Set(visible.map(c => c.id));
   for (const [id, ed] of cellEditors.entries()) {
@@ -814,76 +1520,208 @@ function renderNotebook(): void {
     let card = existing.get(cell.id);
     if (!card) {
       card = document.createElement('article');
-      card.className = 'nb-cell';
+      card.className = cell.kind === 'agent' ? 'nb-cell nb-cell-messenger' : 'nb-cell';
       card.dataset.nbCell = cell.id;
       card.id = `nb-cell-${cell.id}`;
-      const canPreview = ['markdown', 'html', 'agent'].includes(cell.kind);
+      const canPreview = ['markdown', 'html'].includes(cell.kind);
       const canRun = isExecutable(cell.kind);
+      const hasExecOrder = canRun || cell.kind === 'html';
       if (cell.kind === 'html' && !previewCells.has(cell.id)) { previewCells.add(cell.id); }
       const previewLabel = previewCells.has(cell.id) ? '미리보기 닫기' : '미리보기';
       const runLabel = cell.kind === 'python' ? '▶ 실행' : '▶ 검증';
       const canWrite = workspace ? cell.canWrite : !cell.locked;
       const canExecute = workspace ? cell.canExecute : true;
-      card.innerHTML = `<header class="nb-cell-header"><span class="nb-cell-index">${indexLabel}</span><span class="nb-cell-kind"><span class="${type.color}">${type.icon}</span>${type.short}</span><button type="button" class="nb-cell-id-chip" data-cell-copy-id="${escape(cell.id)}" title="Canvas Workspace Item ID: ${escape(cell.id)} (클릭해 복사)">#${escape(shortItemId(cell.id))}</button><span class="nb-cell-title">${escape(cell.title)}</span><span class="nb-cell-presence-group" data-nb-presence="${escape(cell.id)}"></span><button type="button" class="nb-cell-perm-btn ${cell.locked ? 'locked' : ''}" data-cell-perm="${escape(cell.id)}" title="Canvas 객체 권한 및 잠금 설정">${cell.locked ? '🔒 ' : ''}${escape(permissionSummary(cell))}</button><div class="nb-cell-tools"><button class="icon-button" data-cell-move-up="${escape(cell.id)}" title="위로 이동" aria-label="위로 이동" ${index <= 0 || !canWrite ? 'disabled' : ''}>↑</button><button class="icon-button" data-cell-move-down="${escape(cell.id)}" title="아래로 이동" aria-label="아래로 이동" ${index >= cells.length - 1 || !canWrite ? 'disabled' : ''}>↓</button>${canRun ? `<button class="nb-run-btn" data-cell-run="${escape(cell.id)}" ${canExecute ? '' : 'disabled'} title="${canExecute ? '실행/검증 (Shift+Enter)' : '이 셀 그룹에 실행 권한이 없습니다.'}">${runLabel}</button>` : ''}${cell.kind === 'agent' ? `<button class="button tiny" data-cell-agent="${escape(cell.id)}">✦ AI 실행</button><button class="button tiny" data-cell-msg="${escape(cell.id)}">＋ 메시지</button>` : ''}${canPreview ? `<button class="button tiny" data-cell-preview="${escape(cell.id)}">${previewLabel}</button>` : ''}<button class="icon-button" data-cell-export="${escape(cell.id)}" title="셀 내보내기" aria-label="셀 내보내기">↧</button><button class="icon-button danger" data-cell-delete="${escape(cell.id)}" title="셀 삭제" aria-label="셀 삭제" ${canWrite ? '' : 'disabled'}>×</button></div></header><div class="nb-cell-body"><div class="nb-editor-host"></div><iframe class="nb-preview-frame" data-nb-preview="${escape(cell.id)}" title="셀 미리보기" sandbox="${cell.kind === 'html' ? 'allow-scripts' : ''}" referrerpolicy="no-referrer" hidden></iframe><div class="nb-cell-output" data-nb-output="${escape(cell.id)}" hidden></div></div><footer class="nb-cell-footer"><span>${type.label}${canRun ? ' · Shift+Enter 실행' : ''} · ID ${escape(shortItemId(cell.id))}</span><span data-nb-cursor="${escape(cell.id)}">Ln 1, Col 1</span></footer>`;
+      const canAddBelow = workspace ? workspace.client.canWrite : true;
+      const bodyHtml = cell.kind === 'agent'
+        ? `<div class="nb-chat-shell" data-nb-chat="${escape(cell.id)}"><div class="chat-topbar"><div class="chat-agent-badge"><span class="chat-avatar chat-avatar-agent chat-avatar-sm">${AGENT_AVATAR_SVG}</span><span class="chat-agent-title">IRADE AI 메신저</span><span class="chat-agent-model" data-chat-model="${escape(cell.id)}">${escape(agentPanel.getActiveApiLabel())}</span></div><span class="chat-collab-hint">${connected ? '공동 참여자 · 실시간 입력 동기화' : '로컬 대화 체험 모드'}</span></div><div class="chat-feed" data-chat-feed="${escape(cell.id)}" tabindex="0" aria-label="AI 메신저 대화 내용"></div><div class="chat-typing-bar" data-chat-typing="${escape(cell.id)}" hidden></div><div class="nb-cell-resize-handle" data-cell-resize="${escape(cell.id)}" role="separator" aria-orientation="horizontal" aria-label="메신저 창 높이 조절" title="드래그해 대화창 높이 조절 (더블클릭: 기본 높이)"></div><form class="chat-composer" data-chat-form="${escape(cell.id)}"><div class="chat-composer-meta"><span class="chat-speaker-slot" data-chat-speaker-slot="${escape(cell.id)}"></span><label class="chat-ai-toggle" title="켜두면 메시지 전송 시 AI 에이전트가 자동으로 응답합니다."><input type="checkbox" data-chat-ai-toggle="${escape(cell.id)}"><span>✦ AI 자동 응답</span></label></div><div class="chat-composer-row"><textarea class="chat-input" data-chat-input="${escape(cell.id)}" rows="2" placeholder="AI 에이전트 또는 공동 연구자에게 메시지를 입력하세요… (Enter 전송, Shift+Enter 줄바꿈)"></textarea><div class="chat-composer-buttons"><button type="button" class="button ghost chat-send-only-btn" data-chat-send-only="${escape(cell.id)}" title="AI 응답 없이 참여자 대화만 전송">메시지만</button><button type="submit" class="button primary chat-send-btn" data-chat-send="${escape(cell.id)}">전송 ↵</button></div></div></form></div><div class="nb-cell-output" data-nb-output="${escape(cell.id)}" hidden></div>`
+        : `<div class="nb-editor-host"></div><div class="nb-cell-resize-handle" data-cell-resize="${escape(cell.id)}" role="separator" aria-orientation="horizontal" aria-label="셀 편집기 높이 조절" title="드래그해 셀 편집기 높이 조절 (더블클릭: 자동 높이)"></div><iframe class="nb-preview-frame" data-nb-preview="${escape(cell.id)}" title="셀 미리보기" sandbox="${cell.kind === 'html' ? 'allow-scripts' : ''}" referrerpolicy="no-referrer" hidden></iframe><div class="nb-cell-output" data-nb-output="${escape(cell.id)}" hidden></div>`;
+      const footerHint = cell.kind === 'agent'
+        ? ' · 메신저 대화 · 위로 스크롤해 이전 내역 불러오기'
+        : canRun
+          ? ' · Shift+Enter 실행'
+          : canPreview
+            ? (cell.kind === 'html' ? ' · Shift+Enter 렌더링' : ' · Shift+Enter 미리보기')
+            : '';
+      const insertButtonsHtml = (['python', 'lean', 'rocq', 'agent', 'markdown', 'html'] as CellKind[]).map(kind =>
+        `<button type="button" class="nb-insert-chip" data-insert-kind="${kind}" data-insert-target="${escape(cell.id)}" ${canAddBelow ? '' : 'disabled'}><span class="${cellTypes[kind].color}">${cellTypes[kind].icon}</span>${escape(cellTypes[kind].short)}</button>`,
+      ).join('');
+
+      card.innerHTML = `<header class="nb-cell-header"><span class="nb-cell-index">${indexLabel}</span>${hasExecOrder ? `<span class="nb-exec-order idle" data-exec-order="${escape(cell.id)}" title="아직 실행되지 않음">[ · ]</span>` : ''}<span class="nb-cell-kind"><span class="${type.color}">${type.icon}</span>${type.short}</span><button type="button" class="nb-cell-id-chip" data-cell-copy-id="${escape(cell.id)}" title="Canvas Workspace Item ID: ${escape(cell.id)} (클릭해 복사)">#${escape(shortItemId(cell.id))}</button><span class="nb-cell-title">${escape(cell.title)}</span><span class="nb-cell-presence-group" data-nb-presence="${escape(cell.id)}"></span><button type="button" class="nb-cell-perm-btn ${cell.locked ? 'locked' : ''}" data-cell-perm="${escape(cell.id)}" title="Canvas 객체 권한 및 잠금 설정">${cell.locked ? '🔒 ' : ''}${escape(permissionSummary(cell))}</button><div class="nb-cell-tools"><button class="icon-button" data-cell-move-up="${escape(cell.id)}" title="위로 이동" aria-label="위로 이동" ${index <= 0 || !canWrite ? 'disabled' : ''}>↑</button><button class="icon-button" data-cell-move-down="${escape(cell.id)}" title="아래로 이동" aria-label="아래로 이동" ${index >= cells.length - 1 || !canWrite ? 'disabled' : ''}>↓</button>${canRun ? `<button class="nb-run-btn" data-cell-run="${escape(cell.id)}" ${canExecute ? '' : 'disabled'} title="${canExecute ? '실행/검증 (Shift+Enter)' : '이 셀 그룹에 실행 권한이 없습니다.'}">${runLabel}</button>` : ''}${cell.kind === 'html' ? `<button class="nb-run-btn" data-cell-render="${escape(cell.id)}" title="HTML 렌더링 (Shift+Enter)">▶ 렌더링</button>` : ''}${cell.kind === 'agent' ? `<button class="button tiny" data-cell-agent="${escape(cell.id)}">✦ AI 설정</button>` : ''}${canPreview ? `<button class="button tiny" data-cell-preview="${escape(cell.id)}">${previewLabel}</button>` : ''}<button class="icon-button" data-cell-export="${escape(cell.id)}" title="셀 내보내기" aria-label="셀 내보내기">⤓</button><button class="icon-button danger" data-cell-delete="${escape(cell.id)}" title="셀 삭제" aria-label="셀 삭제" ${canWrite ? '' : 'disabled'}>×</button></div></header><div class="nb-cell-body">${bodyHtml}</div><footer class="nb-cell-footer"><span>${type.label}${footerHint} · ID ${escape(shortItemId(cell.id))}</span><span data-nb-cursor="${escape(cell.id)}">${cell.kind === 'agent' ? '대화 0개' : 'Ln 1, Col 1'}</span></footer><div class="nb-cell-insert-zone" data-insert-after="${escape(cell.id)}" style="--insert-prox:0" role="group" aria-label="아래에 새 셀 추가"><div class="nb-cell-insert-line"></div><div class="nb-cell-insert-bar"><span class="nb-insert-prefix">＋ 아래에 추가</span>${insertButtonsHtml}</div></div>`;
       container.insertBefore(card, container.children[visibleIdx] || null);
 
-      const host = card.querySelector<HTMLElement>('.nb-editor-host')!;
-      const model = ensureModel(cell);
-      const ed = monaco.editor.create(host, {
-        theme: currentTheme() === 'light' ? 'irade-light' : 'irade-dark',
-        automaticLayout: true,
-        model,
-        fontSize,
-        lineNumbers,
-        fontFamily: "'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
-        lineHeight: 22,
-        minimap: { enabled: false },
-        scrollBeyondLastLine: false,
-        scrollbar: { vertical: 'hidden', handleMouseWheel: false },
-        padding: { top: 12, bottom: 12 },
-        smoothScrolling: true,
-        renderLineHighlight: 'gutter',
-        lineNumbersMinChars: 3,
-        wordWrap: 'on',
-        tabSize: 4,
-        readOnly: !canWrite,
-        fixedOverflowWidgets: true,
-      });
-      if (canRun) {
-        ed.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Enter, () => { void runCell(cell.id); });
+      if (cell.kind === 'agent') {
+        const feed = card.querySelector<HTMLElement>(`[data-chat-feed="${CSS.escape(cell.id)}"]`)!;
+        const input = card.querySelector<HTMLTextAreaElement>(`[data-chat-input="${CSS.escape(cell.id)}"]`)!;
+        const form = card.querySelector<HTMLFormElement>(`[data-chat-form="${CSS.escape(cell.id)}"]`)!;
+        const aiToggle = card.querySelector<HTMLInputElement>(`[data-chat-ai-toggle="${CSS.escape(cell.id)}"]`)!;
+        const sendOnlyBtn = card.querySelector<HTMLButtonElement>(`[data-chat-send-only="${CSS.escape(cell.id)}"]`)!;
+        const resizeHandle = card.querySelector<HTMLElement>(`[data-cell-resize="${CSS.escape(cell.id)}"]`);
+
+        if (!chatAiMode.has(cell.id)) { chatAiMode.set(cell.id, connected); }
+
+        let pinnedToBottom = true;
+        feed.addEventListener('scroll', () => {
+          pinnedToBottom = (feed.scrollHeight - feed.scrollTop - feed.clientHeight) < 28;
+          const hasTopOverflow = (feed.scrollHeight - feed.clientHeight) > 48;
+          if (feed.scrollTop <= 24 && (feed.dataset.suppressAutoLoad !== '1' || hasTopOverflow)) {
+            delete feed.dataset.suppressAutoLoad;
+            loadOlderAgentMessages(cell.id);
+          }
+        });
+        if (typeof ResizeObserver !== 'undefined') {
+          const feedResizeObserver = new ResizeObserver(() => {
+            if (!document.contains(feed)) { feedResizeObserver.disconnect(); return; }
+            if (pinnedToBottom && feed.dataset.suppressAutoLoad !== '1') {
+              scrollChatFeedToBottom(feed);
+            }
+          });
+          feedResizeObserver.observe(feed);
+        }
+        if (resizeHandle) {
+          resizeHandle.addEventListener('pointerdown', event => {
+            event.stopPropagation();
+            const startY = event.clientY;
+            const startHeight = feed.getBoundingClientRect().height;
+            startResizeDrag(event, resizeHandle, (_clientX, clientY) => {
+              const next = Math.round(Math.max(200, Math.min(760, startHeight + (clientY - startY))));
+              manualCellHeights.set(cell.id, next);
+              applyChatFeedHeight(card!, cell.id);
+            });
+          });
+          resizeHandle.addEventListener('dblclick', e => {
+            e.stopPropagation();
+            manualCellHeights.delete(cell.id);
+            applyChatFeedHeight(card!, cell.id);
+          });
+        }
+        const onComposeActive = (): void => {
+          setPresenceFocus(cell.id);
+          if (selected !== cell.id) {
+            selected = cell.id;
+            syncActiveCellCard();
+            renderList();
+            renderInspector();
+            agentPanel.onSelectionChanged();
+          }
+          scrollChatFeedToBottom(feed);
+        };
+        input.addEventListener('pointerdown', onComposeActive);
+        input.addEventListener('focus', onComposeActive);
+        input.addEventListener('input', () => scrollChatFeedToBottom(feed));
+        input.addEventListener('blur', () => {
+          if (activePresenceCellId === cell.id) { setPresenceFocus(undefined); }
+        });
+        input.addEventListener('keydown', event => {
+          if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+            event.preventDefault();
+            void submitAgentChatMessage(cell.id);
+          }
+        });
+        aiToggle.addEventListener('change', () => {
+          chatAiMode.set(cell.id, aiToggle.checked);
+        });
+        sendOnlyBtn.addEventListener('click', e => {
+          e.stopPropagation();
+          void submitAgentChatMessage(cell.id, true);
+        });
+        form.addEventListener('submit', event => {
+          event.preventDefault();
+          void submitAgentChatMessage(cell.id);
+        });
+        renderAgentChat(cell.id, { scrollToBottom: true });
+      } else {
+        const host = card.querySelector<HTMLElement>('.nb-editor-host')!;
+        const model = ensureModel(cell);
+        const ed = monaco.editor.create(host, {
+          theme: currentTheme() === 'light' ? 'irade-light' : 'irade-dark',
+          automaticLayout: true,
+          model,
+          fontSize,
+          lineNumbers,
+          fontFamily: "'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace",
+          lineHeight: 22,
+          minimap: { enabled: false },
+          scrollBeyondLastLine: false,
+          scrollbar: { vertical: 'hidden', handleMouseWheel: false },
+          padding: { top: 12, bottom: 12 },
+          smoothScrolling: true,
+          renderLineHighlight: 'gutter',
+          lineNumbersMinChars: 3,
+          wordWrap: 'on',
+          tabSize: 4,
+          readOnly: !canWrite,
+          fixedOverflowWidgets: true,
+        });
+        if (canRun) {
+          ed.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Enter, () => { void runCell(cell.id); });
+        } else if (cell.kind === 'html') {
+          ed.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Enter, () => { renderHtmlCell(cell.id); });
+        } else if (canPreview) {
+          ed.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Enter, () => {
+            previewCells.add(cell.id);
+            const btn = card?.querySelector<HTMLButtonElement>(`[data-cell-preview="${CSS.escape(cell.id)}"]`);
+            if (btn) { btn.textContent = '미리보기 닫기'; }
+            renderCellPreview(cell.id);
+          });
+        }
+        const updateHeight = (): void => {
+          const manual = manualCellHeights.get(cell.id);
+          const h = manual ?? Math.min(520, Math.max(96, ed.getContentHeight()));
+          host.style.height = `${h}px`;
+          ed.updateOptions({
+            scrollbar: manual
+              ? { vertical: 'auto', handleMouseWheel: true }
+              : { vertical: 'hidden', handleMouseWheel: false },
+          });
+          ed.layout();
+        };
+        ed.onDidContentSizeChange(updateHeight);
+        updateHeight();
+        const resizeHandle = card.querySelector<HTMLElement>(`[data-cell-resize="${CSS.escape(cell.id)}"]`);
+        if (resizeHandle) {
+          resizeHandle.addEventListener('pointerdown', event => {
+            event.stopPropagation();
+            const startY = event.clientY;
+            const startHeight = host.getBoundingClientRect().height;
+            startResizeDrag(event, resizeHandle, (clientX, clientY) => {
+              void clientX;
+              const next = Math.round(Math.max(80, Math.min(820, startHeight + (clientY - startY))));
+              manualCellHeights.set(cell.id, next);
+              updateHeight();
+            });
+          });
+          resizeHandle.addEventListener('dblclick', e => {
+            e.stopPropagation();
+            manualCellHeights.delete(cell.id);
+            updateHeight();
+          });
+        }
+        ed.onDidFocusEditorText(() => {
+          setPresenceFocus(cell.id);
+          if (selected !== cell.id) {
+            selected = cell.id;
+            syncActiveCellCard();
+            renderList();
+            renderInspector();
+            agentPanel.onSelectionChanged();
+          }
+        });
+        ed.onDidBlurEditorText(() => {
+          if (activePresenceCellId === cell.id) {
+            setPresenceFocus(undefined);
+          }
+        });
+        ed.onDidChangeCursorPosition(event => {
+          const pos = `Ln ${event.position.lineNumber}, Col ${event.position.column}`;
+          const cursorEl = card!.querySelector(`[data-nb-cursor="${CSS.escape(cell.id)}"]`);
+          if (cursorEl) { cursorEl.textContent = pos; }
+          if (selected === cell.id) {
+            const statusCursor = document.querySelector<HTMLElement>('#status-cursor');
+            if (statusCursor) { statusCursor.textContent = pos; }
+          }
+        });
+        cellEditors.set(cell.id, ed);
       }
-      const updateHeight = (): void => {
-        const h = Math.min(520, Math.max(96, ed.getContentHeight()));
-        host.style.height = `${h}px`;
-        ed.layout();
-      };
-      ed.onDidContentSizeChange(updateHeight);
-      updateHeight();
-      ed.onDidFocusEditorText(() => {
-        setPresenceFocus(cell.id);
-        if (selected !== cell.id) {
-          selected = cell.id;
-          syncActiveCellCard();
-          renderList();
-          renderInspector();
-          agentPanel.onSelectionChanged();
-        }
-      });
-      ed.onDidBlurEditorText(() => {
-        if (activePresenceCellId === cell.id) {
-          setPresenceFocus(undefined);
-        }
-      });
-      ed.onDidChangeCursorPosition(event => {
-        const pos = `Ln ${event.position.lineNumber}, Col ${event.position.column}`;
-        const cursorEl = card!.querySelector(`[data-nb-cursor="${CSS.escape(cell.id)}"]`);
-        if (cursorEl) { cursorEl.textContent = pos; }
-        if (selected === cell.id) {
-          const statusCursor = document.querySelector<HTMLElement>('#status-cursor');
-          if (statusCursor) { statusCursor.textContent = pos; }
-        }
-      });
-      cellEditors.set(cell.id, ed);
 
       card.addEventListener('click', () => {
         if (selected !== cell.id) {
@@ -894,9 +1732,15 @@ function renderNotebook(): void {
           agentPanel.onSelectionChanged();
         }
       });
+      card.querySelectorAll<HTMLButtonElement>('[data-insert-kind]').forEach(btn => {
+        btn.addEventListener('click', e => {
+          e.stopPropagation();
+          void addCell(btn.dataset.insertKind as CellKind, cell.id).catch(report);
+        });
+      });
       card.querySelector(`[data-cell-copy-id="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
         e.stopPropagation();
-        void navigator.clipboard.writeText(cell.id).then(() => notify(`객체 ID 복사됨: ${cell.id}`)).catch(() => {});
+        void navigator.clipboard.writeText(cell.id).then(() => notify(`객체 ID 복사됨: ${cell.id}`)).catch(() => { });
       });
       card.querySelector(`[data-cell-perm="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
         e.stopPropagation();
@@ -914,6 +1758,9 @@ function renderNotebook(): void {
       card.querySelector(`[data-cell-run="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
         e.stopPropagation(); selected = cell.id; void runCell(cell.id);
       });
+      card.querySelector(`[data-cell-render="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
+        e.stopPropagation(); selected = cell.id; renderHtmlCell(cell.id);
+      });
       card.querySelector(`[data-cell-preview="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
         e.stopPropagation();
         if (previewCells.has(cell.id)) { previewCells.delete(cell.id); } else { previewCells.add(cell.id); }
@@ -930,9 +1777,6 @@ function renderNotebook(): void {
         agentPanel.onSelectionChanged();
         agentPanel.open();
       });
-      card.querySelector(`[data-cell-msg="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
-        e.stopPropagation(); selected = cell.id; message();
-      });
       card.querySelector(`[data-cell-export="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
         e.stopPropagation(); selected = cell.id; exportCell();
       });
@@ -944,6 +1788,15 @@ function renderNotebook(): void {
     } else {
       if (container.children[visibleIdx] !== card) {
         container.insertBefore(card, container.children[visibleIdx] || null);
+      }
+      if (cell.kind === 'agent') {
+        const parsed = parseAgentMessages(cell.text);
+        const prev = chatLastSnapshot.get(cell.id);
+        const tail = parsed.messages[parsed.messages.length - 1];
+        const tailKey = tail ? `${tail.id}:${tail.body.length}:${chatPendingAi.has(cell.id) ? 1 : 0}` : '';
+        if (!prev || prev.count !== parsed.messages.length || prev.tailKey !== tailKey) {
+          renderAgentChat(cell.id, { scrollToBottom: true });
+        }
       }
       updateCellCardMeta(cell.id);
     }
@@ -982,6 +1835,7 @@ function syncActiveCellCard(): void {
 }
 function openNotebook(): void {
   viewMode = 'notebook';
+  if (workspace) { sessionStorage.setItem(`irade.research.view:${workspace.client.config.canvasId}`, 'notebook'); }
   $('#overview').hidden = true;
   $('#cell-view').hidden = false;
   if (!bottomDockUserToggled && window.innerWidth > 760) {
@@ -1000,12 +1854,17 @@ function selectCell(id: string, scrollBlock: ScrollLogicalPosition = 'center'): 
   requestAnimationFrame(() => {
     const card = document.querySelector<HTMLElement>(`[data-nb-cell="${CSS.escape(id)}"]`);
     card?.scrollIntoView({ behavior: 'smooth', block: scrollBlock });
-    cellEditors.get(id)?.focus();
+    if (cell.kind === 'agent') {
+      card?.querySelector<HTMLTextAreaElement>(`[data-chat-input="${CSS.escape(id)}"]`)?.focus();
+    } else {
+      cellEditors.get(id)?.focus();
+    }
   });
 }
 function overview(): void {
   overviewOpen = true;
   viewMode = 'overview';
+  if (workspace) { sessionStorage.setItem(`irade.research.view:${workspace.client.config.canvasId}`, 'overview'); }
   $('#overview').hidden = false;
   $('#cell-view').hidden = true;
   if (!bottomDockUserToggled) {
@@ -1015,14 +1874,28 @@ function overview(): void {
   renderInspector();
   renderBottomDock();
 }
+function enterEmptyView(): void {
+  overviewOpen = false;
+  viewMode = 'empty';
+  $('#overview').hidden = true;
+  $('#cell-view').hidden = true;
+  const notebookCells = document.querySelector<HTMLElement>('#notebook-cells');
+  if (notebookCells) { notebookCells.innerHTML = ''; }
+  if (!bottomDockUserToggled) {
+    bottomDockOpen = false;
+  }
+  renderList();
+  renderInspector();
+  renderBottomDock();
+}
 function renderInspector(): void {
-  document.querySelectorAll('.inspector-tabs>button').forEach(button => button.classList.toggle('selected', button.getAttribute('data-action') === inspectorTab));
+  document.querySelectorAll('.inspector .inspector-tabs > button').forEach(button => button.classList.toggle('selected', button.getAttribute('data-action') === inspectorTab));
   if (inspectorTab === 'activity') {
     $('#inspector-content').innerHTML = '<h3 class="context-heading">WORKSPACE ACTIVITY</h3>' + (activities.length ? activities.map(event => `<div class="activity-event">${escape(event.message)}<small>${event.time}</small></div>`).join('') : '<p class="context-copy">이 탭에서 연결하고 편집한 기록이 여기에 표시됩니다.</p>'); return;
   }
   const cell = cells.find(cell => cell.id === selected);
   const cellOut = cell ? cellOutputs.get(cell.id) : undefined;
-  const proofStateHtml = cell && ['lean','rocq'].includes(cell.kind)
+  const proofStateHtml = cell && ['lean', 'rocq'].includes(cell.kind)
     ? cellOut?.running
       ? '<div class="context-block"><h3 class="context-heading">PROOF STATE</h3><p class="context-copy">증명을 검증하고 있습니다…</p><span class="context-tag">VERIFYING</span></div>'
       : cellOut?.status === 'verified'
@@ -1037,8 +1910,12 @@ function renderInspector(): void {
   const peersHtml = workspace && connected
     ? `<div class="context-block"><h3 class="context-heading">CONNECTED PEERS (${workspace.peers.length})</h3><p class="context-copy">${workspace.peers.length ? workspace.peers.map(p => escape(p.nickname || `Peer ${p.peer_id.slice(0, 4)}`)).join(', ') : '현재 다른 접속자가 없습니다.'}</p></div>`
     : '';
-  const typeCounts = { agent: cells.filter(cell => cell.kind === 'agent').length, proof: cells.filter(cell => ['lean','rocq'].includes(cell.kind)).length, code: cells.filter(cell => cell.kind === 'python').length, document: cells.filter(cell => ['markdown','html'].includes(cell.kind)).length };
-  $('#inspector-content').innerHTML = `<h3 class="context-heading">${cell ? 'CELL CONTEXT' : 'WORKSPACE CONTEXT'}</h3><h2 class="context-title">${escape(cell ? cellTypes[cell.kind].label : '연구의 흐름을\n하나로 연결하세요.').replace('\n','<br>')}</h2><p class="context-copy">${cell ? escape(cellTypes[cell.kind].description) : '아이디어를 탐색하고, 가설을 증명하고,<br>결과를 코드와 문서로 남기는 공간.'}</p>${proofStateHtml}${cellAclHtml}<div class="context-flow"><div class="flow-step"><span class="step-icon mint">✧</span><span>탐색하고 대화하기<small>AGENT CONVERSATIONS</small></span></div><div class="flow-step"><span class="step-icon purple">∀</span><span>논리로 증명하기<small>LEAN 4 / ROCQ PROOFS</small></span></div><div class="flow-step"><span class="step-icon blue">λ</span><span>코드로 실험하기<small>PYTHON CELLS</small></span></div><div class="flow-step"><span class="step-icon sand">≡</span><span>지식으로 정리하기<small>MARKDOWN / HTML</small></span></div></div><div class="context-block"><h3 class="context-heading">${cell ? 'THIS WORKSPACE' : 'WORKSPACE OVERVIEW'}</h3><div class="context-stat"><span>대화 기록</span><b>${String(typeCounts.agent).padStart(2,'0')}</b></div><div class="context-stat"><span>형식 증명</span><b>${String(typeCounts.proof).padStart(2,'0')}</b></div><div class="context-stat"><span>Python 코드</span><b>${String(typeCounts.code).padStart(2,'0')}</b></div><div class="context-stat"><span>연구 문서</span><b>${String(typeCounts.document).padStart(2,'0')}</b></div></div>${peersHtml}<div class="context-block"><h3 class="context-heading">COLLABORATION</h3><p class="context-copy">${demo ? '로컬 체험 모드입니다.<br>내용은 현재 브라우저 탭에만 저장됩니다.' : connected ? 'Agora Workspace 객체 ID·권한 ACL로<br>실시간 델타·CRDT 동기화 중입니다.' : 'Agora workspace를 연결하면<br>함께 셀을 편집할 수 있습니다.'}</p><span class="context-tag">${demo ? 'LOCAL SESSION' : connected ? 'WORKSPACE SYNC' : 'AGORA WORKSPACE'}</span></div>`;
+  const cellText = cell ? (models.get(cell.id)?.getValue() ?? cell.text) : '';
+  const cellMetricsHtml = cell
+    ? `<div class="context-block"><h3 class="context-heading">CELL METRICS</h3><div class="context-stat"><span>유형 / 언어</span><b>${escape(cellTypes[cell.kind].short)}</b></div><div class="context-stat"><span>줄 수</span><b>${cellText ? cellText.split('\n').length : 0} lines</b></div><div class="context-stat"><span>글자 수</span><b>${cellText.length} chars</b></div></div>`
+    : '<div class="context-flow"><div class="flow-step"><span class="step-icon mint">✧</span><span>탐색하고 대화하기<small>AGENT CONVERSATIONS</small></span></div><div class="flow-step"><span class="step-icon purple">∀</span><span>논리로 증명하기<small>LEAN 4 / ROCQ PROOFS</small></span></div><div class="flow-step"><span class="step-icon blue">λ</span><span>코드로 실험하기<small>PYTHON CELLS</small></span></div><div class="flow-step"><span class="step-icon sand">≡</span><span>지식으로 정리하기<small>MARKDOWN / HTML</small></span></div></div>';
+  const typeCounts = { agent: cells.filter(cell => cell.kind === 'agent').length, proof: cells.filter(cell => ['lean', 'rocq'].includes(cell.kind)).length, code: cells.filter(cell => cell.kind === 'python').length, document: cells.filter(cell => ['markdown', 'html'].includes(cell.kind)).length };
+  $('#inspector-content').innerHTML = `<h3 class="context-heading">${cell ? 'CELL CONTEXT' : 'WORKSPACE CONTEXT'}</h3><h2 class="context-title">${escape(cell ? cellTypes[cell.kind].label : '연구의 흐름을\n하나로 연결하세요.').replace('\n', '<br>')}</h2><p class="context-copy">${cell ? escape(cellTypes[cell.kind].description) : '아이디어를 탐색하고, 가설을 증명하고,<br>결과를 코드와 문서로 남기는 공간.'}</p>${proofStateHtml}${cellAclHtml}${cellMetricsHtml}<div class="context-block"><h3 class="context-heading">${cell ? 'THIS WORKSPACE' : 'WORKSPACE OVERVIEW'}</h3><div class="context-stat"><span>대화 기록</span><b>${String(typeCounts.agent).padStart(2, '0')}</b></div><div class="context-stat"><span>형식 증명</span><b>${String(typeCounts.proof).padStart(2, '0')}</b></div><div class="context-stat"><span>Python 코드</span><b>${String(typeCounts.code).padStart(2, '0')}</b></div><div class="context-stat"><span>연구 문서</span><b>${String(typeCounts.document).padStart(2, '0')}</b></div></div>${peersHtml}<div class="context-block"><h3 class="context-heading">COLLABORATION</h3><p class="context-copy">${demo ? '로컬 체험 모드입니다.<br>내용은 현재 브라우저 탭에만 저장됩니다.' : connected ? 'Agora Workspace 객체 ID·권한 ACL로<br>실시간 델타·CRDT 동기화 중입니다.' : 'Agora workspace를 연결하면<br>함께 셀을 편집할 수 있습니다.'}</p><span class="context-tag">${demo ? 'LOCAL SESSION' : connected ? 'WORKSPACE SYNC' : 'AGORA WORKSPACE'}</span></div>`;
   if (cell) {
     document.querySelector('#inspector-perm-btn')?.addEventListener('click', () => openCellPermissionModal(cell.id));
   }
@@ -1046,7 +1923,7 @@ function renderInspector(): void {
 function persistScratch(): void { sessionStorage.setItem(demoKey, JSON.stringify(cells)); $('#cell-save').textContent = '현재 탭에 저장됨'; }
 async function startDemo(): Promise<void> {
   if (workspace?.pending) { await workspace.flush(); }
-  ++loadGeneration; setPresenceFocus(undefined); workspace?.dispose(); workspace = undefined; connected = false; clearModels(); demo = true; workspaceName = 'Research playground'; selected = undefined;
+  ++loadGeneration; setPresenceFocus(undefined); workspace?.dispose(); workspace = undefined; connected = false; clearModels(); demo = true; workspaceName = 'Research playground'; selected = undefined; selfProfile = { name: '나 (체험)' };
   const cached = sessionStorage.getItem(demoKey);
   const parsed = cached ? JSON.parse(cached) as Partial<Cell>[] : undefined;
   cells = parsed
@@ -1062,7 +1939,7 @@ async function startDemo(): Promise<void> {
       canWrite: item.locked ? false : true,
       canExecute: true,
     }))
-    : (['markdown','agent','lean','rocq','python','html'] as CellKind[]).map((kind, index) => ({
+    : (['markdown', 'agent', 'lean', 'rocq', 'python', 'html'] as CellKind[]).map((kind, index) => ({
       id: `demo-${Date.now() + index}-${crypto.randomUUID().slice(0, 8)}`,
       kind,
       path: '',
@@ -1075,46 +1952,51 @@ async function startDemo(): Promise<void> {
       canExecute: true,
     }));
   cells.sort((a, b) => a.frameOrder - b.frameOrder || a.id.localeCompare(b.id));
-  persistScratch(); const url = new URL(location.href); url.searchParams.delete('workspace'); history.replaceState(null,'',url);
+  persistScratch(); const url = new URL(location.href); url.searchParams.delete('workspace'); history.replaceState(null, '', url);
   $('#workspace-subtitle').textContent = '로컬 체험 · 현재 탭에만 저장'; $('#workspace-mode').textContent = 'Local Playground'; $('#status').textContent = '로컬 체험 · 공유되지 않음'; $('#connection-label').textContent = 'LOCAL SESSION'; $('#sync-description').textContent = '체험 내용은 현재 탭에만 저장'; $('#permission-label').textContent = '로컬 편집';
   openNotebook(); agentPanel.onWorkspaceChanged(); log('로컬 체험 workspace를 열었습니다.'); notify('로컬 체험입니다. 공동 편집하려면 Agora workspace를 연결하세요.');
 }
 let addingCell = false;
-async function addCell(kind?: CellKind): Promise<void> {
+async function addCell(kind?: CellKind, afterId?: string): Promise<void> {
   if (!workspace && !demo) {
     showModal('연구 공간을 선택하세요', '<p class="modal-copy">Agora workspace에서 실시간으로 협업하거나 로컬 체험으로 셀을 살펴보세요.</p><div class="choice-list"><button class="choice" data-action="open"><span class="type-icon mint">↔</span><span><strong>공유 workspace 열기</strong><small>ORCID로 로그인하고 공동 편집</small></span><span class="choice-arrow">↗</span></button><button class="choice" data-action="demo"><span class="type-icon blue">λ</span><span><strong>로컬 체험 시작</strong><small>계정 없이 현재 탭에서 셀 편집 체험</small></span><span class="choice-arrow">→</span></button></div>'); return;
   }
   if (workspace && !workspace.client.canWrite) { notify('이 workspace는 읽기 전용입니다.', true); return; }
   if (!kind) {
     showModal('새로운 연구 셀', '<p class="modal-copy">다음 아이디어에 맞는 셀을 선택하세요.</p><div class="choice-list">' + (Object.keys(cellTypes) as CellKind[]).map(kind => `<button class="choice" data-add-kind="${kind}"><span class="type-icon ${cellTypes[kind].color}">${cellTypes[kind].icon}</span><span><strong>${cellTypes[kind].label}</strong><small>${cellTypes[kind].description}</small></span><span class="choice-arrow">＋</span></button>`).join('') + '</div>');
-    document.querySelectorAll<HTMLButtonElement>('[data-add-kind]').forEach(button => button.addEventListener('click', () => { modal.close(); void addCell(button.dataset.addKind as CellKind).catch(report); })); return;
+    document.querySelectorAll<HTMLButtonElement>('[data-add-kind]').forEach(button => button.addEventListener('click', () => { modal.close(); void addCell(button.dataset.addKind as CellKind, afterId).catch(report); })); return;
   }
   if (addingCell) { return; }
   let cell: Cell;
   if (workspace) {
     addingCell = true;
-    const buttons = document.querySelectorAll<HTMLButtonElement>('[data-quick-add], [data-action="add"]');
+    const buttons = document.querySelectorAll<HTMLButtonElement>('[data-quick-add], [data-action="add"], [data-insert-kind]');
     buttons.forEach(button => { button.disabled = true; });
     $('#cell-save').textContent = '새 셀 생성 중…';
     try {
-      cell = await workspace.add(kind, starters[kind]);
+      cell = await workspace.add(kind, starters[kind], afterId ? { afterId } : undefined);
       cells = workspace.cells;
     } finally {
       addingCell = false;
-      buttons.forEach(button => { button.disabled = false; });
+      buttons.forEach(button => { button.disabled = !workspace?.client.canWrite; });
       if (!workspace.pending) { $('#cell-save').textContent = connected ? 'Workspace 동기화됨' : '로컬 변경 유지'; }
     }
   } else {
-    const nextOrder = cells.reduce((max, item) => Math.max(max, item.frameOrder), -10) + 10;
-    cell = { id: `demo-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`, kind, path: '', text: starters[kind], title: cellTitle(kind, starters[kind]), permission: ['local'], frameOrder: nextOrder, locked: false, canWrite: true, canExecute: true };
-    cells.push(cell);
+    const insertIdx = afterId ? cells.findIndex(item => item.id === afterId) : -1;
+    cell = { id: `demo-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`, kind, path: '', text: starters[kind], title: cellTitle(kind, starters[kind]), permission: ['local'], frameOrder: 0, locked: false, canWrite: true, canExecute: true };
+    if (insertIdx >= 0 && insertIdx < cells.length - 1) {
+      cells.splice(insertIdx + 1, 0, cell);
+    } else {
+      cells.push(cell);
+    }
+    cells.forEach((item, index) => { item.frameOrder = index * 10; });
     persistScratch();
   }
   if (filter !== 'all' && !visibleCells().some(item => item.id === cell.id)) {
     filter = 'all';
     document.querySelectorAll('.rail-button').forEach(button => button.classList.toggle('active', button.getAttribute('data-action') === 'workspace'));
   }
-  log(`${cellTypes[kind].label} 셀을 만들었습니다.`); selectCell(cell.id, 'end');
+  log(`${cellTypes[kind].label} 셀을${afterId ? ' 바로 아래에' : ''} 만들었습니다.`); selectCell(cell.id, afterId ? 'nearest' : 'end');
 }
 function search(): void {
   showModal('Workspace 빠른 이동', '<input class="search-input" id="cell-search" type="search" aria-label="셀 검색" placeholder="셀 제목, 종류, 내용 검색…"><div class="choice-list" id="search-results"></div>');
@@ -1130,25 +2012,37 @@ async function deleteCell(): Promise<void> {
   if (workspace && !cell.canWrite) { notify(errorLabels[cell.locked ? 'ITEM_LOCKED' : 'ITEM_WRITE_DENIED'], true); return; }
   showModal('셀 삭제', `<p class="modal-copy">“${escape(cell.title)}” 셀을 삭제할까요? 공유 workspace에서는 다른 참여자에게도 적용됩니다.</p><div class="form-actions"><button class="button ghost" id="cancel-delete">취소</button><button class="button primary" id="confirm-delete">셀 삭제</button></div>`);
   $('#cancel-delete').addEventListener('click', () => modal.close());
-  $('#confirm-delete').addEventListener('click', event => { (event.currentTarget as HTMLButtonElement).disabled = true; void (async () => {
-    if (activePresenceCellId === cell.id) { setPresenceFocus(undefined); }
-    if (workspace) { deletingCellId = cell.id; try { await workspace.delete(cell.id); cells = workspace.cells; } finally { deletingCellId = undefined; } } else { cells = cells.filter(item => item.id !== cell.id); persistScratch(); }
-    const ed = cellEditors.get(cell.id);
-    if (ed) { ed.setModel(null); ed.dispose(); cellEditors.delete(cell.id); }
-    previewCells.delete(cell.id);
-    cellOutputs.delete(cell.id);
-    models.get(cell.id)?.dispose(); models.delete(cell.id);
-    if (selected === cell.id) { selected = cells[0]?.id; }
-    renderList(); renderInspector();
-    agentPanel.onSelectionChanged();
-    if (viewMode === 'notebook') { renderNotebook(); }
-    modal.close(); log('셀을 삭제했습니다.');
-  })().catch(error => { report(error); (event.target as HTMLButtonElement).disabled = false; }); });
+  $('#confirm-delete').addEventListener('click', event => {
+    (event.currentTarget as HTMLButtonElement).disabled = true; void (async () => {
+      if (activePresenceCellId === cell.id) { setPresenceFocus(undefined); }
+      if (workspace) { deletingCellId = cell.id; try { await workspace.delete(cell.id); cells = workspace.cells; } finally { deletingCellId = undefined; } } else { cells = cells.filter(item => item.id !== cell.id); persistScratch(); }
+      const ed = cellEditors.get(cell.id);
+      if (ed) { ed.setModel(null); ed.dispose(); cellEditors.delete(cell.id); }
+      manualCellHeights.delete(cell.id);
+      clearTimeout(previewTimers.get(cell.id));
+      previewTimers.delete(cell.id);
+      previewCells.delete(cell.id);
+      cellOutputs.delete(cell.id);
+      cellExecOrders.delete(cell.id);
+      chatVisibleCounts.delete(cell.id);
+      chatPendingAi.delete(cell.id);
+      chatAiMode.delete(cell.id);
+      chatDemoSpeaker.delete(cell.id);
+      chatLastSnapshot.delete(cell.id);
+      chatFeedActivePeers.delete(cell.id);
+      models.get(cell.id)?.dispose(); models.delete(cell.id);
+      if (selected === cell.id) { selected = cells[0]?.id; }
+      renderList(); renderInspector();
+      agentPanel.onSelectionChanged();
+      if (viewMode === 'notebook') { renderNotebook(); }
+      modal.close(); log('셀을 삭제했습니다.');
+    })().catch(error => { report(error); (event.target as HTMLButtonElement).disabled = false; });
+  });
 }
 function exportCell(): void {
   const cell = cells.find(cell => cell.id === selected); if (!cell) { return; }
   const value = models.get(cell.id)?.getValue() ?? cell.text;
-  download(value, `${cell.title.replace(/[^\p{L}\p{N}_ -]/gu,'').slice(0,60) || 'cell'}.${cellTypes[cell.kind].extension}`);
+  download(value, `${cell.title.replace(/[^\p{L}\p{N}_ -]/gu, '').slice(0, 60) || 'cell'}.${cellTypes[cell.kind].extension}`);
 }
 function download(value: string, name: string): void {
   const url = URL.createObjectURL(new Blob([value], { type: 'text/plain;charset=utf-8' }));
@@ -1156,15 +2050,82 @@ function download(value: string, name: string): void {
 }
 
 function message(): void {
-  const cell = cells.find(cell => cell.id === selected && cell.kind === 'agent'); if (!cell) { return; }
-  showModal('대화 메시지 기록', '<p class="modal-copy">외부 에이전트와 나눈 대화나 자신의 질문을 기록합니다. AI 응답은 생성하지 않습니다.</p><form id="message-form"><label class="field">역할<select name="role"><option value="사용자">사용자</option><option value="에이전트">에이전트</option><option value="연구 메모">연구 메모</option></select></label><label class="field">메시지<textarea name="text" required placeholder="연구 맥락에 남길 내용을 입력하세요."></textarea></label><div class="form-actions"><button class="button primary">기록에 추가 ＋</button></div></form>');
-  $('#message-form').addEventListener('submit', event => { event.preventDefault(); const data = new FormData(event.currentTarget as HTMLFormElement); const model = models.get(cell.id)!; const text = `${model.getValue().trimEnd()}\n\n## ${data.get('role')}\n${String(data.get('text')).trim()}\n`; model.pushEditOperations(null, [{ range: model.getFullModelRange(), text }], () => null); modal.close(); log('대화 기록에 메시지를 추가했습니다.'); });
+  const cell = cells.find(cell => cell.id === selected && cell.kind === 'agent') || cells.find(cell => cell.kind === 'agent');
+  if (!cell) {
+    notify('먼저 AI 대화 셀을 만들거나 선택하세요.');
+    return;
+  }
+  selectCell(cell.id, 'center');
 }
 function help(): void { showModal('연결된 연구를 시작하세요', '<div class="help-grid"><p><b>Workspace</b>는 공동 연구 공간입니다. 같은 workspace를 열면 같은 셀을 편집하고 변경을 실시간으로 공유합니다.</p><p><b>AI 에이전트</b>는 EXAONE 2.5와 MCP 도구로 Workspace 셀을 생성·수정하며 API별 잔여 한도를 표시합니다.<br><b>Lean 4 / Rocq</b>는 형식 증명 소스를 검증합니다.<br><b>Python</b>은 Agora VM에서 실험 코드를 실행합니다.<br><b>Markdown / HTML</b>은 문서와 미리보기를 제공합니다.</p><p><kbd>Ctrl K</kbd> 검색 · <kbd>Alt N</kbd> 새 셀<br><kbd>Ctrl S</kbd> 저장 · <kbd>Ctrl Shift F</kbd> 집중 모드</p></div>'); }
-function settings(): void {
+function settings(initialTab: 'general' | 'monitoring' = 'general'): void {
   const savedLines = localStorage.getItem('irade.lineNumbers') === 'off' ? 'off' : 'on';
-  showModal('연구 환경 설정', `<p class="modal-copy">설정은 이 브라우저에 적용됩니다.</p><label class="settings-row">편집기 글자 크기<select id="font-size">${[12,14,16,18,20].map(size => `<option value="${size}" ${Number(localStorage.getItem('irade.fontSize') || 14) === size ? 'selected' : ''}>${size}px</option>`).join('')}</select></label><label class="settings-row">편집기 줄 번호<select id="line-numbers"><option value="on" ${savedLines === 'on' ? 'selected' : ''}>표시</option><option value="off" ${savedLines === 'off' ? 'selected' : ''}>숨기기</option></select></label><div class="form-actions"><button class="button ghost" data-action="help">사용 안내</button><button class="button primary" id="save-settings">적용</button></div>`);
-  $('#save-settings').addEventListener('click', () => { const size = Number($<HTMLSelectElement>('#font-size').value); const lines = $<HTMLSelectElement>('#line-numbers').value as 'on' | 'off'; localStorage.setItem('irade.fontSize', String(size)); localStorage.setItem('irade.lineNumbers', lines); for (const ed of cellEditors.values()) { ed.updateOptions({ fontSize: size, lineNumbers: lines }); } modal.close(); notify('편집기 설정을 적용했습니다.'); });
+  const savedSize = Number(localStorage.getItem('irade.fontSize') || 14);
+  const isMonitoring = initialTab === 'monitoring';
+  showModal(
+    '연구 환경 설정',
+    `<div class="settings-tabs" role="tablist" aria-label="설정 항목">
+      <button type="button" class="settings-tab ${isMonitoring ? '' : 'selected'}" role="tab" aria-selected="${!isMonitoring}" data-settings-tab="general">일반 설정</button>
+      <button type="button" class="settings-tab ${isMonitoring ? 'selected' : ''}" role="tab" aria-selected="${isMonitoring}" data-settings-tab="monitoring"><span class="monitor-live-dot" aria-hidden="true"></span><span>모니터링</span></button>
+    </div>
+    <div id="settings-general-pane" class="settings-pane" ${isMonitoring ? 'hidden' : ''}>
+      <p class="modal-copy">설정은 이 브라우저에 적용됩니다.</p>
+      <label class="settings-row">편집기 글자 크기<select id="font-size">${[12, 14, 16, 18, 20].map(size => `<option value="${size}" ${savedSize === size ? 'selected' : ''}>${size}px</option>`).join('')}</select></label>
+      <label class="settings-row">편집기 줄 번호<select id="line-numbers"><option value="on" ${savedLines === 'on' ? 'selected' : ''}>표시</option><option value="off" ${savedLines === 'off' ? 'selected' : ''}>숨기기</option></select></label>
+      <div class="form-actions"><button class="button ghost" data-action="help">사용 안내</button><button class="button primary" id="save-settings">적용</button></div>
+    </div>
+    <div id="settings-monitor-pane" class="monitor-pane" ${isMonitoring ? '' : 'hidden'}></div>`,
+    isMonitoring,
+  );
+
+  const generalPane = $<HTMLElement>('#settings-general-pane');
+  const monitorPane = $<HTMLElement>('#settings-monitor-pane');
+  const activateTab = (tab: 'general' | 'monitoring'): void => {
+    const showMonitor = tab === 'monitoring';
+    modal.classList.toggle('modal-wide', showMonitor);
+    generalPane.hidden = showMonitor;
+    monitorPane.hidden = !showMonitor;
+    document.querySelectorAll<HTMLButtonElement>('[data-settings-tab]').forEach(btn => {
+      const selectedTab = btn.dataset.settingsTab === tab;
+      btn.classList.toggle('selected', selectedTab);
+      btn.setAttribute('aria-selected', selectedTab ? 'true' : 'false');
+    });
+    if (showMonitor) {
+      if (!perfMonitor) {
+        perfMonitor = new PerfMonitorController(monitorPane, {
+          getCellCount: () => cells.length,
+          getEditorCount: () => cellEditors.size,
+          getPreviewCount: () => previewCells.size,
+          getConnectionLabel: () => document.querySelector<HTMLElement>('#connection-label')?.textContent?.trim() || '연결 대기',
+        });
+      }
+      perfMonitor.start();
+      syncMonitorTriggerState(true);
+    } else {
+      perfMonitor?.stop();
+      syncMonitorTriggerState(false);
+    }
+  };
+
+  document.querySelectorAll<HTMLButtonElement>('[data-settings-tab]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      activateTab(btn.dataset.settingsTab === 'monitoring' ? 'monitoring' : 'general');
+    });
+  });
+
+  $('#save-settings').addEventListener('click', () => {
+    const size = Number($<HTMLSelectElement>('#font-size').value);
+    const lines = $<HTMLSelectElement>('#line-numbers').value as 'on' | 'off';
+    localStorage.setItem('irade.fontSize', String(size));
+    localStorage.setItem('irade.lineNumbers', lines);
+    for (const ed of cellEditors.values()) { ed.updateOptions({ fontSize: size, lineNumbers: lines }); }
+    modal.close();
+    notify('편집기 설정을 적용했습니다.');
+  });
+
+  if (isMonitoring) {
+    activateTab('monitoring');
+  }
 }
 async function share(): Promise<void> {
   if (!workspace) { notify('공유하려면 Agora workspace를 먼저 연결하세요.'); return; }
@@ -1181,10 +2142,11 @@ async function action(name: string): Promise<void> {
     } else { await signIn(); }
   }
   else if (name === 'logout') {
-      modal.close();
-      if (workspace?.pending) { await workspace.flush(); }
-      ++loadGeneration; setPresenceFocus(undefined); workspace?.dispose(); workspace = undefined; token = undefined; sessionStorage.removeItem(tokenKey); updateAccount(); clearModels(); cells = []; selected = undefined; connected = false; workspaceName = '나의 연구 공간'; demo = false;
-      const url = new URL(location.href); url.searchParams.delete('workspace'); history.replaceState(null,'',url); overview(); agentPanel.onWorkspaceChanged(); $('#workspace-subtitle').textContent = 'workspace를 연결하세요'; $('#status').textContent = '로그아웃됨'; $('#connection-label').textContent = '연결 대기'; $('#permission-label').textContent = ''; notify('로그아웃했습니다.');
+    modal.close();
+    if (workspace?.pending) { await workspace.flush(); }
+    const logoutId = workspace?.client.config.canvasId;
+    ++loadGeneration; setPresenceFocus(undefined); workspace?.dispose(); workspace = undefined; token = undefined; sessionStorage.removeItem(tokenKey); sessionStorage.removeItem('irade.research.lastWorkspace'); if (logoutId) { sessionStorage.removeItem(`irade.research.view:${logoutId}`); } selfProfile = { name: '연구자' }; updateAccount(); clearModels(); cells = []; selected = undefined; connected = false; workspaceName = '나의 연구 공간'; demo = false;
+    const url = new URL(location.href); url.searchParams.delete('workspace'); url.searchParams.delete('workspaces'); history.replaceState(null, '', url); overview(); agentPanel.onWorkspaceChanged(); $('#workspace-subtitle').textContent = 'workspace를 연결하세요'; $('#status').textContent = '로그아웃됨'; $('#connection-label').textContent = '연결 대기'; $('#permission-label').textContent = ''; notify('로그아웃했습니다.');
   }
   else if (name === 'demo') { modal.close(); await startDemo(); }
   else if (name === 'run-all') { await runAllCells(); }
@@ -1194,22 +2156,68 @@ async function action(name: string): Promise<void> {
   else if (name === 'close-overview') {
     overviewOpen = false;
     if (workspace || demo) { openNotebook(); }
-    else { $('#overview').hidden = true; $('#cell-view').hidden = false; renderNotebook(); renderList(); }
+    else { enterEmptyView(); }
+  }
+  else if (name === 'close-workspace') {
+    if (workspace?.pending) { await workspace.flush(); }
+    const closingId = workspace?.client.config.canvasId;
+    ++loadGeneration; setPresenceFocus(undefined); workspace?.dispose(); workspace = undefined;
+    clearModels(); cells = []; selected = undefined; connected = false; demo = false; workspaceName = '나의 연구 공간';
+    selfProfile = { name: token ? selfProfile.name : '연구자', ...(token && selfProfile.uid ? { uid: selfProfile.uid } : {}) };
+    sessionStorage.removeItem('irade.research.lastWorkspace');
+    if (closingId) { sessionStorage.removeItem(`irade.research.view:${closingId}`); }
+    const url = new URL(location.href); url.searchParams.delete('workspace'); url.searchParams.delete('workspaces'); history.replaceState(null, '', url);
+    overview(); agentPanel.onWorkspaceChanged();
+    $('#workspace-subtitle').textContent = 'workspace를 연결하세요';
+    $('#status').textContent = token ? '연결 대기' : '로그아웃됨';
+    $('#connection-label').textContent = '연결 대기';
+    $('#permission-label').textContent = '';
+    notify('Workspace 연결을 닫았습니다.');
   }
   else if (name === 'search') { search(); }
   else if (name === 'focus') { document.body.classList.toggle('focus'); syncWorkbenchChrome(); }
   else if (name === 'theme') { applyTheme(currentTheme() === 'light' ? 'dark' : 'light'); }
   else if (name === 'sidebar') { document.body.classList.toggle('sidebar-hidden'); syncWorkbenchChrome(); }
   else if (name === 'bottom-panel') { bottomDockUserToggled = true; bottomDockOpen = !bottomDockOpen; renderBottomDock(); syncWorkbenchChrome(); }
-  else if (name === 'inspector') { document.body.classList.toggle('inspector-hidden'); syncWorkbenchChrome(); }
+  else if (name === 'inspector') {
+    const rightOpen = document.body.classList.contains('agent-open') || !document.body.classList.contains('inspector-hidden');
+    if (rightOpen) {
+      if (document.body.classList.contains('agent-open')) {
+        rightPaneMode = 'agent';
+        agentPanel.close();
+      } else {
+        rightPaneMode = 'inspector';
+      }
+      document.body.classList.add('inspector-hidden');
+    } else {
+      document.body.classList.remove('inspector-hidden');
+      if (rightPaneMode === 'agent') {
+        agentPanel.open({ focus: false });
+      }
+    }
+    syncWorkbenchChrome();
+  }
   else if (name === 'delete') { await deleteCell(); }
   else if (name === 'export') { exportCell(); }
   else if (name === 'message') { message(); }
   else if (name === 'help') { help(); }
-  else if (name === 'settings') { settings(); }
+  else if (name === 'settings') { settings('general'); }
+  else if (name === 'monitoring') { settings('monitoring'); }
   else if (name === 'share') { await share(); }
-  else if (name === 'agent') { agentPanel.open(); }
-  else if (name === 'context' || name === 'activity') { inspectorTab = name; renderInspector(); }
+  else if (name === 'agent') {
+    rightPaneMode = 'agent';
+    document.body.classList.remove('inspector-hidden');
+    agentPanel.open({ focus: true });
+    syncWorkbenchChrome();
+  }
+  else if (name === 'context' || name === 'activity') {
+    rightPaneMode = 'inspector';
+    inspectorTab = name;
+    document.body.classList.remove('inspector-hidden');
+    agentPanel.close();
+    renderInspector();
+    syncWorkbenchChrome();
+  }
   else if (name === 'workspace' || name.startsWith('filter-')) {
     filter = name === 'workspace' ? 'all' : name.slice(7);
     document.querySelectorAll('.rail-button').forEach(button => button.classList.toggle('active', button.getAttribute('data-action') === name));
@@ -1220,14 +2228,21 @@ async function action(name: string): Promise<void> {
 }
 document.addEventListener('click', event => {
   const target = event.target as Element;
+  if (target.closest('[data-open-dock-games]')) {
+    switchBottomDockTab('games');
+    return;
+  }
   const dockTab = target.closest<HTMLButtonElement>('button[data-dock-tab]');
   if (dockTab) {
-    bottomDockTab = dockTab.dataset.dockTab === 'activity' ? 'activity' : 'output';
-    renderBottomDock();
+    const rawTab = dockTab.dataset.dockTab;
+    const nextTab = rawTab === 'activity' ? 'activity' : rawTab === 'games' ? 'games' : 'output';
+    switchBottomDockTab(nextTab);
     return;
   }
   if (target.closest('#bottom-dock-clear')) {
-    if (bottomDockTab === 'activity') {
+    if (bottomDockTab === 'games') {
+      ensureDockArcade()?.resetCurrent(false);
+    } else if (bottomDockTab === 'activity') {
       activities.length = 0;
       if (inspectorTab === 'activity') { renderInspector(); }
     } else if (lastOutputCellId) {
@@ -1241,7 +2256,7 @@ document.addEventListener('click', event => {
   if (quickAdd) { void addCell(quickAdd.dataset.quickAdd as CellKind).catch(report); return; }
   const actionEl = target.closest<HTMLElement>('[data-action]');
   if (actionEl) {
-    if (actionEl.dataset.action === 'close-overview') { event.stopPropagation(); }
+    if (actionEl.dataset.action === 'close-overview' || actionEl.dataset.action === 'close-workspace') { event.stopPropagation(); }
     void action(actionEl.dataset.action!).catch(report);
   }
 });
@@ -1256,29 +2271,248 @@ document.addEventListener('keydown', event => {
 window.addEventListener('beforeunload', event => { if (workspace?.pending) { event.preventDefault(); event.returnValue = ''; } });
 const groups: { kinds: CellKind[]; title: string; description: string; icon: string; color: string }[] = [
   { kinds: ['agent'], title: '에이전트 대화', description: '질문과 추론, 대화의 맥락을 보관하세요.', icon: '✧', color: 'mint' },
-  { kinds: ['lean','rocq'], title: 'Lean 4 · Rocq 증명', description: '가설에서 정리까지, 논리를 연결하세요.', icon: '∀', color: 'purple' },
+  { kinds: ['lean', 'rocq'], title: 'Lean 4 · Rocq 증명', description: '가설에서 정리까지, 논리를 연결하세요.', icon: '∀', color: 'purple' },
   { kinds: ['python'], title: 'Python 코드', description: '작은 실험으로 아이디어를 구체화하세요.', icon: 'λ', color: 'blue' },
-  { kinds: ['markdown','html'], title: 'Markdown · HTML 문서', description: '관찰과 발견을 지식으로 남기세요.', icon: '≡', color: 'sand' },
+  { kinds: ['markdown', 'html'], title: 'Markdown · HTML 문서', description: '관찰과 발견을 지식으로 남기세요.', icon: '≡', color: 'sand' },
 ];
-$('#type-cards').innerHTML = groups.map((group,index) => `<button class="type-card" data-group="${index}"><span class="type-icon ${group.color}">${group.icon}</span><span><h3>${group.title}</h3><p>${group.description}</p></span><span class="card-arrow">↗</span><span class="card-number">0${index + 1}</span></button>`).join('');
+$('#type-cards').innerHTML = groups.map((group, index) => `<button class="type-card" data-group="${index}"><span class="type-icon ${group.color}">${group.icon}</span><span><h3>${group.title}</h3><p>${group.description}</p></span><span class="card-arrow">↗</span><span class="card-number">0${index + 1}</span></button>`).join('');
 document.querySelectorAll<HTMLButtonElement>('[data-group]').forEach(button => button.addEventListener('click', () => { const group = groups[Number(button.dataset.group)]; void addCell(group.kinds.length === 1 ? group.kinds[0] : undefined).catch(report); }));
+async function runLocalAssistantTurn(message: string, selectedCell?: Cell): Promise<{ answer: string }> {
+  if (!workspace && !demo) {
+    await startDemo();
+  }
+  const lower = message.toLowerCase();
+  const targetKind: CellKind | undefined = /lean|정리|증명/.test(lower)
+    ? 'lean'
+    : /rocq|coq/.test(lower)
+      ? 'rocq'
+      : /python|실험|코드|수치/.test(lower)
+        ? 'python'
+        : /html|시각화|웹/.test(lower)
+          ? 'html'
+          : /요약|markdown|노트|정리해/.test(lower) && /생성|추가|만들|작성/.test(lower)
+            ? 'markdown'
+            : undefined;
+
+  if (targetKind && /생성|추가|만들|작성/.test(lower)) {
+    await addCell(targetKind);
+    const created = cells.find(item => item.id === selected);
+    const kindMeta = cellTypes[targetKind];
+    return {
+      answer: `새 **${kindMeta.label}** 셀(${created ? `\`${created.title}\`` : kindMeta.short})을 작업 공간에 추가했습니다.\n\n- 실행/렌더링: 셀 상단 실행 버튼 또는 \`Shift+Enter\`\n- 실시간 **EXAONE 2.5 MCP** 자동 코드 생성은 상단 \`ORCID 로그인 ↗\` 후 공유 Workspace에서 동작합니다.`,
+    };
+  }
+
+  if (selectedCell) {
+    const previewLines = selectedCell.text.split(/\r?\n/).slice(0, 6).join('\n');
+    return {
+      answer: `선택한 **${cellTypes[selectedCell.kind].label}** 셀 \`${selectedCell.title}\` 기준 요약입니다.\n\n\`\`\`${cellTypes[selectedCell.kind].language}\n${previewLines}\n\`\`\`\n\n- 총 ${selectedCell.text.split(/\r?\n/).length}줄 · 권한: \`${permissionSummary(selectedCell)}\`\n- 공유 Agora Workspace에 연결하면 실제 **EXAONE 2.5** 모델이 셀 수정과 검증까지 직접 실행합니다.`,
+    };
+  }
+
+  const kindsSummary = Object.entries(
+    cells.reduce<Record<string, number>>((acc, c) => {
+      const label = cellTypes[c.kind].short;
+      acc[label] = (acc[label] || 0) + 1;
+      return acc;
+    }, {}),
+  ).map(([k, v]) => `${k} ${v}개`).join(', ');
+
+  return {
+    answer: `현재 **${workspaceName}**에는 총 ${cells.length}개의 셀(${kindsSummary || '없음'})이 있습니다.\n\n- 예: \`"Lean 4 정리 셀 생성해 줘"\`, \`"Python 실험 코드 추가"\`처럼 지시하면 즉시 셀을 추가할 수 있습니다.\n- 전체 AI 추론·MCP 편집은 ORCID 로그인 후 Agora Workspace에서 사용할 수 있습니다.`,
+  };
+}
+
 const agentPanel = new AgentPanelController({
   getWorkspace: () => workspace,
   getCells: () => cells,
   getSelectedId: () => selected,
   isConnected: () => connected,
+  isDemo: () => demo,
+  onLocalPrompt: runLocalAssistantTurn,
   onLog: msg => log(msg),
   onNotify: (msg, isError) => notify(msg, isError),
   onSelectCell: id => selectCell(id),
+  onVisibilityChange: () => syncWorkbenchChrome(),
+  onClosePanel: () => {
+    document.body.classList.add('inspector-hidden');
+    syncWorkbenchChrome();
+  },
 });
+function startResizeDrag(
+  event: PointerEvent,
+  handle: HTMLElement,
+  onMove: (clientX: number, clientY: number) => void,
+  onEnd?: () => void,
+): void {
+  event.preventDefault();
+  document.body.classList.add('is-resizing');
+  handle.classList.add('dragging');
+  const move = (e: PointerEvent): void => {
+    onMove(e.clientX, e.clientY);
+  };
+  const stop = (): void => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', stop);
+    window.removeEventListener('pointercancel', stop);
+    document.body.classList.remove('is-resizing');
+    handle.classList.remove('dragging');
+    onEnd?.();
+  };
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', stop);
+  window.addEventListener('pointercancel', stop);
+}
+
+function initLayoutResizers(): void {
+  const root = document.documentElement;
+  const keys = { sidebar: 'irade.layout.sidebarWidth', right: 'irade.layout.rightWidth', dock: 'irade.layout.dockHeight' };
+  const restore = (key: string, cssVar: string, min: number, max: number): void => {
+    const saved = Number(localStorage.getItem(key));
+    if (Number.isFinite(saved) && saved >= min && saved <= max) {
+      root.style.setProperty(cssVar, `${Math.round(saved)}px`);
+    }
+  };
+  restore(keys.sidebar, '--sidebar-width', 180, 440);
+  restore(keys.right, '--right-width', 240, 560);
+  restore(keys.dock, '--bottom-dock-height', 96, 460);
+
+  const sidebarHandle = document.querySelector<HTMLElement>('#resizer-sidebar');
+  sidebarHandle?.addEventListener('pointerdown', event => {
+    const startX = event.clientX;
+    const startWidth = document.querySelector<HTMLElement>('.sidebar')?.getBoundingClientRect().width || 244;
+    let latest = startWidth;
+    startResizeDrag(event, sidebarHandle, clientX => {
+      latest = Math.round(Math.max(180, Math.min(440, startWidth + (clientX - startX))));
+      root.style.setProperty('--sidebar-width', `${latest}px`);
+      for (const ed of cellEditors.values()) { ed.layout(); }
+    }, () => localStorage.setItem(keys.sidebar, String(latest)));
+  });
+  sidebarHandle?.addEventListener('dblclick', () => {
+    localStorage.removeItem(keys.sidebar);
+    root.style.removeProperty('--sidebar-width');
+    for (const ed of cellEditors.values()) { ed.layout(); }
+  });
+
+  const rightHandle = document.querySelector<HTMLElement>('#resizer-right');
+  rightHandle?.addEventListener('pointerdown', event => {
+    const startX = event.clientX;
+    const agentOpen = document.body.classList.contains('agent-open');
+    const targetEl = document.querySelector<HTMLElement>(agentOpen ? '#agent-drawer' : '.inspector');
+    const startWidth = targetEl?.getBoundingClientRect().width || (agentOpen ? 368 : 296);
+    const cssVar = agentOpen ? '--agent-width' : '--right-width';
+    let latest = startWidth;
+    startResizeDrag(event, rightHandle, clientX => {
+      latest = Math.round(Math.max(240, Math.min(560, startWidth + (startX - clientX))));
+      root.style.setProperty(cssVar, `${latest}px`);
+      for (const ed of cellEditors.values()) { ed.layout(); }
+    }, () => { if (!agentOpen) { localStorage.setItem(keys.right, String(latest)); } });
+  });
+  rightHandle?.addEventListener('dblclick', () => {
+    localStorage.removeItem(keys.right);
+    root.style.removeProperty('--right-width');
+    root.style.removeProperty('--agent-width');
+    for (const ed of cellEditors.values()) { ed.layout(); }
+  });
+
+  const bottomHandle = document.querySelector<HTMLElement>('#resizer-bottom');
+  bottomHandle?.addEventListener('pointerdown', event => {
+    const startY = event.clientY;
+    const startHeight = document.querySelector<HTMLElement>('#bottom-dock')?.getBoundingClientRect().height || 176;
+    let latest = startHeight;
+    startResizeDrag(event, bottomHandle, (_clientX, clientY) => {
+      latest = Math.round(Math.max(96, Math.min(540, startHeight + (startY - clientY))));
+      root.style.setProperty('--bottom-dock-height', `${latest}px`);
+    }, () => { if (bottomDockTab !== 'games') { localStorage.setItem(keys.dock, String(latest)); } });
+  });
+  bottomHandle?.addEventListener('dblclick', () => {
+    localStorage.removeItem(keys.dock);
+    root.style.removeProperty('--bottom-dock-height');
+  });
+}
+
+function initInsertProximity(): void {
+  const scrollEl = document.querySelector<HTMLElement>('#notebook-scroll');
+  if (!scrollEl) { return; }
+  let rafId = 0;
+  let lastX = -9999;
+  let lastY = -9999;
+  const maxDist = 115;
+  const fullDist = 12;
+
+  const updateAll = (reset = false): void => {
+    rafId = 0;
+    scrollEl.querySelectorAll<HTMLElement>('.nb-cell-insert-zone').forEach(zone => {
+      if (reset) {
+        zone.style.setProperty('--insert-prox', '0');
+        return;
+      }
+      const rect = zone.getBoundingClientRect();
+      const dx = Math.max(rect.left - lastX, 0, lastX - rect.right);
+      const dy = Math.max(rect.top - lastY, 0, lastY - rect.bottom);
+      const dist = Math.hypot(dx, dy);
+      const prox = dist >= maxDist
+        ? 0
+        : dist <= fullDist
+          ? 1
+          : Math.pow(1 - (dist - fullDist) / (maxDist - fullDist), 1.35);
+      zone.style.setProperty('--insert-prox', prox.toFixed(3));
+    });
+  };
+
+  scrollEl.addEventListener('pointermove', event => {
+    if (event.pointerType === 'touch') { return; }
+    lastX = event.clientX;
+    lastY = event.clientY;
+    if (!rafId) { rafId = requestAnimationFrame(() => updateAll(false)); }
+  });
+  scrollEl.addEventListener('scroll', () => {
+    if (lastX > -9000 && !rafId) { rafId = requestAnimationFrame(() => updateAll(false)); }
+  }, { passive: true });
+  scrollEl.addEventListener('pointerleave', () => {
+    lastX = -9999;
+    lastY = -9999;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    updateAll(true);
+  });
+}
+
+initLayoutResizers();
+initInsertProximity();
 updateAccount(); renderList(); renderInspector();
+const narrowLayoutMq = window.matchMedia('(max-width: 1100px)');
+const syncRightAgentDockForViewport = (): void => {
+  if (narrowLayoutMq.matches) {
+    if (document.body.classList.contains('agent-open')) {
+      agentPanel.close();
+      syncWorkbenchChrome();
+    }
+  } else if (rightPaneMode === 'agent' && !document.body.classList.contains('inspector-hidden') && !document.body.classList.contains('agent-open')) {
+    agentPanel.open({ focus: false });
+    syncWorkbenchChrome();
+  }
+};
+narrowLayoutMq.addEventListener('change', syncRightAgentDockForViewport);
+if (!narrowLayoutMq.matches && !document.body.classList.contains('inspector-hidden')) {
+  rightPaneMode = 'agent';
+  agentPanel.open({ focus: false });
+}
+syncWorkbenchChrome();
 const query = new URL(location.href).searchParams;
 let canvasId = Number(query.get('workspace'));
 void (async () => {
   if (token) {
-    try { await api('/api/irade/auth/me'); }
+    try { await refreshSelfProfile(); }
     catch { token = undefined; sessionStorage.removeItem(tokenKey); updateAccount(); }
   }
-  if (canvasId) { if (token) { await connect(canvasId, `Workspace ${canvasId}`); } else { await signIn(); } }
+  if (canvasId) {
+    if (token) {
+      const resolvedName = await resolveWorkspaceName(canvasId);
+      await connect(canvasId, resolvedName, true);
+    } else {
+      await signIn();
+    }
+  }
   else if (token && query.has('workspaces')) { await openWorkspace(); }
+  else if (query.has('demo')) { await startDemo(); }
 })().catch(report);

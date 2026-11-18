@@ -277,6 +277,7 @@ export class AgoraClient {
 			});
 			this.socket!.send(JSON.stringify({
 				type: 'runtime_execute',
+				action: 'execute',
 				request_id: requestId,
 				object_id: objectId,
 				language,

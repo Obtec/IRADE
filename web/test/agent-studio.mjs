@@ -32,7 +32,10 @@ try {
 	assert.equal(logoLoaded, true, 'IRADE header logo must load');
 	await page.waitForFunction(() => document.querySelector('#connection-label')?.textContent === 'WORKSPACE LIVE SYNC');
 
-	// Open AI Agent drawer and verify initial per-API quota display.
+	// Desktop right panel opens on the Antigravity AI Agent drawer by default, and #agent-toggle cleanly toggles it closed/open.
+	await page.waitForSelector('#agent-drawer:not([hidden])');
+	await page.click('#agent-toggle');
+	await page.waitForSelector('#agent-drawer', { state: 'hidden' });
 	await page.click('#agent-toggle');
 	await page.waitForSelector('#agent-drawer:not([hidden])');
 	await page.waitForFunction(() =>
@@ -78,7 +81,6 @@ try {
 
 	await page.reload({ waitUntil: 'networkidle' });
 	await page.waitForFunction(() => document.querySelector('#connection-label')?.textContent === 'WORKSPACE LIVE SYNC');
-	await page.click('#agent-toggle');
 	await page.waitForSelector('#agent-drawer:not([hidden])');
 	await page.waitForFunction(() =>
 		document.querySelector('#agent-quota-scope')?.textContent?.includes('exaone-deep-test · 개인 키')

@@ -1,11 +1,84 @@
 import { readFile, readdir, mkdtemp, writeFile, rm, access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { tmpdir } from 'node:os';
+import { cpus, freemem, loadavg, tmpdir, totalmem } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
+
+let prevCpuSnapshot = null;
+let lastComputedMetrics = null;
+let metricsBaselinePromise = null;
+
+function readCpuTotals() {
+  let idle = 0;
+  let total = 0;
+  const list = cpus();
+  for (const cpu of list) {
+    const t = cpu.times;
+    idle += t.idle;
+    total += t.user + t.nice + t.sys + t.idle + t.irq;
+  }
+  return {
+    idle,
+    total,
+    cores: Math.max(1, list.length),
+    proc: process.cpuUsage(),
+    hrMs: Number(process.hrtime.bigint()) / 1e6,
+  };
+}
+
+function computeCpuDelta(prev, curr) {
+  const totalDiff = Math.max(1, curr.total - prev.total);
+  const idleDiff = Math.max(0, curr.idle - prev.idle);
+  const cpuPercent = Math.min(100, Math.max(0, ((totalDiff - idleDiff) / totalDiff) * 100));
+  const wallUs = Math.max(1000, (curr.hrMs - prev.hrMs) * 1000);
+  const procUsedUs = Math.max(0, (curr.proc.user - prev.proc.user) + (curr.proc.system - prev.proc.system));
+  const processCpuPercent = Math.min(100, Math.max(0, (procUsedUs / (wallUs * curr.cores)) * 100));
+  const totalBytes = Math.max(1, totalmem());
+  const freeBytes = Math.max(0, freemem());
+  const usedBytes = Math.max(0, totalBytes - freeBytes);
+  const mem = process.memoryUsage();
+  return {
+    cpuPercent: Math.round(cpuPercent * 10) / 10,
+    processCpuPercent: Math.round(processCpuPercent * 10) / 10,
+    cores: curr.cores,
+    memUsedMb: Math.round(usedBytes / (1024 * 1024)),
+    memTotalMb: Math.round(totalBytes / (1024 * 1024)),
+    systemMemPercent: Math.round((usedBytes / totalBytes) * 1000) / 10,
+    rssMb: Math.round((mem.rss / (1024 * 1024)) * 10) / 10,
+    heapUsedMb: Math.round((mem.heapUsed / (1024 * 1024)) * 10) / 10,
+    loadAvg1: Math.round((loadavg()[0] || 0) * 100) / 100,
+    timestamp: Date.now(),
+  };
+}
+
+async function sampleRuntimeMetrics() {
+  const nowSnapshot = readCpuTotals();
+  if (!prevCpuSnapshot || (nowSnapshot.hrMs - prevCpuSnapshot.hrMs) > 15000) {
+    if (!metricsBaselinePromise) {
+      const startSnap = nowSnapshot;
+      metricsBaselinePromise = new Promise(resolveBaseline => {
+        setTimeout(() => {
+          const endSnap = readCpuTotals();
+          prevCpuSnapshot = endSnap;
+          lastComputedMetrics = computeCpuDelta(startSnap, endSnap);
+          metricsBaselinePromise = null;
+          resolveBaseline(lastComputedMetrics);
+        }, 50);
+      });
+    }
+    return await metricsBaselinePromise;
+  }
+  if ((nowSnapshot.hrMs - prevCpuSnapshot.hrMs) < 120 && lastComputedMetrics) {
+    return { ...lastComputedMetrics, timestamp: Date.now() };
+  }
+  const metrics = computeCpuDelta(prevCpuSnapshot, nowSnapshot);
+  prevCpuSnapshot = nowSnapshot;
+  lastComputedMetrics = metrics;
+  return metrics;
+}
 
 async function readJsonBody(req) {
   const chunks = [];
@@ -22,6 +95,7 @@ async function readJsonBody(req) {
 
 async function resolveExecutable(candidates) {
   for (const candidate of candidates) {
+    if (!candidate) { continue; }
     if (!candidate.includes('/')) { return candidate; }
     try {
       await access(candidate);
@@ -29,6 +103,18 @@ async function resolveExecutable(candidates) {
     } catch { /* try next */ }
   }
   return undefined;
+}
+
+async function discoverToolchainLeans() {
+  const candidates = [];
+  for (const root of ['/opt/elan/toolchains', '/home/steam/.elan/toolchains']) {
+    try {
+      for (const entry of await readdir(root)) {
+        candidates.push(join(root, entry, 'bin', 'lean'));
+      }
+    } catch { /* ignore missing elan root */ }
+  }
+  return candidates;
 }
 
 function runProcess(command, args, { cwd, stdin, timeoutMs = 15000, env }) {
@@ -114,32 +200,49 @@ async function executeCode(kind, code) {
     }
 
     if (kind === 'lean') {
-      const lean = await resolveExecutable(['/home/steam/.elan/bin/lean', '/usr/local/bin/lean', 'lean']);
+      const toolchainLeans = await discoverToolchainLeans();
+      const lean = await resolveExecutable([
+        process.env.IRADE_LEAN_BIN,
+        ...toolchainLeans,
+        '/opt/elan/bin/lean',
+        '/home/steam/.elan/bin/lean',
+        '/usr/local/bin/lean',
+        'lean',
+      ]);
       if (!lean) {
         return { ok: false, exitCode: 127, stdout: '', stderr: 'Lean 4 실행기를 찾을 수 없습니다.', durationMs: 0, status: 'error' };
       }
+      const elanHome = lean.startsWith('/opt/elan/') ? '/opt/elan' : process.env.ELAN_HOME || '/home/steam/.elan';
+      const leanEnv = lean.includes('/')
+        ? { ELAN_HOME: elanHome, PATH: `${resolve(lean, '..')}:${process.env.PATH || ''}` }
+        : { ELAN_HOME: elanHome };
       const result = await runProcess(lean, ['--stdin'], {
         cwd: dir,
         stdin: code,
-        timeoutMs: 20000,
-        env: { PATH: `/home/steam/.elan/bin:${process.env.PATH || ''}` },
+        timeoutMs: 25000,
+        env: leanEnv,
       });
       if (result.ok) {
         result.status = 'verified';
         if (!result.stdout.trim()) {
           result.stdout = '✓ Proof verified (0 errors)';
         }
+      } else if (!result.stdout.trim() && !result.stderr.trim()) {
+        result.stderr = `Lean 4 프로세스가 비정상 종료되었습니다 (exit ${result.exitCode ?? '?'}).`;
       }
       return result;
     }
 
     if (kind === 'rocq') {
-      const coqc = await resolveExecutable(['/usr/bin/coqc', '/usr/local/bin/coqc', 'coqc']);
+      const coqc = await resolveExecutable([process.env.IRADE_COQC_BIN, '/usr/bin/coqc', '/usr/local/bin/coqc', 'coqc']);
+      if (!coqc) {
+        return { ok: false, exitCode: 127, stdout: '', stderr: 'Rocq (coqc) 실행기가 서버에 설치되어 있지 않습니다.', durationMs: 0, status: 'error' };
+      }
       const scriptPath = join(dir, 'Cell.v');
       await writeFile(scriptPath, code, 'utf8');
       const result = await runProcess(coqc, [scriptPath], {
         cwd: dir,
-        timeoutMs: 20000,
+        timeoutMs: 25000,
       });
       if (result.status === 'error' && /ENOENT|not found/i.test(result.stderr)) {
         result.stderr = 'Rocq (coqc) 실행기가 서버에 설치되어 있지 않습니다.';
@@ -154,7 +257,7 @@ async function executeCode(kind, code) {
 
     return { ok: false, exitCode: 1, stdout: '', stderr: `지원하지 않는 셀 종류입니다: ${kind}`, durationMs: 0, status: 'error' };
   } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    await rm(dir, { recursive: true, force: true }).catch(() => { });
   }
 }
 
@@ -167,8 +270,19 @@ export async function applyResearchStudio(app, { studioPath } = {}) {
     const extension = name.slice(name.lastIndexOf('.'));
     if (types[extension] && /^[a-zA-Z0-9_.-]+$/.test(name)) { files.set(name, { content: await readFile(new URL(name, root)), type: types[extension] }); }
   }
-  const html = files.get('index.html').content.toString();
+  const studioHtml = files.get('index.html').content.toString();
+  const homeHtml = (files.get('home.html') || files.get('index.html')).content.toString();
+  const previewHtml = `<!doctype html><html lang="ko"><head><meta charset="UTF-8"><script>window.addEventListener('message',function(e){if(e.source!==window.parent||!e.data||e.data.type!=='irade:render-html')return;document.open();document.write(String(e.data.html||''));document.close();});</script></head><body></body></html>`;
   app.middleware.unshift(async (context, next) => {
+    if (context.path === '/api/metrics' && ['GET', 'HEAD'].includes(context.method)) {
+      context.set('X-Content-Type-Options', 'nosniff');
+      context.set('Cache-Control', 'no-store');
+      context.status = 200;
+      context.type = 'application/json';
+      context.body = context.method === 'HEAD' ? '' : await sampleRuntimeMetrics();
+      return;
+    }
+
     if (context.path === '/api/execute' && context.method === 'POST') {
       context.set('X-Content-Type-Options', 'nosniff');
       context.set('Cache-Control', 'no-store');
@@ -186,17 +300,36 @@ export async function applyResearchStudio(app, { studioPath } = {}) {
       return;
     }
 
-    const login = ['/login','/login/'].includes(context.path);
-    const home = context.path === '/' || login;
+    if (['/preview', '/preview/'].includes(context.path) && ['GET', 'HEAD'].includes(context.method)) {
+      context.set('X-Content-Type-Options', 'nosniff');
+      context.set('Referrer-Policy', 'no-referrer');
+      context.set('Cache-Control', 'no-store');
+      context.set('Content-Security-Policy', "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob: https:; font-src data: https:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'");
+      context.type = 'text/html';
+      context.body = previewHtml;
+      return;
+    }
+
+    const login = ['/login', '/login/'].includes(context.path);
+    const studioRoute = ['/studio', '/studio/', '/workspace', '/workspace/'].includes(context.path);
+    const hasStudioQuery = 'workspace' in context.query || 'workspaces' in context.query || 'demo' in context.query;
+    const homeRoute = ['/', '/home', '/home/'].includes(context.path);
+    const page = login || studioRoute || homeRoute;
     const asset = context.path.startsWith('/irade-assets/studio/') ? files.get(context.path.slice('/irade-assets/studio/'.length)) : undefined;
-    if ((!home && !asset) || !['GET','HEAD'].includes(context.method)) { return next(); }
+    if ((!page && !asset) || !['GET', 'HEAD'].includes(context.method)) { return next(); }
     context.set('X-Content-Type-Options', 'nosniff');
     context.set('Referrer-Policy', 'same-origin');
     context.set('Cache-Control', 'no-cache');
-    if (home) {
+    if (page) {
       context.type = 'text/html';
       context.set('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self' wss:; worker-src 'self' blob:; frame-src 'self' about:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'");
-      context.body = login ? files.get('login.html').content.toString() : html;
+      if (login) {
+        context.body = files.get('login.html').content.toString();
+      } else if (studioRoute || hasStudioQuery) {
+        context.body = studioHtml;
+      } else {
+        context.body = homeHtml;
+      }
     } else { context.type = asset.type; context.body = asset.content; }
   });
 }

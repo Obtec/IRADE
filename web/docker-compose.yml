@@ -18,6 +18,12 @@ services:
       - ALL
     volumes:
       - frontend-tls:/run/tls:ro
+      - type: bind
+        source: ${IRADE_ELAN_DIR:-/home/steam/.elan}
+        target: /opt/elan
+        read_only: true
+        bind:
+          create_host_path: false
     networks:
       irade-web:
         aliases:

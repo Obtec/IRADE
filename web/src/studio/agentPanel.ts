@@ -1,3 +1,5 @@
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
 import {
 	AgoraError,
 	type AgentApiProfile,
@@ -37,9 +39,13 @@ export interface AgentPanelContext {
 	getCells: () => Cell[];
 	getSelectedId: () => string | undefined;
 	isConnected: () => boolean;
+	isDemo?: () => boolean;
+	onLocalPrompt?: (message: string, selectedCell?: Cell) => Promise<{ answer: string }>;
 	onLog: (message: string) => void;
 	onNotify: (message: string, isError?: boolean) => void;
 	onSelectCell?: (id: string) => void;
+	onVisibilityChange?: () => void;
+	onClosePanel?: () => void;
 }
 
 const AGENT_ERROR_LABELS: Record<string, string> = {
@@ -63,6 +69,11 @@ const AGENT_ERROR_LABELS: Record<string, string> = {
 
 function esc(value: string): string {
 	return value.replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]!));
+}
+
+function renderAssistantMarkdown(markdown: string): string {
+	const raw = marked.parse(markdown, { async: false, breaks: true, gfm: true });
+	return DOMPurify.sanitize(typeof raw === 'string' ? raw : '');
 }
 
 function formatNumber(value: number | null | undefined): string {
@@ -196,9 +207,23 @@ export class AgentPanelController {
 
 	private bindEvents(): void {
 		this.toggleButton?.addEventListener('click', () => {
-			if (this.drawer.hidden) { this.open(); } else { this.close(); }
+			if (this.drawer.hidden) { this.open(); } else {
+				this.close();
+				this.ctx.onClosePanel?.();
+			}
 		});
-		this.closeButton.addEventListener('click', () => this.close());
+		this.closeButton.addEventListener('click', () => {
+			this.close();
+			this.ctx.onClosePanel?.();
+		});
+		this.threadEl.addEventListener('click', event => {
+			const starter = (event.target as Element).closest<HTMLButtonElement>('[data-agent-starter]');
+			if (!starter || this.running) { return; }
+			const text = starter.dataset.agentStarter || '';
+			if (!text.trim()) { return; }
+			this.promptInput.value = text;
+			this.formEl.requestSubmit();
+		});
 		this.apiSelect.addEventListener('change', () => {
 			const nextApi = sanitizeApiId(this.apiSelect.value);
 			this.prefs = saveAgentPreferences({ ...this.prefs, api: nextApi });
@@ -277,7 +302,8 @@ export class AgentPanelController {
 		});
 
 		this.promptInput.addEventListener('keydown', event => {
-			if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+			if (event.isComposing || event.keyCode === 229) { return; }
+			if (event.key === 'Enter' && (!event.shiftKey || event.ctrlKey || event.metaKey)) {
 				event.preventDefault();
 				this.formEl.requestSubmit();
 			}
@@ -300,19 +326,25 @@ export class AgentPanelController {
 		this.allowDeleteCheck.checked = this.prefs.allowDelete;
 	}
 
-	open(initialPrompt?: string): void {
+	open(options?: string | { initialPrompt?: string; focus?: boolean }): void {
+		const normalized = typeof options === 'string'
+			? { initialPrompt: options, focus: true }
+			: (options ?? { focus: true });
 		this.drawer.hidden = false;
 		document.body.classList.add('agent-open');
 		this.toggleButton?.setAttribute('aria-expanded', 'true');
 		this.toggleButton?.classList.add('active');
-		if (initialPrompt !== undefined) {
-			this.promptInput.value = initialPrompt;
+		this.ctx.onVisibilityChange?.();
+		if (normalized.initialPrompt !== undefined) {
+			this.promptInput.value = normalized.initialPrompt;
 		}
 		this.render();
 		if (this.ctx.isConnected() && this.ctx.getWorkspace()) {
 			void this.refreshStatus().catch(() => {});
 		}
-		requestAnimationFrame(() => this.promptInput.focus());
+		if (normalized.focus !== false) {
+			requestAnimationFrame(() => this.promptInput.focus());
+		}
 	}
 
 	close(): void {
@@ -320,12 +352,78 @@ export class AgentPanelController {
 		document.body.classList.remove('agent-open');
 		this.toggleButton?.setAttribute('aria-expanded', 'false');
 		this.toggleButton?.classList.remove('active');
+		this.ctx.onVisibilityChange?.();
 	}
 
 	onWorkspaceChanged(): void {
 		this.render();
 		if (!this.drawer.hidden && this.ctx.isConnected() && this.ctx.getWorkspace()) {
 			void this.refreshStatus().catch(() => {});
+		}
+	}
+
+	getActiveApiLabel(): string {
+		const id = this.activeApiId();
+		const profile = this.apis.find(entry => entry.id === id);
+		return profile?.label || profile?.model || id;
+	}
+
+	async runCellPrompt(
+		cellId: string,
+		message: string,
+		history: AgentHistoryTurn[] = [],
+		onProgress?: (chunk: string) => void,
+	): Promise<{ answer: string; api: string; model?: string; limited?: boolean }> {
+		const workspace = this.ctx.getWorkspace();
+		if (!workspace || !this.ctx.isConnected()) {
+			throw new Error('Agora Workspace에 연결한 뒤 AI 에이전트를 실행할 수 있습니다.');
+		}
+		if (!workspace.client.canWrite) {
+			throw new Error('이 Workspace는 읽기 전용입니다. 쓰기 그룹 권한이 필요합니다.');
+		}
+		if (workspace.pending) {
+			await workspace.flush();
+		}
+		const requestedApi = this.activeApiId();
+		const personalKey = getPersonalApiKey(requestedApi);
+		const scope = this.scopeKey(requestedApi, Boolean(personalKey));
+		const options = clampAgentOptions(this.prefs.options, this.serverDefaults);
+		try {
+			const result = await workspace.client.executeAgent({
+				operation: 'run',
+				...(requestedApi ? { api: requestedApi } : {}),
+				...(personalKey ? { api_key: personalKey } : {}),
+				message,
+				selected_ids: [cellId],
+				history: history.slice(-12).map(entry => ({
+					role: entry.role,
+					content: entry.content.slice(0, 8000),
+				})),
+				allow_delete: this.prefs.allowDelete,
+				options,
+			}, onProgress);
+			const resolvedApi = result.api || requestedApi;
+			const resolvedScope = this.scopeKey(resolvedApi, Boolean(personalKey));
+			if (result.telemetry) {
+				this.telemetryByScope.set(resolvedScope, result.telemetry);
+			}
+			const answer = result.answer || result.message || '작업을 완료했습니다.';
+			this.ctx.onLog(`AI 에이전트(${result.model || resolvedApi})가 대화 셀에 응답했습니다.`);
+			if (!this.drawer.hidden) {
+				this.render();
+			}
+			return {
+				answer,
+				api: resolvedApi,
+				model: result.model,
+				limited: result.limited,
+			};
+		} catch (error) {
+			this.recordErrorTelemetry(scope, error);
+			if (!this.drawer.hidden) {
+				this.render();
+			}
+			throw new Error(this.describeError(error));
 		}
 	}
 
@@ -396,17 +494,47 @@ export class AgentPanelController {
 	}
 
 	private async runPrompt(): Promise<void> {
+		const message = this.promptInput.value.trim();
+		if (!message || this.running) { return; }
+
 		const workspace = this.ctx.getWorkspace();
 		if (!workspace || !this.ctx.isConnected()) {
-			this.ctx.onNotify('Agora Workspace에 연결한 뒤 AI 에이전트를 실행할 수 있습니다.', true);
+			if (!this.ctx.onLocalPrompt) {
+				this.ctx.onNotify('Agora Workspace에 연결한 뒤 AI 에이전트를 실행할 수 있습니다.', true);
+				return;
+			}
+			const selectedId = this.ctx.getSelectedId();
+			const selectedCell = selectedId ? this.ctx.getCells().find(item => item.id === selectedId) : undefined;
+			this.thread.push({ id: crypto.randomUUID(), role: 'user', content: message, api: 'local-assistant' });
+			this.promptInput.value = '';
+			this.running = true;
+			this.progressText = '워크스페이스 맥락을 분석하는 중…';
+			this.render();
+			try {
+				const localRes = await this.ctx.onLocalPrompt(message, this.prefs.attachSelection ? selectedCell : undefined);
+				this.thread.push({
+					id: crypto.randomUUID(),
+					role: 'assistant',
+					content: localRes.answer,
+					api: 'local-assistant',
+					model: '로컬 체험 어시스턴트',
+				});
+			} catch (error) {
+				const errMsg = this.describeError(error);
+				this.thread.push({ id: crypto.randomUUID(), role: 'error', content: errMsg, api: 'local-assistant' });
+				this.ctx.onNotify(errMsg, true);
+			} finally {
+				this.running = false;
+				this.progressText = '';
+				this.render();
+			}
 			return;
 		}
+
 		if (!workspace.client.canWrite) {
 			this.ctx.onNotify('이 Workspace는 읽기 전용입니다. 쓰기 그룹 권한이 필요합니다.', true);
 			return;
 		}
-		const message = this.promptInput.value.trim();
-		if (!message || this.running) { return; }
 
 		if (workspace.pending) {
 			await workspace.flush();
@@ -526,6 +654,7 @@ export class AgentPanelController {
 	private renderConnectionAndCredentialState(): void {
 		const workspace = this.ctx.getWorkspace();
 		const connected = this.ctx.isConnected() && Boolean(workspace);
+		const isLocalAssist = !connected && Boolean(this.ctx.onLocalPrompt);
 		const canWrite = Boolean(workspace?.client.canWrite);
 		const apiId = this.activeApiId();
 		const scope = this.scopeKey(apiId);
@@ -534,8 +663,10 @@ export class AgentPanelController {
 
 		if (!connected) {
 			this.connectionNotice.hidden = false;
-			this.connectionNotice.className = 'agent-notice warn';
-			this.connectionNotice.textContent = '실시간 AI 에이전트 실행과 한도 조회는 상단 "열기 ↗"로 Agora Workspace에 연결한 뒤 사용할 수 있습니다.';
+			this.connectionNotice.className = isLocalAssist ? 'agent-notice info' : 'agent-notice warn';
+			this.connectionNotice.textContent = isLocalAssist
+				? '로컬 어시스턴트 모드 · 실시간 EXAONE MCP 연동은 ORCID Workspace 연결 후 활성화됩니다.'
+				: '실시간 AI 에이전트 실행과 한도 조회는 상단 "열기 ↗"로 Agora Workspace에 연결한 뒤 사용할 수 있습니다.';
 		} else if (!canWrite) {
 			this.connectionNotice.hidden = false;
 			this.connectionNotice.className = 'agent-notice warn';
@@ -557,8 +688,8 @@ export class AgentPanelController {
 				: '서버 기본 키 사용 중';
 		this.keyClearBtn.disabled = !personal;
 		this.quotaRefreshBtn.disabled = !connected || this.refreshingStatus;
-		this.submitBtn.disabled = !connected || !canWrite || this.running;
-		this.submitBtn.textContent = this.running ? '작업 중…' : '에이전트 실행 ↵';
+		this.submitBtn.disabled = (connected ? !canWrite : !isLocalAssist) || this.running;
+		this.submitBtn.textContent = this.running ? '작업 중…' : '실행 ↑';
 	}
 
 	private renderQuota(): void {
@@ -620,16 +751,29 @@ export class AgentPanelController {
 
 	private renderThread(): void {
 		if (!this.thread.length) {
-			this.threadEl.innerHTML = '<div class="agent-empty">EXAONE 2.5 에이전트에게 Research Workspace 셀 생성, Python/Lean4/Rocq 코드 작성, 기존 셀 요약·수정을 요청해보세요.<br><small>새 셀은 항상 Workspace 하단에 생성되며, 실시간으로 동기화됩니다.</small></div>';
+			this.threadEl.innerHTML = `
+				<div class="agent-welcome">
+					<div class="agent-welcome-badge">✦ IRADE Antigravity Agent</div>
+					<strong>오른쪽 패널에서 바로 연구를 지시하세요.</strong>
+					<p>코드·형식 증명 생성, 선택한 셀 설명 및 리팩터링, 실험 결과 요약을 대화형으로 수행합니다.</p>
+					<div class="agent-starter-grid">
+						<button type="button" class="agent-starter-chip" data-agent-starter="선택한 셀의 내용을 분석하고 개선점을 설명해 줘.">✨ 현재 셀 설명 · 분석</button>
+						<button type="button" class="agent-starter-chip" data-agent-starter="새 Lean 4 정리 셀을 생성하고 증명 초안을 작성해 줘.">∀ Lean 4 정리 생성</button>
+						<button type="button" class="agent-starter-chip" data-agent-starter="수치 검증용 Python 코드 셀을 추가해 줘.">λ Python 실험 추가</button>
+						<button type="button" class="agent-starter-chip" data-agent-starter="현재 Workspace 내용을 요약하는 Markdown 노트를 생성해 줘.">≡ 연구 요약 노트</button>
+					</div>
+				</div>`;
 			return;
 		}
 		this.threadEl.innerHTML = this.thread.map(entry => {
-			const badge = entry.role === 'user'
-				? '나'
-				: entry.role === 'error'
-					? '오류'
-					: `✦ ${esc(entry.model || entry.api || 'EXAONE 2.5')}${entry.limited ? ' · 토큰 상한' : ''}`;
-			return `<div class="agent-msg ${entry.role}"><div class="agent-msg-meta">${badge}</div><div class="agent-msg-body">${esc(entry.content)}</div></div>`;
+			if (entry.role === 'user') {
+				return `<div class="agent-msg user"><div class="agent-msg-meta">나</div><div class="agent-msg-body">${esc(entry.content)}</div></div>`;
+			}
+			if (entry.role === 'error') {
+				return `<div class="agent-msg error"><div class="agent-msg-meta">오류</div><div class="agent-msg-body">${esc(entry.content)}</div></div>`;
+			}
+			const label = `✦ ${esc(entry.model || entry.api || 'EXAONE 2.5')}${entry.limited ? ' · 토큰 상한' : ''}`;
+			return `<div class="agent-msg assistant"><div class="agent-msg-meta">${label}</div><div class="agent-msg-body agent-markdown">${renderAssistantMarkdown(entry.content)}</div></div>`;
 		}).join('');
 		this.threadEl.scrollTop = this.threadEl.scrollHeight;
 	}

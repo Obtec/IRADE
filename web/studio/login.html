@@ -1,5 +1,12 @@
 <!doctype html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101315"><meta name="description" content="ORCID로 연결하는 IRADE 연구 workspace"><title>IRADE · ORCID 로그인</title><link rel="icon" href="/irade-assets/irade-favicon.ico"><link rel="stylesheet" href="/irade-assets/studio/login.css"></head>
-<body><header><a class="brand" href="/irade/"><img src="/irade-assets/irade-icon-192.png" alt=""><b>IRADE</b><span>RESEARCH ENVIRONMENT</span></a><a class="back" href="/irade/">연구 환경 둘러보기 ↗</a></header>
+<body>
+<div class="ambient-layer" aria-hidden="true">
+  <canvas id="login-particles"></canvas>
+  <div class="glow-orb orb-emerald"></div>
+  <div class="glow-orb orb-cyan"></div>
+  <div class="grid-veil"></div>
+</div>
+<header><a class="brand" href="/irade/"><img src="/irade-assets/irade-icon-192.png" alt=""><b>IRADE</b><span>RESEARCH ENVIRONMENT</span></a><a class="back" href="/irade/">연구 환경 둘러보기 ↗</a></header>
 <main><section class="research-intro"><span class="eyebrow">ONE IDENTITY. CONNECTED RESEARCH.</span><h1>당신의 연구,<br><em>당신의 ORCID로.</em></h1><p>연구자의 고유한 식별자와 함께<br>대화, 증명, 코드, 문서를 하나의 workspace로 연결하세요.</p><img class="project-image" src="/irade-assets/irade-icon-512.png" alt="IRADE 프로젝트 심볼"><div class="cell-types"><span>✧ Agent</span><span>∀ Lean 4 / Rocq</span><span>λ Python</span><span>≡ Documents</span></div></section>
 <section class="login-panel" aria-label="ORCID 로그인"><div class="login-card"><span class="eyebrow">WELCOME TO IRADE</span><h2>연구를 이어가세요.</h2><p class="description">ORCID로 로그인하거나 처음 방문이라면<br>연구자 계정을 등록합니다.</p>
 <button id="orcid-login" class="orcid-button" disabled><img src="/irade-assets/orcid-id.svg" alt="ORCID iD"><span>ORCID로 로그인 · 등록</span><span>↗</span></button><p id="login-status" class="status" role="status">ORCID 연결 상태를 확인하고 있습니다.</p>

@@ -93,18 +93,24 @@ export async function fixture({ studio } = {}) {
 			}));
 			return;
 		}
-		if (studio && request.url === '/api/irade/auth/me' && request.headers.authorization === 'Bearer fixture-writer') {
+		if (studio && request.url === '/api/irade/auth/me' && (request.headers.authorization === 'Bearer fixture-writer' || request.headers.authorization === 'Bearer fixture-peer')) {
+			const isPeer = request.headers.authorization === 'Bearer fixture-peer';
 			response.setHeader('Content-Type', 'application/json');
 			response.end(JSON.stringify({
-				userId: 7,
-				name: 'Fixture researcher',
-				orcid: '0000-0002-1825-0097',
+				userId: isPeer ? 8 : 7,
+				name: isPeer ? 'Dr. Kim' : 'Fixture researcher',
+				orcid: isPeer ? '0000-0002-1825-0098' : '0000-0002-1825-0097',
 				issuer: 'https://orcid.org',
-				profileUrl: 'https://orcid.org/0000-0002-1825-0097',
+				profileUrl: isPeer ? 'https://orcid.org/0000-0002-1825-0098' : 'https://orcid.org/0000-0002-1825-0097',
 			}));
 			return;
 		}
-		if (studio && request.url.startsWith('/api/irade/workspaces') && !request.url.endsWith('/access') && request.method === 'GET' && request.headers.authorization === 'Bearer fixture-writer') {
+		if (studio && request.url === '/api/irade/workspaces/42' && request.method === 'GET' && (request.headers.authorization === 'Bearer fixture-writer' || request.headers.authorization === 'Bearer fixture-peer')) {
+			response.setHeader('Content-Type', 'application/json');
+			response.end(JSON.stringify({ workspaceId: 42, name: '공동 연구 workspace', description: 'Shared research' }));
+			return;
+		}
+		if (studio && request.url.startsWith('/api/irade/workspaces') && !request.url.endsWith('/access') && request.method === 'GET' && (request.headers.authorization === 'Bearer fixture-writer' || request.headers.authorization === 'Bearer fixture-peer')) {
 			const url = new URL(request.url, 'https://localhost:9449');
 			response.setHeader('Content-Type', 'application/json');
 			const workspace = { workspaceId: 42, name: '공동 연구 workspace', description: 'Shared research' };
@@ -141,7 +147,7 @@ export async function fixture({ studio } = {}) {
 			});
 			return;
 		}
-		if (request.url !== '/api/irade/workspaces/42/access' || request.headers.authorization !== 'Bearer fixture-writer') {
+		if (request.url !== '/api/irade/workspaces/42/access' || (request.headers.authorization !== 'Bearer fixture-writer' && request.headers.authorization !== 'Bearer fixture-peer')) {
 			response.writeHead(403).end();
 			return;
 		}
@@ -281,6 +287,26 @@ export async function fixture({ studio } = {}) {
 						model: api,
 						telemetry: { api, limits: structuredClone(quota), observed_at: Math.floor(Date.now() / 1000), limits_observed_at: Math.floor(Date.now() / 1000), status: 200 },
 					},
+				}));
+				return;
+			}
+			if (frame.type === 'runtime_execute') {
+				if (frame.language === 'bash') {
+					// Simulate a silent VM bash exit (e.g., Lean/Rocq missing or misconfigured inside VM) -> must cleanly fall back to host runner.
+					socket.send(JSON.stringify({
+						type: 'runtime_result',
+						request_id: frame.request_id,
+						ok: true,
+						result: { exitCode: 1, output: '', timedOut: false },
+					}));
+					return;
+				}
+				socket.send(JSON.stringify({
+					type: 'runtime_result',
+					request_id: frame.request_id,
+					ok: false,
+					code: 'RUNTIME_MANAGER_UNAVAILABLE',
+					message: 'Fixture VM not attached',
 				}));
 				return;
 			}

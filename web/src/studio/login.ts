@@ -1,5 +1,8 @@
+import { initParticleField } from './particleField.ts';
+
 interface Login { accessToken?: string; mfaRequired?: boolean; challengeToken?: string }
 interface Profile { orcid: string; issuer: string }
+initParticleField('#login-particles', { variant: 'login' });
 const get = <T extends HTMLElement = HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const origin = location.origin;
 const params = new URL(location.href).searchParams;
@@ -22,7 +25,7 @@ async function request<T>(path: string, body?: object, token?: string): Promise<
 function finish(result: Login): void {
   if (!result.accessToken) { throw new Error('로그인 토큰을 받지 못했습니다.'); }
   sessionStorage.setItem(`irade.orcid.token:${origin}`, result.accessToken);
-  const url = new URL('/irade/', origin);
+  const url = new URL('/irade/studio', origin);
   if (workspace) { url.searchParams.set('workspace', String(workspace)); } else { url.searchParams.set('workspaces', '1'); }
   location.replace(String(url));
 }

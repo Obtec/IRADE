@@ -10,7 +10,7 @@ RUN npm run check && npm run build && npm prune --omit=dev
 FROM node:22-bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl python3 \
+    && apt-get install -y --no-install-recommends ca-certificates curl python3 coq \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 irade \
     && useradd --system --uid 10001 --gid irade --home-dir /home/irade --shell /usr/sbin/nologin irade

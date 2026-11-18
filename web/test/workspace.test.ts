@@ -479,3 +479,28 @@ test('new cells are always appended at the bottom even with missing or MAX_FRAME
 		}
 	} finally { h.workspace.dispose(); }
 });
+
+test('inserts new cell directly after target cell and handles tight frameOrder clusters', async () => {
+	const h = createCanvasHarness({
+		initialItems: {
+			c1: { kind: 'code', language: 'python', code: 'a = 1', title: '첫째', frameOrder: 0, permission: ['team-a'] },
+			c2: { kind: 'code', language: 'python', code: 'b = 2', title: '둘째', frameOrder: 2, permission: ['team-a'] },
+			c3: { kind: 'code', language: 'python', code: 'c = 3', title: '셋째', frameOrder: 20, permission: ['team-a'] },
+		},
+	});
+	try {
+		await h.workspace.load();
+		// Gap 0..2 allocates midpoint 1 cleanly without touching c2/c3.
+		const mid = await h.workspace.add('lean', 'theorem t : True := trivial', { afterId: 'c1' });
+		assert.deepEqual(h.workspace.cells.map(c => c.id), ['c1', mid.id, 'c2', 'c3']);
+		assert.equal(mid.frameOrder, 1);
+
+		// Consecutive insert right after c1 with gap 0..1 shifts only the minimal tight cluster [mid, c2], leaving c3(20) untouched.
+		const tight = await h.workspace.add('markdown', '# 끼워넣기', { afterId: 'c1' });
+		assert.deepEqual(h.workspace.cells.map(c => c.id), ['c1', tight.id, mid.id, 'c2', 'c3']);
+		for (let i = 1; i < h.workspace.cells.length; i += 1) {
+			assert.ok(h.workspace.cells[i - 1].frameOrder < h.workspace.cells[i].frameOrder);
+		}
+		assert.equal(h.workspace.cells[h.workspace.cells.length - 1].frameOrder, 20);
+	} finally { h.workspace.dispose(); }
+});

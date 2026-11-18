@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="ko">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0d1117">
+  <meta name="description" content="IRADE — 대화형 AI 추론, Lean 4·Rocq 형식 증명, Python 실험, 실시간 CRDT 협업이 하나로 통합된 연구 개발 환경">
+  <title>IRADE · Interactive Reasoning &amp; Analysis Development Environment</title>
+  <link rel="icon" href="/irade-assets/irade-favicon.ico?v=2">
+  <link rel="apple-touch-icon" href="/irade-assets/irade-icon-180.png?v=2">
+  <link rel="manifest" href="/irade-assets/manifest.webmanifest?v=2">
+  <link rel="stylesheet" href="/irade-assets/studio/home.css">
+</head>
+
+<body>
+  <div class="ambient-layer" aria-hidden="true">
+    <canvas id="hero-constellation"></canvas>
+    <div class="glow-orb orb-emerald"></div>
+    <div class="glow-orb orb-cyan"></div>
+    <div class="glow-orb orb-violet"></div>
+    <div class="grid-veil"></div>
+  </div>
+
+  <header class="site-header">
+    <div class="nav-inner">
+      <a class="brand-link" href="/irade/">
+        <img src="/irade-assets/irade-icon-192.png?v=2" alt="IRADE 로고">
+        <b>IRADE</b>
+        <span class="brand-tag">RESEARCH ENVIRONMENT</span>
+      </a>
+      <nav class="nav-links" aria-label="주요 섹션">
+        <a href="#evolution">연구의 진화</a>
+        <a href="#pipeline">아키텍처</a>
+        <a href="#choreography">셀 워크플로우</a>
+        <a href="#guarantees">암호화 · 협업</a>
+      </nav>
+      <div class="nav-actions">
+        <a class="nav-btn ghost" href="/irade/studio?demo=1">로컬 체험</a>
+        <a class="nav-btn ghost" href="/irade/login">ORCID 로그인</a>
+        <a class="nav-btn primary" href="/irade/studio">Workspace 시작 <span>→</span></a>
+      </div>
+    </div>
+  </header>
+
+  <main class="page-main">
+    <section class="hero-section">
+      <div class="hero-copy">
+        <div class="status-kicker">
+          <span class="pulse-dot"></span>
+          <span>INTERACTIVE REASONING &amp; ANALYSIS DEVELOPMENT ENVIRONMENT</span>
+        </div>
+        <h1 class="hero-title">
+          생각의 흐름이<br>
+          <span class="title-gradient">형식 증명과 실행</span>으로<br>
+          이어지는 단일 공간
+        </h1>
+        <p class="hero-desc">
+          AI 에이전트와 나눈 가설, <b>Lean 4 · Rocq</b> 형식 증명, 격리된 <b>Python</b> 실험,
+          그리고 팀원과 동시에 편집하는 <b>Automerge CRDT</b> 문서를 하나의 셀 워크스페이스에서 끊김 없이 연결합니다.
+        </p>
+        <div class="hero-cta-row">
+          <a class="cta-btn primary" href="/irade/studio">
+            <span>Workspace 스튜디오 열기</span>
+            <span aria-hidden="true">↗</span>
+          </a>
+          <a class="cta-btn secondary" href="/irade/studio?demo=1">
+            <span>로그인 없이 로컬 체험</span>
+            <span aria-hidden="true">→</span>
+          </a>
+          <a class="cta-btn link" href="/irade/login">ORCID 인증 로그인</a>
+        </div>
+        <div class="hero-metrics" role="list">
+          <div class="metric-chip" role="listitem">
+            <strong>Lean 4 · Rocq</strong>
+            <span>상주 REPL 스냅샷 검증</span>
+          </div>
+          <div class="metric-chip" role="listitem">
+            <strong>EXAONE 2.5</strong>
+            <span>MCP 기반 실시간 셀 생성</span>
+          </div>
+          <div class="metric-chip" role="listitem">
+            <strong>TLS 1.3 · WSS</strong>
+            <span>전 구간 암호화 및 객체 ACL</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="hero-stage" id="choreography" aria-label="IRADE 모션 데모 스테이지">
+        <div class="stage-chrome">
+          <div class="stage-dots" aria-hidden="true">
+            <i></i><i></i><i></i>
+          </div>
+          <span class="stage-title">workspace #42 · live cell pipeline</span>
+          <span class="stage-badge" id="stage-sync-badge">LIVE SYNC</span>
+        </div>
+
+        <div class="stage-tabs" role="tablist" aria-label="동작 단계">
+          <button type="button" class="stage-tab active" data-stage="0" role="tab" aria-selected="true">01 AI
+            추론</button>
+          <button type="button" class="stage-tab" data-stage="1" role="tab" aria-selected="false">02 Lean 4 증명</button>
+          <button type="button" class="stage-tab" data-stage="2" role="tab" aria-selected="false">03 Python VM</button>
+          <button type="button" class="stage-tab" data-stage="3" role="tab" aria-selected="false">04 CRDT 협업</button>
+        </div>
+
+        <div class="stage-viewport">
+          <div class="stage-card active" data-stage-panel="0">
+            <div class="cell-pill mint">✧ AGENT · EXAONE 2.5 MCP</div>
+            <div class="kinetic-chat">
+              <div class="chat-bubble user">
+                <small>Researcher prompt</small>
+                <p>자연수 합 공식 <code>sumUpTo</code> 정리를 Lean 4 셀에 작성하고 Python 검증 셀까지 추가해줘.</p>
+              </div>
+              <div class="mcp-beam" aria-hidden="true">
+                <span class="beam-line"></span>
+                <span class="beam-tag">MCP tool: create_cell(lean4) → verify_goal</span>
+              </div>
+              <div class="chat-bubble ai">
+                <small>EXAONE 2.5 · step 2 / 8</small>
+                <p id="kinetic-ai-line">셀 #02 Lean 4 정리와 #03 Python 교차 검증을 하단에 생성했습니다. 초/분/일 한도 정상 (99 / 100).</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="stage-card" data-stage-panel="1">
+            <div class="cell-pill purple">∀ LEAN 4 · IMMUTABLE SNAPSHOT</div>
+            <pre class="kinetic-code"><code><span class="kw">theorem</span> <span class="fn">sumUpTo_double</span> (n : Nat) :
+  2 * sumUpTo n = n * (n + 1) := <span class="kw">by</span>
+  <span class="kw">induction</span> n <span class="kw">with</span>
+  | zero =&gt; <span class="kw">simp</span> [sumUpTo]
+  | succ k ih =&gt; <span class="kw">omega</span></code></pre>
+            <div class="kinetic-proof-result">
+              <span class="proof-ring"></span>
+              <div>
+                <strong>✓ Goals accomplished (0 errors)</strong>
+                <small>Snapshot #env_04 · 자동 백트래킹 보호 · 38ms</small>
+              </div>
+            </div>
+          </div>
+
+          <div class="stage-card" data-stage-panel="2">
+            <div class="cell-pill blue">λ PYTHON · ISOLATED AGORA VM</div>
+            <pre class="kinetic-code"><code><span class="kw">def</span> <span class="fn">sum_up_to</span>(n):
+  <span class="kw">return</span> sum(range(n + 1))
+
+checks = [2 * sum_up_to(k) == k * (k + 1) <span class="kw">for</span> k <span class="kw">in</span> range(6)]
+<span class="fn">print</span>(<span class="str">"PYTHON_CHECK:"</span>, checks)</code></pre>
+            <div class="kinetic-terminal">
+              <span class="term-prompt">$ agora-vm run cell-03 --tls</span>
+              <code>PYTHON_CHECK: [True, True, True, True, True, True]</code>
+            </div>
+          </div>
+
+          <div class="stage-card" data-stage-panel="3">
+            <div class="cell-pill sand">↔ AUTOMERGE CRDT · ACL SYNC</div>
+            <div class="crdt-lanes">
+              <div class="crdt-peer peer-a">
+                <span class="peer-avatar">A</span>
+                <div>
+                  <strong>Alice · ORCID 0000-0002</strong>
+                  <code>edit cell-02 line 1: "수학적 귀납법 증명"</code>
+                </div>
+                <span class="peer-badge">WSS Δ</span>
+              </div>
+              <div class="crdt-converge" aria-hidden="true">
+                <span class="converge-pulse">⟳ Automerge Conflict-Free Merge</span>
+              </div>
+              <div class="crdt-peer peer-b">
+                <span class="peer-avatar">B</span>
+                <div>
+                  <strong>Bob · Group Writer</strong>
+                  <code>edit cell-02 line 4: "+ Python 교차 검증"</code>
+                </div>
+                <span class="peer-badge">SYNCED</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="stage-progress-track" aria-hidden="true">
+          <div class="stage-progress-fill" id="stage-progress-fill"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="evolution" class="evolution-section reveal-on-scroll">
+      <div class="section-head evolution-head">
+        <span class="section-eyebrow">THE EVOLUTION OF RESEARCH METHODOLOGY</span>
+        <h2>인공지능 시대, 난제 해결과 연구 방법론은 어떻게 진화하고 있는가</h2>
+        <p>
+          현대 수학과 컴퓨터과학, 물리·공학의 미해결 문제 해결에서는 AI의 방대한 가설 탐색 능력과
+          논리적 무결성을 보증하는 <b>형식 증명 커널</b>의 결합이 새로운 연구 표준으로 자리 잡고 있습니다.
+        </p>
+      </div>
+
+      <div class="evolution-grid" role="list" aria-label="연구 방법론 진화 3단계">
+        <article class="evo-card" role="listitem">
+          <div class="evo-head">
+            <span class="evo-step">ERA 01 · TRADITIONAL</span>
+            <span class="evo-badge muted">분리된 수작업</span>
+          </div>
+          <h3>직관 중심의 수작업과 사후 검증</h3>
+          <p>
+            가설 도출은 노트와 LaTeX에, 실험 계산은 로컬 스크립트에, 공동 검토는 문서 파일에 흩어져 있어
+            복잡한 증명의 논리적 공백 확인과 실험 재현에 막대한 시간이 소요되었습니다.
+          </p>
+        </article>
+
+        <article class="evo-card" role="listitem">
+          <div class="evo-head">
+            <span class="evo-step">ERA 02 · NEURO-SYMBOLIC</span>
+            <span class="evo-badge cyan">AI + 형식 검증 결합</span>
+          </div>
+          <h3>AI 가설 탐색과 기계적 검증의 부상</h3>
+          <p>
+            추론 AI가 보조 정리와 반례 후보, 증명 전략을 빠르게 제안하는 시대가 열리면서
+            AI가 생성한 긴 추론 체인의 <b>환각을 제거하고 참을 보증할 검증 계층(Lean 4 · Rocq)</b>의 중요성이 급격히 커졌습니다.
+          </p>
+        </article>
+
+        <article class="evo-card featured" role="listitem">
+          <div class="evo-head">
+            <span class="evo-step">ERA 03 · IRADE WORKBENCH</span>
+            <span class="evo-badge mint">통합 연구 플랫폼</span>
+          </div>
+          <h3>추론·증명·실험·협업의 단일 순환</h3>
+          <p>
+            IRADE는 <b>EXAONE 2.5 에이전트</b>, <b>Lean 4 · Rocq 형식 증명</b>, <b>격리 Python 실행</b>,
+            <b>Automerge CRDT 공동 편집</b>을 하나의 셀 작업 공간에 통합해 현대 연구 방법론을 실행 가능한 인프라로 구현합니다.
+          </p>
+        </article>
+      </div>
+
+      <div class="impact-shell">
+        <div class="impact-intro">
+          <span class="section-eyebrow">PARADIGM SHIFTS &amp; SIGNIFICANCE</span>
+          <h3>방법론의 진화가 가져온 세 가지 변화</h3>
+          <p>
+            단순히 AI에게 답을 묻는 수준을 넘어, 모든 추론 과정이 검증 가능한 코드·정리·문서 아티팩트로 남기 때문에
+            개인 연구자부터 다기관 공동 연구팀까지 지식 생산의 속도와 신뢰도가 근본적으로 달라집니다.
+          </p>
+          <div class="significance-box">
+            <strong>왜 IRADE가 필요한가</strong>
+            <p>
+              AI 에이전트가 제안한 가설이 즉시 형식 증명 셀과 수치 실행 셀로 변환되고,
+              ORCID 신원 기반의 안전한 실시간 Workspace 위에서 동료 연구자와 함께 다듬어질 때 비로소
+              인공지능 시대의 난제 탐구가 재현 가능한 과학 지식으로 완성됩니다.
+            </p>
+          </div>
+        </div>
+
+        <div class="impact-list" role="list" aria-label="연구 방법론 변화 핵심 포인트">
+          <article class="impact-item" role="listitem">
+            <span class="impact-num mint">01</span>
+            <div>
+              <h4>확률적 생성에서 ‘검증 가능한 추론’으로</h4>
+              <p>자연어 AI 추론을 Lean 4·Rocq 커널로 교차 검증해 논리적 비약 없는 정리 단위 성과를 축적합니다.</p>
+            </div>
+          </article>
+          <article class="impact-item" role="listitem">
+            <span class="impact-num cyan">02</span>
+            <div>
+              <h4>정적 논문에서 ‘즉시 재현 가능한 셀’로</h4>
+              <p>수식 해설(Markdown)·형식 증명·Python 실험 결과가 동일 맥락 안에 남아 누구나 즉시 재실행할 수 있습니다.</p>
+            </div>
+          </article>
+          <article class="impact-item" role="listitem">
+            <span class="impact-num purple">03</span>
+            <div>
+              <h4>고립된 연구에서 ‘신뢰 기반 실시간 공저’로</h4>
+              <p>ORCID 인증, 셀 단위 ACL, Automerge CRDT와 TLS 1.3 암호화로 안전하게 공동 연구 맥락을 공유합니다.</p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="pipeline" class="pipeline-section reveal-on-scroll">
+      <div class="section-head">
+        <span class="section-eyebrow">ARCHITECTURE IN MOTION</span>
+        <h2>연구의 모든 단계가 하나의 흐름으로 연결됩니다</h2>
+        <p>질문, 형식 검증, 수치 실험, 공동 집필이 서로 다른 앱으로 끊어지지 않고 실시간 델타 파이프라인으로 흐릅니다.</p>
+      </div>
+
+      <div class="svg-flow-board">
+        <svg class="flow-svg" viewBox="0 0 960 170" fill="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="flowGrad1" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#34d399" />
+              <stop offset="50%" stop-color="#38bdf8" />
+              <stop offset="100%" stop-color="#a78bfa" />
+            </linearGradient>
+          </defs>
+          <path class="flow-track"
+            d="M 110 85 C 210 85, 210 42, 330 42 C 450 42, 470 85, 580 85 C 690 85, 710 128, 850 128" />
+          <path class="flow-track"
+            d="M 110 85 C 210 85, 210 128, 330 128 C 450 128, 470 85, 580 85 C 690 85, 710 42, 850 42" />
+          <path class="flow-pulse"
+            d="M 110 85 C 210 85, 210 42, 330 42 C 450 42, 470 85, 580 85 C 690 85, 710 128, 850 128" />
+          <path class="flow-pulse delayed"
+            d="M 110 85 C 210 85, 210 128, 330 128 C 450 128, 470 85, 580 85 C 690 85, 710 42, 850 42" />
+        </svg>
+        <div class="flow-nodes">
+          <div class="flow-node">
+            <span class="node-icon mint">ID</span>
+            <strong>ORCID 신원 인증</strong>
+            <small>OAuth2 + MFA 세션 결합</small>
+          </div>
+          <div class="flow-node">
+            <span class="node-icon cyan">TLS</span>
+            <strong>Wall 게이트웨이</strong>
+            <small>TLS 1.3 · WSS 실시간 브로커</small>
+          </div>
+          <div class="flow-node">
+            <span class="node-icon purple">∀λ</span>
+            <strong>멀티 커널 &amp; AI</strong>
+            <small>Lean 4 · Rocq · Python · EXAONE</small>
+          </div>
+          <div class="flow-node">
+            <span class="node-icon sand">CRDT</span>
+            <strong>공동 셀 저장소</strong>
+            <small>Automerge + 객체 ACL · 검색</small>
+          </div>
+        </div>
+      </div>
+
+      <div class="modality-grid">
+        <article class="modality-card reveal-on-scroll">
+          <span class="mod-icon mint">✧</span>
+          <h3>AI 에이전트 셀</h3>
+          <p>EXAONE 2.5 모델 선택, 개인/서버 키 분리, 초·분·일 잔여 한도 모니터링과 MCP 기반 워크스페이스 셀 생성·수정을 지원합니다.</p>
+        </article>
+        <article class="modality-card reveal-on-scroll">
+          <span class="mod-icon purple">∀</span>
+          <h3>Lean 4 · Rocq 형식 증명</h3>
+          <p>상주 REPL 스냅샷 그래프로 오류 발생 시 자동 롤백하며, 서브골과 증명 검증 상태를 실시간으로 피드백합니다.</p>
+        </article>
+        <article class="modality-card reveal-on-scroll">
+          <span class="mod-icon blue">λ</span>
+          <h3>격리된 Python 실행</h3>
+          <p>Agora VM 또는 로컬 러너에서 수치 검증과 실험 스크립트를 실행하고 셀 하단 출력·하단 도크에 결과를 스트리밍합니다.</p>
+        </article>
+        <article class="modality-card reveal-on-scroll">
+          <span class="mod-icon sand">≡</span>
+          <h3>Markdown · HTML 문서</h3>
+          <p>샌드박스 격리 프리뷰로 인터랙티브 수식·시각화 HTML과 연구 노트를 안전하게 렌더링하고 공유합니다.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="guarantees" class="guarantees-section reveal-on-scroll">
+      <div class="guarantee-panel">
+        <div class="guarantee-copy">
+          <span class="section-eyebrow">SECURITY &amp; COLLABORATION</span>
+          <h2>보안이 전제된 실시간 공동 연구</h2>
+          <p>외부 Let's Encrypt HTTPS 종단부터 내부 서비스 간 TLS 1.3 mTLS, SQL·Redis·Elasticsearch 암호화, 셀 단위 접근 그룹 ACL까지 설계 수준에서
+            강제됩니다.</p>
+        </div>
+        <div class="guarantee-stats">
+          <div class="g-stat">
+            <strong>TLS 1.3</strong>
+            <span>전 구간 암호화 및 CA 검증</span>
+          </div>
+          <div class="g-stat">
+            <strong>Zero-Conflict</strong>
+            <span>Automerge CRDT 동시 편집</span>
+          </div>
+          <div class="g-stat">
+            <strong>Per-Cell ACL</strong>
+            <span>그룹별 읽기·쓰기·실행·잠금</span>
+          </div>
+          <div class="g-stat">
+            <strong>Sandboxed</strong>
+            <span>Strict CSP · HTML 격리 iframe</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="closing-cta reveal-on-scroll">
+      <h2>아이디어에서 형식 증명까지, 지금 바로 시작하세요.</h2>
+      <p>로그인 없이 로컬 셀 에디터를 먼저 체험하거나, ORCID로 로그인해 공유 연구 Workspace를 열 수 있습니다.</p>
+      <div class="hero-cta-row center">
+        <a class="cta-btn primary" href="/irade/studio">Workspace 스튜디오 입장 ↗</a>
+        <a class="cta-btn secondary" href="/irade/studio?demo=1">로컬 체험 시작 →</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <span>IRADE · Interactive Reasoning &amp; Analysis Development Environment</span>
+    <div class="footer-links">
+      <a href="/irade/studio">스튜디오</a>
+      <a href="/irade/login">ORCID 로그인</a>
+      <a href="https://info.orcid.org/what-is-orcid/" target="_blank" rel="noopener noreferrer">ORCID 안내 ↗</a>
+    </div>
+  </footer>
+
+  <script type="module" src="/irade-assets/studio/home.js"></script>
+</body>
+
+</html>

@@ -55,12 +55,14 @@ export const cellTypes: Record<CellKind, {
 const MAX_FRAME_ORDER = 1000000;
 
 export function cellTitle(kind: CellKind, text: string): string {
-	for (const raw of text.split(/\r?\n/)) {
+	const source = kind === 'html' ? text.replace(/<(style|script)\b[^>]*>[\s\S]*?<\/\1>/gi, '') : text;
+	for (const raw of source.split(/\r?\n/)) {
 		const cleaned = raw.trim()
 			.replace(/^#+\s*/, '')
 			.replace(/^(--|\/\/|\(\*|#)\s*/, '')
+			.replace(/^<!--\s*|\s*-->$/g, '')
 			.replace(/^\*+\s*|\*+\)$/, '')
-			.replace(/^<\/?[^>]+>/, '')
+			.replace(/<\/?[^>]+>/g, '')
 			.trim();
 		if (cleaned) { return cleaned.slice(0, 72); }
 	}
@@ -154,6 +156,59 @@ function planAppendOrder(cells: readonly Cell[]): { nextOrder: number; patches: 
 		}
 	}
 	return { nextOrder: base + count * step, patches };
+}
+
+function planInsertAfterOrder(cells: readonly Cell[], afterId: string): { nextOrder: number; patches: CanvasOperation[] } {
+	const idx = cells.findIndex(cell => cell.id === afterId);
+	if (idx < 0 || idx >= cells.length - 1) {
+		return planAppendOrder(cells);
+	}
+	const prevOrder = cells[idx].frameOrder;
+	const nextOrder = cells[idx + 1].frameOrder;
+	if (nextOrder - prevOrder >= 2) {
+		return {
+			nextOrder: prevOrder + Math.floor((nextOrder - prevOrder) / 2),
+			patches: [],
+		};
+	}
+
+	// Shift only the minimal writable trailing cluster by step 2 so a local gap opens up.
+	const forwardPatches: CanvasOperation[] = [];
+	let cursor = prevOrder + 2;
+	let forwardOk = true;
+	for (let j = idx + 1; j < cells.length; j += 1) {
+		if (cells[j].frameOrder >= cursor) { break; }
+		if (!cells[j].canWrite || cursor > MAX_FRAME_ORDER) {
+			forwardOk = false;
+			break;
+		}
+		forwardPatches.push({ action: 'patch', id: cells[j].id, patch: { frameOrder: cursor } });
+		cursor += 2;
+	}
+	if (forwardOk && prevOrder + 1 < MAX_FRAME_ORDER) {
+		return { nextOrder: prevOrder + 1, patches: forwardPatches };
+	}
+
+	// Fallback: shift a tight writable prefix backward toward 0 if trailing neighbor is locked.
+	const backwardPatches: CanvasOperation[] = [];
+	let backCursor = cells[idx].frameOrder - 2;
+	let backOk = prevOrder >= 2;
+	if (backOk) {
+		for (let j = idx; j >= 0; j -= 1) {
+			if (cells[j].frameOrder <= backCursor) { break; }
+			if (!cells[j].canWrite || backCursor < 0) {
+				backOk = false;
+				break;
+			}
+			backwardPatches.push({ action: 'patch', id: cells[j].id, patch: { frameOrder: backCursor } });
+			backCursor -= 2;
+		}
+	}
+	if (backOk) {
+		return { nextOrder: prevOrder - 1, patches: backwardPatches };
+	}
+
+	return planAppendOrder(cells);
 }
 
 function buildCanvasItemForCell(
@@ -264,11 +319,13 @@ export class ResearchWorkspace {
 		await this.client.ensureConnected();
 	}
 
-	async add(kind: CellKind, text = '', options?: { id?: string; permission?: string[] }): Promise<Cell> {
+	async add(kind: CellKind, text = '', options?: { id?: string; permission?: string[]; afterId?: string }): Promise<Cell> {
 		if (!this.lastSnapshotLoaded) { await this.load(); }
 		const id = options?.id || `cell-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
 		if (!isValidItemId(id)) { throw new AgoraError('ITEM_ID_INVALID'); }
-		const { nextOrder, patches } = planAppendOrder(this.cells);
+		const { nextOrder, patches } = options?.afterId
+			? planInsertAfterOrder(this.cells, options.afterId)
+			: planAppendOrder(this.cells);
 		const permission = options?.permission?.length
 			? [...new Set(options.permission)]
 			: defaultPermissionForCreator(this.client.identity);
