@@ -9,6 +9,16 @@ import { AgentPanelController } from './agentPanel.ts';
 import { DockArcadeController } from './dockGames.ts';
 import { PerfMonitorController } from './perfMonitor.ts';
 import {
+  deleteVerifiedTheoremFromDb,
+  extractClientProofRelations,
+  fetchProofKnowledgeSnapshot,
+  normalizeLeanCodeForExecution,
+  renderProofDbInspectorHtml,
+  renderProofDbModalHtml,
+  syncVerifiedProofToDb,
+  type ProofKnowledgeSnapshot,
+} from './proofKnowledge.ts';
+import {
   AGENT_AVATAR_SVG,
   CHAT_INITIAL_VISIBLE,
   CHAT_LOAD_STEP,
@@ -43,6 +53,9 @@ let viewMode: 'overview' | 'notebook' | 'empty' = 'overview';
 let deletingCellId: string | undefined;
 let editingRemote = false;
 let inspectorTab = 'context';
+let proofKnowledgeSnapshot: ProofKnowledgeSnapshot | undefined;
+let proofKnowledgeLoading = false;
+let proofKnowledgeError: string | undefined;
 let rightPaneMode: 'agent' | 'inspector' = 'agent';
 let bottomDockTab: 'output' | 'activity' | 'games' = 'output';
 let bottomDockOpen = false;
@@ -65,6 +78,13 @@ interface ExecutionOutput {
   durationMs: number;
   status: 'running' | 'success' | 'verified' | 'error' | 'timeout';
   runtime?: 'agora-vm' | 'host';
+  proofDbSync?: {
+    state: 'syncing' | 'synced' | 'error';
+    theorems: number;
+    lemmaRelations: number;
+    definitions: number;
+    message?: string;
+  };
 }
 const models = new Map<string, monaco.editor.ITextModel>();
 const cellEditors = new Map<string, monaco.editor.IStandaloneCodeEditor>();
@@ -94,8 +114,8 @@ const activities: { message: string; time: string }[] = [];
 const modal = $<HTMLDialogElement>('#modal');
 const starters: Record<CellKind, string> = {
   agent: createStarterAgentDoc(),
-  lean: '-- 새로운 정리\n\ntheorem add_zero_identity (n : Nat) : n + 0 = n := by\n  rfl\n\n#check add_zero_identity\n',
-  rocq: '(* 새로운 증명 *)\n\nTheorem add_zero_identity : forall n : nat, n + 0 = n.\nProof.\n  intros n.\n  induction n; simpl; auto.\nQed.\n',
+  lean: '-- 새로운 정리\n\ndef idNat (n : Nat) : Nat := n\n\nlemma add_zero_lemma (n : Nat) : n + 0 = n := by\n  rfl\n\ntheorem add_zero_identity (n : Nat) : idNat n + 0 = n := by\n  rw [idNat]\n  exact add_zero_lemma n\n\n#check add_zero_identity\n',
+  rocq: '(* 새로운 증명 *)\n\nDefinition id_nat (n : nat) : nat := n.\n\nLemma add_zero_lemma : forall n : nat, n + 0 = n.\nProof.\n  intros n.\n  induction n; simpl; auto.\nQed.\n\nTheorem add_zero_identity : forall n : nat, id_nat n + 0 = n.\nProof.\n  intros n.\n  unfold id_nat.\n  apply add_zero_lemma.\nQed.\n',
   python: '# 새로운 실험\n\ndef square(n):\n    return n * n\n\nvalues = [square(n) for n in range(6)]\nprint("Squares:", values)\n',
   markdown: '# 연구 노트\n\n## 연구 질문\n여기에 연구할 질문을 적어 보세요.\n\n## 관찰과 기록\n- 가설과 실험 결과를 연결하세요.\n- 증명과 코드의 의미를 문서로 남기세요.\n',
   html: `<style>
@@ -454,8 +474,10 @@ async function connect(id: number, name: string, restoreView = false): Promise<v
   const generation = ++loadGeneration;
   setPresenceFocus(undefined);
   workspace?.dispose(); clearModels(); demo = false; connected = false; selected = undefined; cells = []; workspaceName = name;
+  proofKnowledgeSnapshot = undefined; proofKnowledgeError = undefined;
   const client = new AgoraClient({ origin, canvasId: id }, async () => token || (await signIn() ? token : undefined), async () => ask('비공개 workspace', 'Workspace 비밀번호', true));
   const current = new ResearchWorkspace(client); workspace = current;
+  void refreshProofKnowledge();
   current.onError = error => { if (generation === loadGeneration) { report(error); } };
   current.onState = state => {
     if (generation !== loadGeneration) { return; }
@@ -1094,7 +1116,14 @@ function renderCellOutput(id: string): void {
   const envLabel = out.runtime === 'agora-vm' ? 'Agora VM · ' : out.runtime === 'host' ? 'Host Runner · ' : '';
   const combined = [out.stdout, out.stderr].filter(part => part && part.trim().length > 0).join('\n').trim() || '(출력 없음)';
   const seqChip = out.execOrder ? `<span class="nb-output-order">실행 #${out.execOrder}</span> ` : '';
-  container.innerHTML = `<div class="nb-output-head"><span class="nb-output-badge ${out.ok ? 'ok' : 'err'}">${seqChip}${badge}</span><span>${envLabel}${out.durationMs}ms · <button type="button" class="text-button" data-clear-output="${escape(id)}">지우기</button></span></div><pre class="nb-output-pre">${escape(combined)}</pre>`;
+  const proofDbChip = (out.status === 'verified' && out.proofDbSync)
+    ? out.proofDbSync.state === 'synced'
+      ? `<button type="button" class="nb-proof-db-chip" data-open-proof-db="${escape(id)}">🗄 DB 저장됨 · 정리 ${out.proofDbSync.theorems} · 보조관계 ${out.proofDbSync.lemmaRelations} · 정의 ${out.proofDbSync.definitions}</button>`
+      : out.proofDbSync.state === 'error'
+        ? `<button type="button" class="nb-proof-db-chip error" data-open-proof-db="${escape(id)}" title="${escape(out.proofDbSync.message || '')}">⚠ DB 저장 확인</button>`
+        : '<span class="nb-proof-db-chip">🗄 DB 저장 중…</span>'
+    : '';
+  container.innerHTML = `<div class="nb-output-head"><span class="nb-output-badge ${out.ok ? 'ok' : 'err'}">${seqChip}${badge}</span>${proofDbChip}<span>${envLabel}${out.durationMs}ms · <button type="button" class="text-button" data-clear-output="${escape(id)}">지우기</button></span></div><pre class="nb-output-pre">${escape(combined)}</pre>`;
   container.querySelector(`[data-clear-output="${CSS.escape(id)}"]`)?.addEventListener('click', e => {
     e.stopPropagation();
     cellOutputs.delete(id);
@@ -1130,8 +1159,9 @@ async function executeInAgoraVm(id: string, kind: 'python' | 'lean' | 'rocq', co
   let language: 'python' | 'bash' = 'python';
   let payloadCode = code;
   if (kind === 'lean') {
+    const normalizedLean = normalizeLeanCodeForExecution(code);
     language = 'bash';
-    payloadCode = `LEAN_BIN=$(command -v lean || ([ -x "$HOME/.elan/bin/lean" ] && echo "$HOME/.elan/bin/lean") || ([ -x "/root/.elan/bin/lean" ] && echo "/root/.elan/bin/lean") || ls -1 /opt/elan/toolchains/*/bin/lean 2>/dev/null | head -n1 || true)\n[ -n "$LEAN_BIN" ] || exit 127\n"$LEAN_BIN" --version >/dev/null 2>&1 || exit 127\n"$LEAN_BIN" --stdin 2>&1 << '${marker}'\n${code}\n${marker}\n`;
+    payloadCode = `LEAN_BIN=$(command -v lean || ([ -x "$HOME/.elan/bin/lean" ] && echo "$HOME/.elan/bin/lean") || ([ -x "/root/.elan/bin/lean" ] && echo "/root/.elan/bin/lean") || ls -1 /opt/elan/toolchains/*/bin/lean 2>/dev/null | head -n1 || true)\n[ -n "$LEAN_BIN" ] || exit 127\n"$LEAN_BIN" --version >/dev/null 2>&1 || exit 127\n"$LEAN_BIN" --stdin 2>&1 << '${marker}'\n${normalizedLean}\n${marker}\n`;
   } else if (kind === 'rocq') {
     language = 'bash';
     payloadCode = `COQC_BIN=$(command -v coqc || true)\n[ -n "$COQC_BIN" ] || exit 127\n"$COQC_BIN" --version >/dev/null 2>&1 || exit 127\nTMP_DIR=$(mktemp -d)\ntrap 'rm -rf "$TMP_DIR"' EXIT\ncat << '${marker}' > "$TMP_DIR/Cell.v"\n${code}\n${marker}\n"$COQC_BIN" "$TMP_DIR/Cell.v" 2>&1\n`;
@@ -1261,6 +1291,89 @@ function advanceAfterExecution(id: string): void {
   }
 }
 
+function currentProofWorkspaceScope(): { workspaceId?: number; workspaceKey: string } {
+  const wsId = workspace?.client.config.canvasId;
+  if (typeof wsId === 'number' && Number.isFinite(wsId) && wsId > 0) {
+    return { workspaceId: wsId, workspaceKey: `workspace-${wsId}` };
+  }
+  return { workspaceKey: 'local-playground' };
+}
+
+async function refreshProofKnowledge(silent = true): Promise<void> {
+  const { workspaceKey } = currentProofWorkspaceScope();
+  proofKnowledgeLoading = true;
+  proofKnowledgeError = undefined;
+  if (inspectorTab === 'proof-db') { renderInspector(); }
+  try {
+    proofKnowledgeSnapshot = await fetchProofKnowledgeSnapshot(workspaceKey, token);
+  } catch (error) {
+    proofKnowledgeError = error instanceof Error ? error.message : String(error);
+    if (!silent) { notify(proofKnowledgeError, true); }
+  } finally {
+    proofKnowledgeLoading = false;
+    if (inspectorTab === 'proof-db') { renderInspector(); }
+    if (modal.open && modal.querySelector('.proof-db-modal-wrap') && proofKnowledgeSnapshot) {
+      $('#modal-body').innerHTML = renderProofDbModalHtml(proofKnowledgeSnapshot);
+    }
+  }
+}
+
+async function syncVerifiedProofCell(cell: Cell, code: string, result: ExecutionOutput): Promise<void> {
+  if ((cell.kind !== 'lean' && cell.kind !== 'rocq') || result.status !== 'verified') { return; }
+  const proverEngine = cell.kind === 'rocq' ? 'ROCQ' : 'LEAN4';
+  const parsed = extractClientProofRelations(proverEngine, code);
+  if (!parsed.theorems.length && !parsed.definitions.length) { return; }
+
+  const { workspaceId, workspaceKey } = currentProofWorkspaceScope();
+  const prevOut = cellOutputs.get(cell.id);
+  if (prevOut) {
+    cellOutputs.set(cell.id, {
+      ...prevOut,
+      proofDbSync: { state: 'syncing', theorems: 0, lemmaRelations: 0, definitions: 0 },
+    });
+    renderCellOutput(cell.id);
+  }
+
+  try {
+    const snapshot = await syncVerifiedProofToDb({
+      workspaceId,
+      workspaceKey,
+      proverEngine,
+      verificationStatus: 'VERIFIED',
+      cellId: cell.id,
+      sourceCode: code,
+      verifierOutput: [result.stdout, result.stderr].filter(Boolean).join('\n').trim() || 'Verified cleanly',
+      lemmaRelations: parsed.lemmaRelations,
+      definitionUsages: parsed.definitionUsages,
+    }, token);
+    proofKnowledgeSnapshot = snapshot;
+    proofKnowledgeError = undefined;
+    const latestOut = cellOutputs.get(cell.id);
+    if (latestOut) {
+      cellOutputs.set(cell.id, {
+        ...latestOut,
+        proofDbSync: {
+          state: 'synced',
+          theorems: snapshot.theorems.length,
+          lemmaRelations: snapshot.lemmaRelations.length,
+          definitions: snapshot.definitions.length,
+        },
+      });
+    }
+    log(`[관계형 DB] ${proverEngine} 정리 ${snapshot.theorems.length}건 · 보조관계 ${snapshot.lemmaRelations.length}건 · 정의 ${snapshot.definitions.length}건 저장됨.`);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    proofKnowledgeError = msg;
+    const latestOut = cellOutputs.get(cell.id);
+    if (latestOut) {
+      cellOutputs.set(cell.id, {
+        ...latestOut,
+        proofDbSync: { state: 'error', theorems: 0, lemmaRelations: 0, definitions: 0, message: msg },
+      });
+    }
+  }
+}
+
 async function runCell(id: string, advanceOnFinish = true): Promise<void> {
   const cell = cells.find(item => item.id === id);
   if (!cell || !isExecutable(cell.kind)) { return; }
@@ -1283,8 +1396,12 @@ async function runCell(id: string, advanceOnFinish = true): Promise<void> {
       : await executeOnHost(cell.kind, code);
     const seq = ++executionSeq;
     cellExecOrders.set(id, seq);
-    cellOutputs.set(id, { ...result, execOrder: seq });
+    const completedOutput: ExecutionOutput = { ...result, execOrder: seq };
+    cellOutputs.set(id, completedOutput);
     log(`[실행 #${seq}] ${cellTypes[cell.kind].short} 셀을 ${result.runtime === 'agora-vm' ? 'Agora VM(Broker·C++ WS)에서 ' : ''}${result.ok ? '실행/검증' : '실행(오류)'}했습니다 (${result.durationMs}ms).`);
+    if ((cell.kind === 'lean' || cell.kind === 'rocq') && result.status === 'verified') {
+      await syncVerifiedProofCell(cell, code, completedOutput);
+    }
   } catch (error) {
     const seq = ++executionSeq;
     cellExecOrders.set(id, seq);
@@ -1890,6 +2007,10 @@ function enterEmptyView(): void {
 }
 function renderInspector(): void {
   document.querySelectorAll('.inspector .inspector-tabs > button').forEach(button => button.classList.toggle('selected', button.getAttribute('data-action') === inspectorTab));
+  if (inspectorTab === 'proof-db') {
+    $('#inspector-content').innerHTML = renderProofDbInspectorHtml(proofKnowledgeSnapshot, proofKnowledgeLoading, proofKnowledgeError);
+    return;
+  }
   if (inspectorTab === 'activity') {
     $('#inspector-content').innerHTML = '<h3 class="context-heading">WORKSPACE ACTIVITY</h3>' + (activities.length ? activities.map(event => `<div class="activity-event">${escape(event.message)}<small>${event.time}</small></div>`).join('') : '<p class="context-copy">이 탭에서 연결하고 편집한 기록이 여기에 표시됩니다.</p>'); return;
   }
@@ -1924,6 +2045,7 @@ function persistScratch(): void { sessionStorage.setItem(demoKey, JSON.stringify
 async function startDemo(): Promise<void> {
   if (workspace?.pending) { await workspace.flush(); }
   ++loadGeneration; setPresenceFocus(undefined); workspace?.dispose(); workspace = undefined; connected = false; clearModels(); demo = true; workspaceName = 'Research playground'; selected = undefined; selfProfile = { name: '나 (체험)' };
+  proofKnowledgeSnapshot = undefined; proofKnowledgeError = undefined; void refreshProofKnowledge();
   const cached = sessionStorage.getItem(demoKey);
   const parsed = cached ? JSON.parse(cached) as Partial<Cell>[] : undefined;
   cells = parsed
@@ -2168,6 +2290,7 @@ async function action(name: string): Promise<void> {
     if (closingId) { sessionStorage.removeItem(`irade.research.view:${closingId}`); }
     const url = new URL(location.href); url.searchParams.delete('workspace'); url.searchParams.delete('workspaces'); history.replaceState(null, '', url);
     overview(); agentPanel.onWorkspaceChanged();
+    proofKnowledgeSnapshot = undefined; proofKnowledgeError = undefined;
     $('#workspace-subtitle').textContent = 'workspace를 연결하세요';
     $('#status').textContent = token ? '연결 대기' : '로그아웃됨';
     $('#connection-label').textContent = '연결 대기';
@@ -2210,12 +2333,15 @@ async function action(name: string): Promise<void> {
     agentPanel.open({ focus: true });
     syncWorkbenchChrome();
   }
-  else if (name === 'context' || name === 'activity') {
+  else if (name === 'context' || name === 'activity' || name === 'proof-db') {
     rightPaneMode = 'inspector';
     inspectorTab = name;
     document.body.classList.remove('inspector-hidden');
     agentPanel.close();
     renderInspector();
+    if (name === 'proof-db') {
+      void refreshProofKnowledge(true);
+    }
     syncWorkbenchChrome();
   }
   else if (name === 'workspace' || name.startsWith('filter-')) {
@@ -2228,6 +2354,39 @@ async function action(name: string): Promise<void> {
 }
 document.addEventListener('click', event => {
   const target = event.target as Element;
+  if (target.closest('[data-open-proof-db]')) {
+    void action('proof-db').catch(report);
+    return;
+  }
+  if (target.closest('[data-open-proof-db-modal]')) {
+    const snap = proofKnowledgeSnapshot ?? {
+      workspaceKey: currentProofWorkspaceScope().workspaceKey,
+      theorems: [],
+      definitions: [],
+      lemmaRelations: [],
+      definitionRelations: [],
+    };
+    showModal('형식 증명 관계형 데이터베이스 (MS SQL Server)', renderProofDbModalHtml(snap), true);
+    void refreshProofKnowledge(true);
+    return;
+  }
+  if (target.closest('[data-refresh-proof-db]')) {
+    void refreshProofKnowledge(false);
+    return;
+  }
+  const delThmBtn = target.closest<HTMLElement>('[data-delete-theorem-id]');
+  if (delThmBtn) {
+    const theoremId = Number(delThmBtn.dataset.deleteTheoremId);
+    if (Number.isFinite(theoremId) && theoremId > 0) {
+      void deleteVerifiedTheoremFromDb(theoremId, token)
+        .then(async () => {
+          notify('DB에서 정리와 연결 관계를 삭제했습니다.');
+          await refreshProofKnowledge(true);
+        })
+        .catch(report);
+    }
+    return;
+  }
   if (target.closest('[data-open-dock-games]')) {
     switchBottomDockTab('games');
     return;

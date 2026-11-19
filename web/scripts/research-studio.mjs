@@ -216,9 +216,13 @@ async function executeCode(kind, code) {
       const leanEnv = lean.includes('/')
         ? { ELAN_HOME: elanHome, PATH: `${resolve(lean, '..')}:${process.env.PATH || ''}` }
         : { ELAN_HOME: elanHome };
+      const normalizedCode = code.replace(
+        /^(\s*(?:@\[[^\]]*\]\s*)*(?:(?:private|protected|noncomputable|unsafe|partial)\s+)*)lemma(?=\s)/gm,
+        '$1theorem',
+      );
       const result = await runProcess(lean, ['--stdin'], {
         cwd: dir,
-        stdin: code,
+        stdin: normalizedCode,
         timeoutMs: 25000,
         env: leanEnv,
       });

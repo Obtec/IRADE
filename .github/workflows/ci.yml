@@ -27,7 +27,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '26'
+          java-version: '27'
 
       - name: Install Python test dependencies
         run: |
@@ -71,7 +71,7 @@ jobs:
           PYTHONPATH=backend/search python3 backend/search/tests/projection_faults.py
 
   backend-spring:
-    name: Backend Spring (Java 26)
+    name: Backend Spring (Java 27)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,7 +79,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '26'
+          java-version: '27'
 
       - uses: gradle/actions/setup-gradle@v4
 

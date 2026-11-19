@@ -59,11 +59,24 @@ try {
     const cards = Array.from(document.querySelectorAll('.nb-cell'));
     const lean = cards.find(el => el.textContent?.includes('새로운 정리'));
     return lean?.querySelector('.nb-cell-output')?.textContent?.includes('add_zero_identity')
+      && Boolean(lean?.querySelector('.nb-proof-db-chip')?.textContent?.includes('DB 저장됨'))
       && lean?.querySelector('[data-exec-order]')?.textContent?.trim() === '실행 #1'
       && document.querySelector('.nb-cell.active .nb-cell-title')?.textContent?.includes('새로운 증명');
   });
   await page.screenshot({ path: '.artifacts/studio-proof.png' });
   assert.ok((await demoLeanCard.locator('.nb-cell-title').textContent()).includes('새로운 정리'));
+
+  await demoLeanCard.locator('[data-open-proof-db]').click();
+  await page.locator('#inspector-content .proof-db-inspector').waitFor();
+  const dbHtml = await page.locator('#inspector-content').innerText();
+  assert.ok(dbHtml.includes('add_zero_identity'), 'Verified theorem must appear in relational DB table');
+  assert.ok(dbHtml.includes('add_zero_lemma'), 'Supporting lemma must appear in lemma relation table');
+  assert.ok(dbHtml.includes('idNat'), 'Used definition must appear in definitions table');
+  await page.screenshot({ path: '.artifacts/studio-proof-db.png' });
+  await page.locator('[data-open-proof-db-modal]').click();
+  await page.locator('#modal .proof-db-modal-wrap').waitFor();
+  await page.locator('#modal-close').click();
+  await page.locator('.inspector .inspector-tabs [data-action="agent"]').click();
 
   await page.getByRole('button', { name: /연구 노트/ }).first().click();
   await page.locator('.nb-cell.active [data-cell-preview]').click();

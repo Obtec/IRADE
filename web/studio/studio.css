@@ -2693,21 +2693,29 @@ body.is-resizing iframe {
 
 .inspector-tabs {
   height: 35px;
-  padding: 0 8px;
+  padding: 0 6px;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   background: var(--bg-header);
   border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.inspector-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .inspector-tabs button:not(.icon-button) {
   height: 25px;
-  padding: 0 9px;
+  padding: 0 7px;
   border-radius: 4px;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 500;
   color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .inspector-tabs button:not(.icon-button).selected {
@@ -2900,8 +2908,8 @@ body.is-resizing iframe {
 }
 
 .agent-dock-tabs button:not(.icon-button) {
-  padding: 0 7px;
-  font-size: 11px;
+  padding: 0 6px;
+  font-size: 10.5px;
   white-space: nowrap;
 }
 
@@ -4434,4 +4442,231 @@ dialog#modal::backdrop {
   .monitor-detail-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ================= PROOF KNOWLEDGE RELATIONAL DB ================= */
+.nb-proof-db-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  cursor: pointer;
+}
+
+.nb-proof-db-chip:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.nb-proof-db-chip.error {
+  background: rgba(248, 113, 113, 0.14);
+  color: var(--danger);
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.proof-db-inspector,
+.proof-db-modal-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.proof-db-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.proof-db-toolbar-btns {
+  display: flex;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.proof-db-scope {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.proof-db-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.proof-db-kpis.modal {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.proof-db-kpi {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.proof-db-kpi span {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.proof-db-kpi strong {
+  font-size: 16px;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.proof-db-error {
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.32);
+  color: var(--danger);
+}
+
+.proof-db-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.proof-db-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.proof-db-section-head h4 {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.proof-db-table-tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.proof-db-table-wrap {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+  background: var(--bg-panel);
+}
+
+.proof-db-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.proof-db-table th,
+.proof-db-table td {
+  padding: 6px 7px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.proof-db-table thead th {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  background: var(--bg-header);
+  white-space: nowrap;
+}
+
+.proof-db-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.proof-db-symbol {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-primary);
+  word-break: break-word;
+}
+
+.proof-db-code {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.proof-db-badge {
+  display: inline-block;
+  margin-top: 3px;
+  margin-right: 3px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.proof-db-badge.verified,
+.proof-db-badge.linked {
+  background: rgba(52, 211, 153, 0.14);
+  color: var(--accent);
+  border-color: rgba(52, 211, 153, 0.35);
+}
+
+.proof-db-badge.rel {
+  background: rgba(167, 139, 250, 0.14);
+  color: #a78bfa;
+  border-color: rgba(167, 139, 250, 0.32);
+}
+
+.proof-db-badge.role {
+  background: rgba(96, 165, 250, 0.14);
+  color: #60a5fa;
+  border-color: rgba(96, 165, 250, 0.32);
+}
+
+.proof-db-time {
+  display: block;
+  margin-top: 3px;
+  font-size: 9.5px;
+  color: var(--text-muted);
+}
+
+.proof-db-actions-col {
+  white-space: nowrap;
+}
+
+.proof-db-del-btn {
+  color: var(--danger);
+  font-size: 10.5px;
+}
+
+.proof-db-empty {
+  text-align: center !important;
+  color: var(--text-muted);
+  padding: 14px 8px !important;
 }

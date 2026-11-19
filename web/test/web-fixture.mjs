@@ -40,6 +40,53 @@ export async function fixture({ studio } = {}) {
 	let revision = 1;
 	const items = new Map();
 	const acceptedCounts = new Map();
+	let proofSeq = 1;
+	const proofStore = {
+		theorems: [],
+		definitions: [],
+		lemmaRelations: [],
+		definitionRelations: [],
+	};
+	const parseFixtureProof = (engine, sourceCode) => {
+		const isRocq = engine === 'ROCQ';
+		const declRe = isRocq
+			? /^[ \t]*(?:Local\s+|Global\s+|Program\s+)?(Definition|Fixpoint|CoFixpoint|Inductive|CoInductive|Record|Class|Axiom|Parameter|Theorem|Lemma|Corollary|Proposition|Remark|Fact)\s+([A-Za-z_][A-Za-z0-9_']*)/gm
+			: /^[ \t]*(?:@\[[^\]]*\]\s*)*(?:(?:private|protected|noncomputable|unsafe|partial)\s+)*(def|abbrev|inductive|structure|class|axiom|opaque|theorem|lemma|corollary|proposition)\s+([A-Za-z_][A-Za-z0-9_.']*)/gm;
+		const defKw = new Set(['def', 'abbrev', 'inductive', 'structure', 'class', 'axiom', 'opaque', 'Definition', 'Fixpoint', 'CoFixpoint', 'Inductive', 'CoInductive', 'Record', 'Class', 'Axiom', 'Parameter']);
+		const spans = [];
+		let m;
+		while ((m = declRe.exec(sourceCode)) !== null) {
+			spans.push({ keyword: m[1], name: m[2], start: m.index });
+		}
+		const defs = [];
+		const thms = [];
+		for (let i = 0; i < spans.length; i += 1) {
+			const cur = spans[i];
+			const block = sourceCode.slice(cur.start, i + 1 < spans.length ? spans[i + 1].start : sourceCode.length).trim();
+			const firstLine = block.split(/\r?\n/)[0].trim();
+			const assignIdx = firstLine.indexOf(':=');
+			const cleanSig = (assignIdx > 0 ? firstLine.slice(0, assignIdx) : firstLine).trim();
+			if (defKw.has(cur.keyword)) {
+				defs.push({ symbolName: cur.name, definitionKind: cur.keyword, signatureText: cleanSig, sourceCode: block });
+			} else {
+				thms.push({ theoremName: cur.name, statementKind: cur.keyword.toUpperCase(), statementText: cleanSig, proofCode: block });
+			}
+		}
+		return { defs, thms };
+	};
+	const snapshotFor = workspaceKey => {
+		const scoped = workspaceKey && workspaceKey !== 'ALL';
+		const theorems = scoped ? proofStore.theorems.filter(t => t.workspaceKey === workspaceKey) : [...proofStore.theorems];
+		const thmIds = new Set(theorems.map(t => t.theoremId));
+		const definitions = scoped ? proofStore.definitions.filter(d => d.workspaceKey === workspaceKey) : [...proofStore.definitions];
+		return {
+			workspaceKey: scoped ? workspaceKey : 'ALL',
+			theorems,
+			definitions,
+			lemmaRelations: proofStore.lemmaRelations.filter(r => thmIds.has(r.theoremId)),
+			definitionRelations: proofStore.definitionRelations.filter(r => thmIds.has(r.theoremId)),
+		};
+	};
 	const temporary = await mkdtemp(join(tmpdir(), 'irade-web-fixture-'));
 	execFileSync('openssl', [
 		'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
@@ -61,7 +108,7 @@ export async function fixture({ studio } = {}) {
 			request.url = request.url.slice('/irade'.length);
 		}
 		response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-		response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+		response.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
 		if (request.method === 'OPTIONS') { response.writeHead(204).end(); return; }
 
 		if (studio && request.url === '/api/irade/auth/orcid/status') {
@@ -145,6 +192,123 @@ export async function fixture({ studio } = {}) {
 					response.writeHead(400).end(JSON.stringify({ message: '잘못된 인증 코드' }));
 				}
 			});
+			return;
+		}
+		if (studio && request.url === '/api/irade/proofs/verified' && request.method === 'POST') {
+			let body = '';
+			request.on('data', chunk => { body += chunk; });
+			request.on('end', () => {
+				const data = JSON.parse(body || '{}');
+				response.setHeader('Content-Type', 'application/json');
+				if (String(data.verificationStatus || '').toUpperCase() !== 'VERIFIED' || /\b(?:sorry|Admitted)\b/.test(String(data.sourceCode || ''))) {
+					response.writeHead(400).end(JSON.stringify({ message: 'Only verified proofs can be persisted.' }));
+					return;
+				}
+				const workspaceKey = data.workspaceKey || (data.workspaceId ? `workspace-${data.workspaceId}` : 'local-playground');
+				const proverEngine = String(data.proverEngine || 'LEAN4').toUpperCase();
+				const now = new Date().toISOString();
+				const parsed = parseFixtureProof(proverEngine, String(data.sourceCode || ''));
+				for (const d of parsed.defs) {
+					const existing = proofStore.definitions.find(x => x.workspaceKey === workspaceKey && x.proverEngine === proverEngine && x.symbolName === d.symbolName);
+					if (existing) {
+						Object.assign(existing, d, { sourceCellId: data.cellId ?? null, updatedAt: now });
+					} else {
+						proofStore.definitions.unshift({
+							definitionId: proofSeq++,
+							workspaceId: data.workspaceId ?? null,
+							workspaceKey,
+							proverEngine,
+							...d,
+							sourceCellId: data.cellId ?? null,
+							updatedAt: now,
+						});
+					}
+				}
+				const savedThms = [];
+				for (const t of parsed.thms) {
+					let existing = proofStore.theorems.find(x => x.workspaceKey === workspaceKey && x.proverEngine === proverEngine && x.theoremName === t.theoremName);
+					if (existing) {
+						Object.assign(existing, t, {
+							verificationStatus: 'VERIFIED',
+							verifierOutput: data.verifierOutput || 'Verified',
+							sourceCellId: data.cellId ?? null,
+							verifiedAt: now,
+							updatedAt: now,
+						});
+					} else {
+						existing = {
+							theoremId: proofSeq++,
+							workspaceId: data.workspaceId ?? null,
+							workspaceKey,
+							proverEngine,
+							...t,
+							verificationStatus: 'VERIFIED',
+							verifierOutput: data.verifierOutput || 'Verified',
+							sourceCellId: data.cellId ?? null,
+							verifiedAt: now,
+							updatedAt: now,
+						};
+						proofStore.theorems.unshift(existing);
+					}
+					savedThms.push(existing);
+				}
+				const byThmName = new Map(proofStore.theorems.filter(x => x.workspaceKey === workspaceKey && x.proverEngine === proverEngine).map(x => [x.theoremName, x]));
+				const byDefName = new Map(proofStore.definitions.filter(x => x.workspaceKey === workspaceKey && x.proverEngine === proverEngine).map(x => [x.symbolName, x]));
+				for (const thm of savedThms) {
+					proofStore.lemmaRelations = proofStore.lemmaRelations.filter(r => r.theoremId !== thm.theoremId);
+					proofStore.definitionRelations = proofStore.definitionRelations.filter(r => r.theoremId !== thm.theoremId);
+					for (const lr of (data.lemmaRelations || [])) {
+						if (lr.theoremName !== thm.theoremName || lr.lemmaName === thm.theoremName) continue;
+						const target = byThmName.get(lr.lemmaName) || null;
+						proofStore.lemmaRelations.unshift({
+							relationId: proofSeq++,
+							theoremId: thm.theoremId,
+							theoremName: thm.theoremName,
+							theoremKind: thm.statementKind,
+							lemmaTheoremId: target ? target.theoremId : null,
+							lemmaName: lr.lemmaName,
+							relationType: lr.relationType || 'USES_LEMMA',
+							referenceContext: lr.referenceContext || null,
+							lemmaVerifiedInDb: Boolean(target),
+							createdAt: now,
+						});
+					}
+					for (const du of (data.definitionUsages || [])) {
+						if (du.theoremName !== thm.theoremName) continue;
+						const def = byDefName.get(du.symbolName);
+						if (!def) continue;
+						proofStore.definitionRelations.unshift({
+							relationId: proofSeq++,
+							theoremId: thm.theoremId,
+							theoremName: thm.theoremName,
+							definitionId: def.definitionId,
+							definitionName: def.symbolName,
+							definitionKind: def.definitionKind,
+							usageRole: du.usageRole || 'REFERENCED',
+							referenceContext: du.referenceContext || null,
+							createdAt: now,
+						});
+					}
+				}
+				response.end(JSON.stringify(snapshotFor(workspaceKey)));
+			});
+			return;
+		}
+		if (studio && request.url.startsWith('/api/irade/proofs') && request.method === 'GET') {
+			const url = new URL(request.url, 'https://localhost:9449');
+			response.setHeader('Content-Type', 'application/json');
+			response.end(JSON.stringify(snapshotFor(url.searchParams.get('workspaceKey'))));
+			return;
+		}
+		if (studio && request.url.startsWith('/api/irade/proofs/theorems/') && request.method === 'DELETE') {
+			const id = Number(request.url.split('/').pop());
+			proofStore.theorems = proofStore.theorems.filter(t => t.theoremId !== id);
+			proofStore.lemmaRelations = proofStore.lemmaRelations.filter(r => r.theoremId !== id).map(r => (
+				r.lemmaTheoremId === id ? { ...r, lemmaTheoremId: null, lemmaVerifiedInDb: false } : r
+			));
+			proofStore.definitionRelations = proofStore.definitionRelations.filter(r => r.theoremId !== id);
+			response.setHeader('Content-Type', 'application/json');
+			response.end(JSON.stringify({ deletedTheoremId: id }));
 			return;
 		}
 		if (request.url !== '/api/irade/workspaces/42/access' || (request.headers.authorization !== 'Bearer fixture-writer' && request.headers.authorization !== 'Bearer fixture-peer')) {

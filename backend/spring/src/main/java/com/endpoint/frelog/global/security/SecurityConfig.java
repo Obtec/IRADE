@@ -108,6 +108,8 @@ public class SecurityConfig {
                                 "/api/auth/signup",
                                 "/api/auth/me",
                                 "/api/auth/health",
+                                "/api/irade/proofs",
+                                "/api/irade/proofs/**",
                                 "/error"
                         ).permitAll()
                         .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/users").permitAll()
