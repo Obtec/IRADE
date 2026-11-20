@@ -128,7 +128,7 @@ docker compose up -d
 ./redis/test-failover.sh
 ```
 
-시험 스크립트는 현재 primary를 찾아 임시 캔버스 JSON을 애플리케이션 ACL 계정으로 저장하고 두 replica에 복제될 때까지 기다립니다. `redis/.env`에 Sentinel 전용 계정이 설정되어 있으면 topology 조회에도 그 인증을 사용합니다. 그 다음 primary 컨테이너를 중지해 자동 failover를 유도하고, 세 Sentinel의 primary 조회 결과와 승격 후 RedisJSON/RediSearch 접근을 확인합니다. 원래 primary를 다시 시작해 3노드가 복구되는지 확인한 뒤 임시 키를 삭제합니다. 실제 서비스 노드에서는 실행하지 마세요. 자세한 구성은 [Redis Sentinel 시험·마이그레이션 안내](redis/cluster/README.md)를 참고하세요.
+시험 스크립트는 현재 primary를 찾아 임시 워크스페이스 JSON을 애플리케이션 ACL 계정으로 저장하고 두 replica에 복제될 때까지 기다립니다. `redis/.env`에 Sentinel 전용 계정이 설정되어 있으면 topology 조회에도 그 인증을 사용합니다. 그 다음 primary 컨테이너를 중지해 자동 failover를 유도하고, 세 Sentinel의 primary 조회 결과와 승격 후 RedisJSON/RediSearch 접근을 확인합니다. 원래 primary를 다시 시작해 3노드가 복구되는지 확인한 뒤 임시 키를 삭제합니다. 실제 서비스 노드에서는 실행하지 마세요. 자세한 구성은 [Redis Sentinel 시험·마이그레이션 안내](redis/cluster/README.md)를 참고하세요.
 
 ### SQL Server AG 계획된 시험
 
@@ -209,11 +209,12 @@ MS SQL은 관계형 메타데이터, 인증 상태, 서버·워크스페이스 �
 | `workspace_info` | 워크스페이스별 Redis·C++ 서버 배정 및 `is_cached` 상태 |
 | `workspace_runtime_cleanup` | 재시도 가능한 워크스페이스 런타임 정리 작업 |
 | `user_mfa`, `user_passkeys` | 사용자 MFA 및 WebAuthn 공개 자격 증명 |
-| `auth_*` 테이블 | 이메일·MFA·패스키·QR·ORCID 인증 시도와 제한 상태 |
+| `auth_email_verification`, `auth_email_ip_quota` | 이메일 인증 상태와 발송 제한 |
+| `auth_mfa_challenges`, `auth_passkey_challenges`, `auth_qr_logins`, `auth_orcid_attempts` | MFA·패스키·QR·ORCID 임시 인증 상태와 만료 정보 |
 | `proof_definitions`, `proof_theorems` | 워크스페이스별 Lean4/Rocq 정의와 검증된 정리 |
 | `proof_theorem_lemma_relations`, `proof_theorem_definition_relations` | 정리 간 및 정리·정의 간 참조 관계 |
 
-사용자·워크스페이스 관계와 서버 배정은 `user_sessions` 및 `workspace_info`의 외래 키로 연결됩니다. 증명 테이블은 `workspace_key`와 prover 엔진(`LEAN4`, `ROCQ`)을 범위 키로 사용합니다. 두 relation 테이블은 정리 지식 그래프의 관계를 저장합니다. 증명 스키마는 [2026-11-19 마이그레이션](mssql/migrations/2026-11-19-irade-proof-knowledge.sql)에 정의돼 있습니다.
+사용자·워크스페이스 관계와 서버 배정은 `user_sessions` 및 `workspace_info`의 외래 키로 연결됩니다. 증명 테이블은 `workspace_key`와 prover 엔진(`LEAN4`, `ROCQ`)을 범위 키로 사용합니다. 두 relation 테이블은 정리 지식 그래프의 관계를 저장합니다. `workspace_id`와 `owner_user_id`는 증명 테이블의 선택적 식별 컬럼이며, 이 컬럼에 대한 FK 제약은 없습니다. 증명 스키마는 [2026-11-19 마이그레이션](mssql/migrations/2026-11-19-irade-proof-knowledge.sql)에 정의돼 있습니다.
 
 활성 워크스페이스 문서는 RedisJSON의 `workspace:{workspaceId}` 키에 캐시되고 RediSearch `idx:workspace`로 검색됩니다. Elasticsearch의 `workspace` 인덱스는 영구 스냅샷을, `workspace-search`는 한국어·의미 검색용 별도 projection을 보관합니다. 백엔드 로그는 `irade-logs` 쓰기 alias로 분리됩니다. `cpp_server`는 서버 주소·포트와 heartbeat를 등록하며 backend는 활성 상태와 health check를 확인해 서버를 할당합니다.
 
@@ -313,12 +314,15 @@ REDIS_USER=<REDIS_USER>
 REDIS_USER_PASSWORD=<REDIS_USER_PASSWORD>
 REDIS_SENTINEL_USER=<REDIS_SENTINEL_USER>
 REDIS_SENTINEL_PASSWORD=<REDIS_SENTINEL_PASSWORD>
+REDIS_SENTINEL_MASTER_NAME=irade-master
+REDIS_SENTINELS=<sentinel-1>:26379,<sentinel-2>:26379,<sentinel-3>:26379
 
 ES_HOST=127.0.0.1
 ES_PORT=19200
 ES_SCHEME=https
 ES_CA_CERT=/run/secrets/elasticsearch-ca.crt
 ES_INDEX=<ES_INDEX>
+ES_SEARCH_INDEX=workspace-search
 ES_USER_NAME=<ES_USER_NAME>
 ES_USER_PASSWORD=<ES_USER_PASSWORD>
 
@@ -332,7 +336,7 @@ ES_LOG_USER_PASSWORD=<ES_LOG_USER_PASSWORD>
 새 로그 문서는 쓰기 alias에 추가되며 ILM이 1일 또는 primary shard 10GB 기준으로 회전하고 기본 90일 후 backing index를 삭제합니다. SLM은 매일 UTC 02:30 워크스페이스와 로그 인덱스를 snapshot하고 35일간 보존합니다. snapshot 저장소는 같은 호스트의 Compose 데이터 볼륨과 분리된 내구성 볼륨/백업 매체에 보관하고, 복원은 새 Elasticsearch 환경에서 아래처럼 수행합니다.
 
 ```bash
-ES_RESTORE_SNAPSHOT=irade-snapshot-20261119 ./elasticsearch/restore-elasticsearch.sh
+ES_RESTORE_SNAPSHOT=<snapshot-name> ./elasticsearch/restore-elasticsearch.sh
 ```
 
 SQL Server 백업은 AG primary에서 생성하고, Redis HA 백업은 Sentinel이 보고하는 primary의 RDB를 별도 저장소에 복사합니다. 백업 생성만으로 복구 가능성이 증명되지는 않으므로 운영 전 새 환경에서 SQL, Redis, Elasticsearch와 애플리케이션 로그를 복원하고 BE 연결까지 확인합니다.
@@ -352,7 +356,7 @@ backend와 C++ 실시간 서버는 아래 SQL listener 및 Redis Sentinel 설정
 ### Redis Sentinel
 
 - BE와 C++은 Redis Sentinel을 지원하는 클라이언트를 사용합니다. Redis Cluster 슬롯 검색 모드가 아니라 Sentinel discovery를 사용합니다. Sentinel 클라이언트는 Sentinel seed에 질의해 현재 primary 주소를 조회해야 합니다([Redis Sentinel client 문서](https://redis.io/docs/latest/develop/reference/sentinel-clients/)).
-- 설정에는 접근 가능한 Sentinel 주소 전체(운영 구성 기준 3개, 포트 `26379`)와 master 이름 `irade-master`, Redis ACL 계정 및 비밀번호가 필요합니다.
+- 설정에는 접근 가능한 Sentinel 주소 전체(컨테이너 네트워크 포트 `26379`; 호스트 게시 포트 `26479–26481`)와 master 이름 `irade-master`, Redis ACL 계정 및 비밀번호가 필요합니다.
 
   ```dotenv
   REDIS_SENTINELS=10.0.0.21:26379,10.0.0.22:26379,10.0.0.23:26379
