@@ -2558,19 +2558,18 @@ function initLayoutResizers(): void {
     const startX = event.clientX;
     const agentOpen = document.body.classList.contains('agent-open');
     const targetEl = document.querySelector<HTMLElement>(agentOpen ? '#agent-drawer' : '.inspector');
-    const startWidth = targetEl?.getBoundingClientRect().width || (agentOpen ? 368 : 296);
-    const cssVar = agentOpen ? '--agent-width' : '--right-width';
+    const startWidth = targetEl?.getBoundingClientRect().width || 348;
+    const cssVar = '--right-width';
     let latest = startWidth;
     startResizeDrag(event, rightHandle, clientX => {
       latest = Math.round(Math.max(240, Math.min(560, startWidth + (startX - clientX))));
       root.style.setProperty(cssVar, `${latest}px`);
       for (const ed of cellEditors.values()) { ed.layout(); }
-    }, () => { if (!agentOpen) { localStorage.setItem(keys.right, String(latest)); } });
+    }, () => localStorage.setItem(keys.right, String(latest)));
   });
   rightHandle?.addEventListener('dblclick', () => {
     localStorage.removeItem(keys.right);
     root.style.removeProperty('--right-width');
-    root.style.removeProperty('--agent-width');
     for (const ed of cellEditors.values()) { ed.layout(); }
   });
 
