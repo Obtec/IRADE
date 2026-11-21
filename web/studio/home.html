@@ -103,17 +103,18 @@
     </article>
 
     <article class="chapter-panel chapter-left" data-panel="4">
-      <div class="ch-kicker"><strong>05 / SNAPSHOT GRAPH</strong><span class="ch-kicker-line"></span><span>ROLLBACK &amp; BRANCH</span></div>
-      <h2 class="ch-title">불변 상태 스냅샷과<br />자동 백트래킹</h2>
+      <div class="ch-kicker"><strong>05 / SEMANTIC DEVELOPMENT</strong><span class="ch-kicker-line"></span><span>VERIFY WITHOUT BOTTLENECK</span></div>
+      <h2 class="ch-title">코드 검증의 병목을<br />의미론적 개발로 풀다</h2>
       <p class="ch-desc">
-        Lean 4 셀 실행이 실패하면 직전 정상 <code style="color:var(--chalk);">env</code> 스냅샷으로 복구하고,
-        이미 정의된 식별자를 다시 실행하면 이전 분기점에서 <strong>새 브랜치</strong>를 만듭니다.
-        Rocq는 문장 단위로 실행해 실패 시 <code style="color:var(--chalk);">Edit_at</code>으로 안전하게 되돌립니다.
+        AI가 코드를 쏟아낼수록 병목은 작성이 아니라 <strong>검증</strong>으로 옮겨갑니다.
+        IRADE는 바뀐 함수·메서드만 골라 <strong>선행조건 · 상태 전이 · 부수효과 · 실패 계약 · 불변식</strong>으로
+        이루어진 선언형 명세로 끌어올리고, 요구사항 계약과 바로 대조합니다.
+        파일 전체를 다시 읽는 리뷰 대신 <strong>의미 단위</strong>로 검증하고, 어긋난 심볼과 위반 항목만 되돌립니다.
       </p>
       <div class="ch-pills">
-        <span class="badge badge-pass">✓ env 스냅샷 트리</span>
-        <span class="badge badge-neutral">○ Sentence-Level Rollback</span>
-        <span class="badge badge-neutral">○ 환경 오염 방지</span>
+        <span class="badge badge-pass">✓ 변경 심볼만 증분 검증</span>
+        <span class="badge badge-neutral">○ 선언형 계약 대조</span>
+        <span class="badge badge-neutral">○ 형식 증명으로 확장</span>
       </div>
     </article>
 
@@ -187,7 +188,7 @@
         <button type="button" class="hud-ch-btn" data-jump="1" title="02 · 정리 증명 커널">02</button>
         <button type="button" class="hud-ch-btn" data-jump="2" title="03 · 셀 Workspace">03</button>
         <button type="button" class="hud-ch-btn" data-jump="3" title="04 · Workspace 저장소">04</button>
-        <button type="button" class="hud-ch-btn" data-jump="4" title="05 · 스냅샷 그래프">05</button>
+        <button type="button" class="hud-ch-btn" data-jump="4" title="05 · 의미론적 개발">05</button>
         <button type="button" class="hud-ch-btn" data-jump="5" title="06 · 협업 & 인증">06</button>
       </div>
       <div class="hud-scrubber" aria-hidden="true">

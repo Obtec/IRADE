@@ -51,7 +51,7 @@
     { title: 'PROVERS',      textSide: 'right', cxRatio: 0.28 },
     { title: 'CELL GRAPH'  , textSide: 'left',  cxRatio: 0.72 },
     { title: 'STORE',        textSide: 'right', cxRatio: 0.28 },
-    { title: 'SNAPSHOTS',    textSide: 'left',  cxRatio: 0.72 },
+    { title: 'SEMANTIC',     textSide: 'left',  cxRatio: 0.72 },
     { title: 'CRDT SYNC',    textSide: 'right', cxRatio: 0.28 },
   ];
 
@@ -447,14 +447,14 @@
   }
 
   /**
-   * Ch 05: AST Tree Nodes + Hexagonal Semantic Verification Shield + 'AST' Core Label
+   * Ch 05: AST Tree Nodes + Hexagonal Semantic Verification Shield + 'SPEC' Core Label
    */
   function sampleAstShape(count, anchor, seed) {
     const rng = mulberry32(seed);
     const { cx, cy, scale } = anchor;
     const targets = [];
 
-    const rawText = sampleTextShape('AST', Math.floor(count * 0.34), {
+    const rawText = sampleTextShape('SPEC', Math.floor(count * 0.34), {
       cx, cy: cy - scale * 0.14, scale: scale * 0.50,
     }, 'none', seed + 3);
     for (let i = 0; i < rawText.length; i++) {
