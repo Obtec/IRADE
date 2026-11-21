@@ -61,5 +61,7 @@ public class OrcidController {
         if(handoff==null||!handoff.expires().isAfter(clock.instant())||!Objects.equals(handoff.ip(),request.getRemoteAddr()))throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
         return handoff.value();
     }
+    /** nginx auth_request target for /agdd/api: maps the IRADE user to the AGDD gateway user UUID. */
+    @GetMapping("/agdd-identity") public org.springframework.http.ResponseEntity<Void> agddIdentity(@AuthenticationPrincipal CustomUserDetails current){var user=service.require(current);return org.springframework.http.ResponseEntity.noContent().header("X-Agdd-User",String.format("00000000-0000-4000-8000-%012d",user.getUserId())).header("Cache-Control","no-store").build();}
     @GetMapping("/me") public Map<String,Object> me(@AuthenticationPrincipal CustomUserDetails current){var user=service.require(current);return Map.of("userId",user.getUserId(),"name",user.getNickname(),"orcid",user.getOrcid(),"issuer",user.getOrcidIssuer(),"profileUrl",user.getOrcidIssuer()+"/"+user.getOrcid());}
 }

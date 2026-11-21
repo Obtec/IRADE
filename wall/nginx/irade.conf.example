@@ -180,6 +180,39 @@ server {
     }
     location /wss/ { return 404; }
 
+    # AGDD console (backend/docker-compose.agdd.yml). The IRADE ORCID token is verified by Spring;
+    # nginx then swaps it for the AGDD gateway token and forwards the mapped user id.
+    location = /agdd { return 308 /agdd/$is_args$args; }
+    location = /agdd/ {
+        set $agdd_host irade-agdd-api;
+        proxy_pass http://$agdd_host:8091/console;
+        proxy_set_header Host $host;
+    }
+    location = /_agdd_auth {
+        internal;
+        set $spring_host irade-spring;
+        proxy_pass https://$spring_host:8080/api/irade/auth/agdd-identity;
+        proxy_pass_request_body off;
+        proxy_set_header Content-Length "";
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header Host $host;
+    }
+    location ^~ /agdd/api/ {
+        auth_request /_agdd_auth;
+        auth_request_set $agdd_user $upstream_http_x_agdd_user;
+        set $agdd_host irade-agdd-api;
+        rewrite ^/agdd/api(/.*)$ $1 break;
+        proxy_pass http://$agdd_host:8091;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization "Bearer ${AGDD_API_TOKEN}";
+        proxy_set_header X-User-Id $agdd_user;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_read_timeout 1h;
+        client_max_body_size 8m;
+    }
+    location ^~ /agdd/ { return 404; }
+
     absolute_redirect off;
 
     location ^~ /assets/ {

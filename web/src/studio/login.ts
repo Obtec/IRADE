@@ -6,6 +6,7 @@ initParticleField('#login-particles', { variant: 'login' });
 const get = <T extends HTMLElement = HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const origin = location.origin;
 const params = new URL(location.href).searchParams;
+if (params.get('next') === '/agdd/') { sessionStorage.setItem('irade.login.next', '/agdd/'); }
 const target = Number(params.get('workspace'));
 const workspace = Number.isSafeInteger(target) && target > 0 ? target : undefined;
 const button = get<HTMLButtonElement>('#orcid-login');
@@ -25,6 +26,9 @@ async function request<T>(path: string, body?: object, token?: string): Promise<
 function finish(result: Login): void {
   if (!result.accessToken) { throw new Error('로그인 토큰을 받지 못했습니다.'); }
   sessionStorage.setItem(`irade.orcid.token:${origin}`, result.accessToken);
+  const next = sessionStorage.getItem('irade.login.next');
+  sessionStorage.removeItem('irade.login.next');
+  if (next === '/agdd/') { location.replace(new URL(next, origin).toString()); return; }
   const url = new URL('/studio', origin);
   if (workspace) { url.searchParams.set('workspace', String(workspace)); } else { url.searchParams.set('workspaces', '1'); }
   location.replace(String(url));

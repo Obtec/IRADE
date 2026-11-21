@@ -1,5 +1,7 @@
 FROM amazoncorretto:27.0.1-al2023 AS build
 
+RUN dnf install -y findutils && dnf clean all
+
 WORKDIR /workspace
 
 COPY spring/gradlew spring/gradlew

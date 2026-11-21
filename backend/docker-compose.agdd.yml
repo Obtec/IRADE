@@ -129,7 +129,11 @@ services:
       pgbouncer: {condition: service_started}
       valkey: {condition: service_healthy}
       llm-gateway: {condition: service_started}
-    networks: [agdd-data, agdd-app]
+    networks:
+      agdd-data: {}
+      agdd-app: {}
+      # Shared with irade-nginx so https://<host>/agdd/ can reach the console behind IRADE login.
+      irade-web: {aliases: [irade-agdd-api]}
     <<: *hardening
 
   llm-gateway:
@@ -223,6 +227,7 @@ networks:
   agdd-sandbox: {internal: true}
   agdd-app: {}
   agdd-egress: {}
+  irade-web: {external: true, name: irade-web}
 
 volumes:
   agdd-pg:
