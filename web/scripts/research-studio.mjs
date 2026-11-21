@@ -1,6 +1,6 @@
 import { readFile, readdir, mkdtemp, writeFile, rm, access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { cpus, freemem, loadavg, tmpdir, totalmem } from 'node:os';
+import { cpus, freemem, homedir, loadavg, tmpdir, totalmem } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -10,6 +10,10 @@ const MAX_OUTPUT_BYTES = 64 * 1024;
 let prevCpuSnapshot = null;
 let lastComputedMetrics = null;
 let metricsBaselinePromise = null;
+
+function elanHome() {
+	return process.env.ELAN_HOME || join(homedir(), '.elan');
+}
 
 function readCpuTotals() {
   let idle = 0;
@@ -107,7 +111,7 @@ async function resolveExecutable(candidates) {
 
 async function discoverToolchainLeans() {
   const candidates = [];
-  for (const root of ['/opt/elan/toolchains', '/home/steam/.elan/toolchains']) {
+  for (const root of ['/opt/elan/toolchains', join(elanHome(), 'toolchains')]) {
     try {
       for (const entry of await readdir(root)) {
         candidates.push(join(root, entry, 'bin', 'lean'));
@@ -205,17 +209,17 @@ async function executeCode(kind, code) {
         process.env.IRADE_LEAN_BIN,
         ...toolchainLeans,
         '/opt/elan/bin/lean',
-        '/home/steam/.elan/bin/lean',
+        join(elanHome(), 'bin', 'lean'),
         '/usr/local/bin/lean',
         'lean',
       ]);
       if (!lean) {
         return { ok: false, exitCode: 127, stdout: '', stderr: 'Lean 4 실행기를 찾을 수 없습니다.', durationMs: 0, status: 'error' };
       }
-      const elanHome = lean.startsWith('/opt/elan/') ? '/opt/elan' : process.env.ELAN_HOME || '/home/steam/.elan';
+      const selectedElanHome = lean.startsWith('/opt/elan/') ? '/opt/elan' : elanHome();
       const leanEnv = lean.includes('/')
-        ? { ELAN_HOME: elanHome, PATH: `${resolve(lean, '..')}:${process.env.PATH || ''}` }
-        : { ELAN_HOME: elanHome };
+        ? { ELAN_HOME: selectedElanHome, PATH: `${resolve(lean, '..')}:${process.env.PATH || ''}` }
+        : { ELAN_HOME: selectedElanHome };
       const normalizedCode = code.replace(
         /^(\s*(?:@\[[^\]]*\]\s*)*(?:(?:private|protected|noncomputable|unsafe|partial)\s+)*)lemma(?=\s)/gm,
         '$1theorem',
@@ -319,7 +323,7 @@ export async function applyResearchStudio(app, { studioPath } = {}) {
     const hasStudioQuery = 'workspace' in context.query || 'workspaces' in context.query || 'demo' in context.query;
     const homeRoute = ['/', '/home', '/home/'].includes(context.path);
     const page = login || studioRoute || homeRoute;
-    const asset = context.path.startsWith('/irade-assets/studio/') ? files.get(context.path.slice('/irade-assets/studio/'.length)) : undefined;
+    const asset = context.path.startsWith('/assets/studio/') ? files.get(context.path.slice('/assets/studio/'.length)) : undefined;
     if ((!page && !asset) || !['GET', 'HEAD'].includes(context.method)) { return next(); }
     context.set('X-Content-Type-Options', 'nosniff');
     context.set('Referrer-Policy', 'same-origin');

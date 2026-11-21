@@ -1,0 +1,192 @@
+# AGDD platform (Docker)
+
+Implements [DOC.md](../../DOC.md) v2.0. Code is in `agent/irade_agent/agdd/`. The stack is defined in `docker-compose.agdd.yml`.
+
+## Containers
+
+| Service | DOC component | Image / module |
+| :--- | :--- | :--- |
+| `postgres` | Control Plane DB (PostgreSQL + pgvector) | `pgvector/pgvector:pg17`, schema `sql/control_plane.sql` (applied by `agdd-api`) |
+| `postgres-replica` | Read Replica (streaming, slot `agdd_replica`) | same image, `pg_basebackup -R` on first start |
+| `pgbouncer` | PgBouncer, transaction pooling (`agdd` = primary, `agdd_ro` = replica) | `docker/agdd/pgbouncer.Dockerfile` |
+| `valkey` | heartbeats (TTL), log Streams, Cache-Aside, rate limits | `valkey/valkey:8.1` |
+| `object-storage` | S3 object storage (SHA-256 keys) | `chrislusf/seaweedfs:3.97` (MinIO's public images are no longer published) |
+| `test-db` | Ephemeral Test RDB (tmpfs, one DB branch per VERIFY job) | `pgvector/pgvector:pg17` |
+| `agdd-api` | API/Auth/RBAC, spec sync, Pre-Flight Gate, Entry Router, runs, HITL, UX overrides, SSE | `agdd.api` |
+| `llm-gateway` | LLM Gateway Proxy: model aliases, budget 80%/100%, reasoning control, prefix normalization, batch clearing, accounting | `agdd.llm_gateway` |
+| `research` | On-Demand Research Engine (sanitize → pgvector reuse → arXiv/Semantic Scholar/docs → Insight Brief) | `agdd.research_service` |
+| `scheduler` | lease reaper, HITL digests 10:00/16:00, monthly partitions, detach + Parquet archive | `agdd.scheduler` |
+| `worker` (scalable) | Isolated Agent Worker: SKIP LOCKED queue, local SQLite FTS5, semantic verify, watchdog, reporters, Playwright/VLM | `agdd.worker` |
+| `analytics` (profile `phase3`) | OLAP: DuckDB over Parquet in object storage | `agdd.analytics` |
+
+### Networks
+
+- `agdd-data` and `agdd-sandbox` are `internal`: they have no route to the internet.
+- Workers can reach the outside only through `llm-gateway` and `research`.
+- To run workers under gVisor, set `AGDD_WORKER_RUNTIME=runsc`.
+
+## Run
+
+```bash
+cd backend
+cp agdd.env.example agdd.env   # fill in the secrets
+docker compose -f docker-compose.agdd.yml --env-file agdd.env up -d --build
+docker compose -f docker-compose.agdd.yml --env-file agdd.env up -d --scale worker=4
+docker compose -f docker-compose.agdd.yml --env-file agdd.env --profile phase3 run --rm analytics
+```
+
+- The API listens on `127.0.0.1:${AGDD_API_PORT:-18091}`.
+- Each request must carry `Authorization: Bearer $AGDD_API_TOKEN` and `X-User-Id: <uuid>`. The upstream auth gateway sets these.
+- Roles are read from `workspace_members` (`VIEWER < EDITOR < APPROVER < OWNER`).
+
+## Try it (web console)
+
+1. Open `http://127.0.0.1:18091/`. In VS Code Remote, forward port 18091 first.
+2. Paste `AGDD_API_TOKEN` from `backend/agdd.env` into the token field and click 저장. The browser generates a user id and keeps it in localStorage.
+3. Create a workspace. Then, in this order:
+   - **명세 테이블:** load the example specs.
+   - **사전 검사:** run the gate.
+   - **그래프:** publish the default template.
+   - **실행:** start a run with repo_key `demo`.
+4. Each repository must be a git checkout under `backend/agdd-workspace/<repo_key>`.
+   - `demo` is a small buggy module whose tests fail until `add` is fixed and `mean([])` raises.
+   - Reset it with `git -C backend/agdd-workspace/demo checkout -- .`.
+
+## Workspace VMs and CLI agents
+
+Each workspace gets its own Cloud Hypervisor VM from the Project Agora runtime ([hypervisor-for-agora](../../../hypervisor-for-agora/README.md)). With the `vm-cli` engine, every AGDD step runs inside that VM.
+
+### How AGDD drives the VM
+
+- AGDD talks to the root-owned runtime manager only through its existing socket protocol. The manager itself is not modified.
+- VM ids come from a reserved range, `AGDD_VM_ID_BASE` (default 1,900,000,000) plus a sequence. This keeps them apart from Agora canvas ids and the 2147483xxx test ids.
+- Automation runs commands in PTY sessions owned by owner 1 and named `agdd-<run>`. Results come back through files, start/end markers and base64.
+- Members can watch the `agdd-*` sessions but cannot type into them.
+
+### What runs in the VM
+
+- Repositories live at `/workspace/repos/<repo_key>`. Create the demo repo from the console, or `git clone` one in the terminal.
+- Tests run in the VM.
+- Every model step goes through the selected CLI: pre-flight, ambiguity, routing, DEV, semantic lifting, watchdog/advisor and HITL cards.
+
+### Guest environment (from Agora)
+
+- The shell runs as UID 1000 with `HOME=/workspace`.
+- Each shell is limited to 512 MiB, 128 processes and 1 CPU.
+- A VM holds at most 8 PTY sessions.
+- Outbound traffic is NAT; there are no inbound connections.
+- `apt install` works for the user through the guest's package bridge; there is no sudo.
+- Host-wide limits: at most 4 VMs and 8 GiB of VM RAM, shared with Agora canvases.
+
+### CLIs
+
+| CLI | Install (run in the VM terminal) | Login |
+| :--- | :--- | :--- |
+| `claude` | `curl -fsSL https://claude.ai/install.sh \| bash` | `claude`, or `claude setup-token` |
+| `codex` | official musl release binary → `~/.local/bin/codex` | `codex login --device-auth` |
+| `agy` | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` | `agy` (URL + code), or `GEMINI_API_KEY` |
+
+### Per-workspace settings
+
+These are set in the console's **CLI 에이전트** tab and can be overridden for a single run:
+
+- **CLI:** `claude`, `codex` or `agy`
+- **Model**
+- **Effort:** low / medium / high / xhigh / max
+- **Session:**
+  - `new`: a fresh context on every attempt
+  - `per-run`: retries resume the same CLI session
+  - an explicit session id: picked from the session list
+- **Permission:**
+  - `sandbox`: full autonomy inside the VM
+  - `ask-edits`: file edits only
+- **Cheap-step model and effort:** used for the structured steps
+
+### Remaining usage
+
+The **남은 사용량** button combines three sources:
+- the CLI's own report: `claude -p /usage`, `codex login status` plus the newest rollout's `rate_limits`, or `agy -p /usage` and `/credits`
+- rate-limit events captured during runs
+- AGDD's own 7-day tally per `cli:model`
+
+### Verified on a real VM (2026-11-21)
+
+- **Guest image:**
+  - Debian 13 with Node 20 and Python 3.12.
+  - curl and git are not installed. The CLI install commands and the demo repo add them first through `apt`.
+  - The 6 GiB default disk had about 100 MB free, so CLIs fail to install. Set the VM disk to 12 GiB first; the three CLIs take about 0.9 GiB.
+- **Host disk:**
+  - About 23 GB was free (95% used).
+  - Agora refuses to create or grow a disk unless 8 GiB stays free on the host, so only one or two more 12 GiB VMs fit.
+- **Usage reporting:**
+  - Logged-out CLIs fail loudly (HTTP 502 with "Not logged in"). Structured steps never treat a failed CLI call as an empty answer.
+  - `claude -p /usage` reports only the cost of the current session. For Claude, plan limits come from `rate_limit_event` frames captured during runs.
+
+### Enabling it
+
+```bash
+docker compose -f docker-compose.agdd.yml -f docker-compose.agdd-vm.yml --env-file agdd.env up -d
+```
+
+The override grants `agdd-api` and `worker` the same manager-socket access the Spring backend has: a bind mount of `/run/agora-runtime` and supplementary group 10001. Without it, the stack uses the gateway engine.
+
+To test without real VMs, `tests/fake_runtime.py` emulates the manager's terminal protocol with local PTYs.
+
+## Provider notes (EXAONE)
+
+- The provider allows 1 request per second. The gateway serializes upstream calls and retries 429 responses (`UPSTREAM_MIN_INTERVAL`, `UPSTREAM_MAX_RETRIES`).
+- With `json_schema` constrained decoding, EXAONE's output degenerates into whitespace. Instead, the gateway sends `json_object` with the schema in the prompt (`STRUCTURED_OUTPUT_MODE=json_object`).
+- `reasoning_effort=minimal` is rejected, so the gateway uses `low`. Even at `low` the model reasons a lot: expect 20–100 s per cheap call and 1–2 min for a pre-flight gate.
+- Costs use the fallback prices ($1 input / $0.10 cached / $4 output per 1M tokens) until `AGDD_MODEL_PRICES` is set. Budget gates are only as accurate as those prices.
+
+## DEV agent
+
+The DEV node runs a tool-calling loop (`dev_agent.py`, up to `max_steps`, default 24) through the gateway.
+
+Tools: `search_symbols`, `read_symbol`, `read_file`, `list_files`, `grep`, `apply_patch`, `run_tests`, `search_outputs`, `note`, `finish`.
+
+Each restriction is enforced by the tools themselves:
+- whole-file reads are capped at 150 lines; a re-read within the same attempt returns only the diff
+- every tool output passes through the output parser and the 2,500-token cap; raw output is kept in FTS5
+- edits are accepted only as unified diffs
+- patches to protected test files are rejected
+
+Each retry starts with a fresh model context. It carries over only the handoff (feedback, advisor guidance, Insight Brief) and the `note` facts.
+
+## API
+
+| Method | Path | Role |
+| :--- | :--- | :--- |
+| GET | `/workspaces/{ws}/specs` | VIEWER |
+| PUT | `/workspaces/{ws}/specs/{SRS\|ARC\|SCH}`, `/workspaces/{ws}/trace` | EDITOR (each write stores a new snapshot) |
+| POST | `/workspaces/{ws}/preflight` `{semantic?, ambiguity?}` | EDITOR |
+| POST | `/workspaces/{ws}/graphs` `{definition, graph_id?}` | EDITOR |
+| POST | `/workspaces/{ws}/runs` `{graph_id, request?, repo_key?}` | EDITOR (returns 409 unless the latest snapshot passed the gate) |
+| GET | `/runs/{id}`, `/runs/{id}/logs` (SSE) | VIEWER |
+| GET | `/workspaces/{ws}/hitl` | VIEWER |
+| POST | `/hitl/{id}/decide` `{status}` | APPROVER |
+| GET/PUT | `/workspaces/{ws}/ux/{view}` | EDITOR to write |
+| POST | `/workspaces/{ws}/ux/{view}/unlock` | EDITOR |
+| POST | `/workspaces/{ws}/research` `{problem}` | EDITOR |
+| GET | `/workspaces/{ws}/dashboard` | VIEWER |
+| PUT | `/workspaces/{ws}/budget` | OWNER |
+
+## Graph nodes
+
+Node kinds: `SPEC`, `AMBIGUITY_GATE`, `DEV`, `SEMANTIC_VERIFY`, `VERIFY`, `AUDIT`, `HITL`.
+
+Optional fields on a node:
+
+| Field | Meaning |
+| :--- | :--- |
+| `domain` | narrows the spec scope the node receives |
+| `allowed_mcp` | MCP tool allowlist for the node |
+| `max_retries` | retry limit before escalation |
+| `command`, `reports`, `budgets`, `migrations` | VERIFY: test command, standard reporter files, numeric budgets, migrations to apply and roll back |
+| `ux_views`, `preview_url` | AUDIT: views with locked UX overrides, page to screenshot |
+| `public_api` | DEV: changes to this node's code count as API contract changes |
+| `reversibility` | HITL: `REVERSIBLE` or `IRREVERSIBLE` |
+
+On the graph itself, `fast_track_entry` names the node that FAST_TRACK runs start from.
+
+The worker expects repositories at `${AGDD_WORKSPACE_DIR}/{repo_key}`.

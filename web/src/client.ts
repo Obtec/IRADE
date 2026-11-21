@@ -132,7 +132,7 @@ export class AgoraError extends Error {
 export function connection(value: Connection): Connection {
 	const origin = new URL(value.origin);
 	if (origin.protocol !== 'https:' || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== '/') {
-		throw new Error('Enter an HTTPS origin, for example https://agora.example.com');
+		throw new Error('Enter an HTTPS origin, for example https://example.com');
 	}
 	if (!Number.isSafeInteger(value.canvasId) || value.canvasId <= 0) { throw new Error('Invalid workspace ID'); }
 	return { origin: origin.origin, canvasId: value.canvasId };
@@ -168,7 +168,7 @@ function parseIdentity(message: Record<string, unknown>, previous?: CanvasIdenti
 	return { userId, groups, memberGroups, writeGroups, executeGroups, isAdmin, ...(groupBits ? { groupBits } : {}) };
 }
 
-/** Uses the authenticated Agora Wall Canvas & RTC channels. Exact request IDs survive retries. */
+/** Uses authenticated workspace and real-time channels. Exact request IDs survive retries. */
 export class AgoraClient {
 	private socket?: SocketTransport;
 	private rtcSocket?: SocketTransport;

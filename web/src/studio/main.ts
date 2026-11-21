@@ -139,7 +139,7 @@ const starters: Record<CellKind, string> = {
 };
 
 (globalThis as typeof globalThis & { MonacoEnvironment: unknown }).MonacoEnvironment = {
-  getWorker: () => new Worker('/irade-assets/studio/editor.worker.js', { type: 'module' }),
+  getWorker: () => new Worker('/assets/studio/editor.worker.js', { type: 'module' }),
 };
 for (const language of ['lean4', 'rocq']) {
   monaco.languages.register({ id: language });
@@ -191,10 +191,10 @@ const errorLabels: Record<string, string> = {
   FILE_TOO_LARGE: '셀 저장 한도(128 KiB)를 넘었습니다. 내용을 나누어 주세요.',
   FILE_REPLACED: '셀이 외부에서 교체되었습니다. 현재 내용을 내보내 보관한 후 다시 여세요.',
   RUNTIME_EXECUTION_DENIED: '이 셀의 그룹에는 코드/증명을 실행할 권한이 없습니다.',
-  RUNTIME_NOT_CONNECTED: 'Agora Wall 브로커에 연결되지 않았습니다. 연결 상태를 확인하세요.',
-  RUNTIME_TIMEOUT: 'Agora VM 실행 시간이 초과되었습니다.',
-  RUNTIME_VM_UNAVAILABLE: 'Agora VM 런타임 서버에 연결할 수 없습니다.',
-  RUNTIME_UNSUPPORTED_LANGUAGE: 'Agora VM에서 지원하지 않는 실행 언어입니다.',
+  RUNTIME_NOT_CONNECTED: '실행 브로커에 연결되지 않았습니다. 연결 상태를 확인하세요.',
+  RUNTIME_TIMEOUT: '격리 실행 VM의 실행 시간이 초과되었습니다.',
+  RUNTIME_VM_UNAVAILABLE: '격리 실행 VM에 연결할 수 없습니다.',
+  RUNTIME_UNSUPPORTED_LANGUAGE: '격리 실행 VM에서 지원하지 않는 언어입니다.',
   RUNTIME_CODE_TOO_LARGE: '실행할 코드 크기가 한도를 초과했습니다.',
 };
 function formatErrorLabel(raw: string): string {
@@ -256,7 +256,7 @@ async function refreshSelfProfile(): Promise<void> {
 }
 async function signIn(): Promise<boolean> {
   if (workspace?.pending) { await workspace.flush(); }
-  const url = new URL('/irade/login', origin);
+  const url = new URL('/login', origin);
   const id = workspace?.client.config.canvasId || Number(new URL(location.href).searchParams.get('workspace'));
   if (id) { url.searchParams.set('workspace', String(id)); }
   location.assign(String(url));
@@ -327,7 +327,7 @@ async function openWorkspace(): Promise<void> {
     void (async () => {
       const value = await ask('공유 workspace 열기', 'Workspace ID 또는 공유 링크'); if (!value) { return; }
       let id = Number(value.trim());
-      if (!id) { try { const url = new URL(value); if (url.protocol === 'agora:') { if (url.hostname !== location.hostname) { throw new Error(); } id = Number(url.username); } else { if (url.origin !== origin) { throw new Error(); } id = Number(url.searchParams.get('workspace')); } } catch { throw new Error('현재 Agora 서버의 workspace 링크를 입력하세요.'); } }
+      if (!id) { try { const url = new URL(value); if (url.protocol === 'agora:') { if (url.hostname !== location.hostname) { throw new Error(); } id = Number(url.username); } else { if (url.origin !== origin) { throw new Error(); } id = Number(url.searchParams.get('workspace')); } } catch { throw new Error('현재 서버의 workspace 링크를 입력하세요.'); } }
       const matchedName = available.find(canvas => canvas.canvas_id === id)?.canvas_name || await resolveWorkspaceName(id);
       await connect(id, matchedName);
     })().catch(report);
@@ -565,11 +565,11 @@ async function connect(id: number, name: string, restoreView = false): Promise<v
     if (cell.kind === 'agent') { renderAgentChat(cell.id, { scrollToBottom: true }); }
   }
   sessionStorage.setItem('irade.research.lastWorkspace', JSON.stringify({ id, name }));
-  $('#workspace-subtitle').textContent = `Agora Canvas · #${id}`;
-  $('#workspace-mode').textContent = 'Agora Canvas'; $('#sync-description').textContent = '각 셀은 Canvas 객체 ID·권한 ACL로 실시간 동기화';
+  $('#workspace-subtitle').textContent = `IRADE Workspace · #${id}`;
+  $('#workspace-mode').textContent = 'IRADE Workspace'; $('#sync-description').textContent = '각 연구 셀을 권한에 따라 실시간 동기화';
   updatePermissionSummary();
   agentPanel.onWorkspaceChanged();
-  log(`${name} Canvas workspace를 연결했습니다.`); notify('Agora Canvas 실시간 협업에 연결했습니다.');
+  log(`${name} workspace를 연결했습니다.`); notify('공유 Workspace에 연결했습니다.');
 }
 function visibleCells(): Cell[] {
   return cells.filter(cell => filter === 'all' || cell.kind === filter || filter === 'proof' && ['lean', 'rocq'].includes(cell.kind) || filter === 'document' && ['markdown', 'html'].includes(cell.kind));
@@ -696,12 +696,12 @@ function renderBottomDock(): void {
     if (!out || !targetCell) {
       outputPane.innerHTML = '<div class="bottom-dock-empty">Lean 4 · Rocq · Python 셀에서 <kbd>Shift+Enter</kbd> 또는 <b>▶</b> 버튼을 누르면 실행 결과가 여기에 표시됩니다. <button type="button" class="text-button" data-open-dock-games>🎮 미니게임(스네이크·테트리스) 열기 →</button></div>';
     } else if (out.running) {
-      outputPane.innerHTML = `<div class="bottom-dock-status running">[*] 실행 중… <span>${out.runtime === 'agora-vm' ? 'Agora VM' : 'Host Runner'}</span></div>${out.stdout ? `<pre class="bottom-dock-pre">${escape(out.stdout)}</pre>` : ''}`;
+      outputPane.innerHTML = `<div class="bottom-dock-status running">[*] 실행 중… <span>${out.runtime === 'agora-vm' ? '격리 VM' : '로컬 실행기'}</span></div>${out.stdout ? `<pre class="bottom-dock-pre">${escape(out.stdout)}</pre>` : ''}`;
     } else {
       const badge = out.status === 'verified' ? '✓ Proof Verified' : out.ok ? '✓ Executed' : out.status === 'timeout' ? '⏱ Timeout' : `✕ Error (exit ${out.exitCode ?? '?'})`;
       const combined = [out.stdout, out.stderr].filter(part => part && part.trim().length > 0).join('\n').trim() || '(출력 없음)';
       const seqLabel = out.execOrder ? `실행 #${out.execOrder} · ` : '';
-      outputPane.innerHTML = `<div class="bottom-dock-status ${out.ok ? 'ok' : 'err'}"><span>${seqLabel}${badge}</span><small>${out.runtime === 'agora-vm' ? 'Agora VM' : 'Host Runner'} · ${out.durationMs}ms</small></div><pre class="bottom-dock-pre">${escape(combined)}</pre>`;
+      outputPane.innerHTML = `<div class="bottom-dock-status ${out.ok ? 'ok' : 'err'}"><span>${seqLabel}${badge}</span><small>${out.runtime === 'agora-vm' ? '격리 VM' : '로컬 실행기'} · ${out.durationMs}ms</small></div><pre class="bottom-dock-pre">${escape(combined)}</pre>`;
     }
   }
   if (activityPane) {
@@ -1108,12 +1108,12 @@ function renderCellOutput(id: string): void {
   container.classList.toggle('error', !out.ok && !out.running);
   if (out.running) {
     const streamPre = out.stdout ? `<pre class="nb-output-pre">${escape(out.stdout)}</pre>` : '';
-    const envNote = out.runtime === 'agora-vm' ? '<span>Agora VM · Broker/C++ 스트리밍…</span>' : '';
+    const envNote = out.runtime === 'agora-vm' ? '<span>격리 실행 VM · 실시간 출력 수신 중…</span>' : '';
     container.innerHTML = `<div class="nb-output-head"><span class="nb-output-badge"><span class="nb-output-order">[*]</span> ⟳ 실행 중…</span>${envNote}</div>${streamPre}`;
     return;
   }
   const badge = out.status === 'verified' ? '✓ Proof Verified' : out.ok ? '✓ Executed' : out.status === 'timeout' ? '⏱ Timeout' : `✕ Error (exit ${out.exitCode ?? '?'})`;
-  const envLabel = out.runtime === 'agora-vm' ? 'Agora VM · ' : out.runtime === 'host' ? 'Host Runner · ' : '';
+  const envLabel = out.runtime === 'agora-vm' ? '격리 VM · ' : out.runtime === 'host' ? '로컬 실행기 · ' : '';
   const combined = [out.stdout, out.stderr].filter(part => part && part.trim().length > 0).join('\n').trim() || '(출력 없음)';
   const seqChip = out.execOrder ? `<span class="nb-output-order">실행 #${out.execOrder}</span> ` : '';
   const proofDbChip = (out.status === 'verified' && out.proofDbSync)
@@ -1134,7 +1134,7 @@ function renderCellOutput(id: string): void {
   });
 }
 async function executeOnHost(kind: CellKind, code: string): Promise<ExecutionOutput> {
-  const endpoint = location.pathname.startsWith('/irade') ? '/irade/api/execute' : '/api/execute';
+  const endpoint = '/api/execute';
   const response = await fetch(origin + endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1151,7 +1151,7 @@ async function executeOnHost(kind: CellKind, code: string): Promise<ExecutionOut
 function isVmFallbackError(codeOrMessage: string): boolean {
   return /RUNTIME_MANAGER_UNAVAILABLE|RUNTIME_VM_UNAVAILABLE|RUNTIME_KERNEL_UNAVAILABLE|RUNTIME_NOT_CONNECTED|RUNTIME_REQUEST_INVALID|RUNTIME_REQUEST_TOO_LARGE|RUNTIME_RESPONSE_TOO_LARGE|RUNTIME_TIMEOUT|RUNTIME_UNSUPPORTED_LANGUAGE|UNSUPPORTED_LANGUAGE|CONNECTION_FAILED|DISCONNECTED|VM 커널|전달하지 못했습니다/.test(codeOrMessage);
 }
-async function executeInAgoraVm(id: string, kind: 'python' | 'lean' | 'rocq', code: string): Promise<ExecutionOutput> {
+async function executeInIsolatedVm(id: string, kind: 'python' | 'lean' | 'rocq', code: string): Promise<ExecutionOutput> {
   const active = workspace!;
   if (active.pending) { await active.flush(); }
   const started = Date.now();
@@ -1212,7 +1212,7 @@ async function executeInAgoraVm(id: string, kind: 'python' | 'lean' | 'rocq', co
           ok: false,
           exitCode,
           stdout: '',
-          stderr: `Agora VM(${binName})에 해당 실행 도구가 설치되어 있지 않습니다 (exit ${exitCode}).`,
+          stderr: `격리 실행 VM(${binName})에 해당 실행 도구가 설치되어 있지 않습니다 (exit ${exitCode}).`,
           durationMs: Date.now() - started,
           status: 'error',
           runtime: 'agora-vm',
@@ -1225,7 +1225,7 @@ async function executeInAgoraVm(id: string, kind: 'python' | 'lean' | 'rocq', co
   return {
     ok,
     exitCode,
-    stdout: ok ? (outputText || (isProof ? '✓ Proof verified in Agora VM (0 errors)' : '')) : '',
+    stdout: ok ? (outputText || (isProof ? '✓ Proof verified in isolated runtime (0 errors)' : '')) : '',
     stderr: ok ? '' : (outputText || data.message || (data.error ? formatErrorLabel(data.error) : `실행이 종료되었습니다 (exit ${exitCode}).`)),
     durationMs,
     status: data.timedOut ? 'timeout' : ok ? (isProof ? 'verified' : 'success') : 'error',
@@ -1392,13 +1392,13 @@ async function runCell(id: string, advanceOnFinish = true): Promise<void> {
   renderCellOutput(id);
   try {
     const result = workspace
-      ? await executeInAgoraVm(id, cell.kind as 'python' | 'lean' | 'rocq', code)
+      ? await executeInIsolatedVm(id, cell.kind as 'python' | 'lean' | 'rocq', code)
       : await executeOnHost(cell.kind, code);
     const seq = ++executionSeq;
     cellExecOrders.set(id, seq);
     const completedOutput: ExecutionOutput = { ...result, execOrder: seq };
     cellOutputs.set(id, completedOutput);
-    log(`[실행 #${seq}] ${cellTypes[cell.kind].short} 셀을 ${result.runtime === 'agora-vm' ? 'Agora VM(Broker·C++ WS)에서 ' : ''}${result.ok ? '실행/검증' : '실행(오류)'}했습니다 (${result.durationMs}ms).`);
+    log(`[실행 #${seq}] ${cellTypes[cell.kind].short} 셀을 ${result.runtime === 'agora-vm' ? '격리 실행 VM에서 ' : ''}${result.ok ? '실행/검증' : '실행(오류)'}했습니다 (${result.durationMs}ms).`);
     if ((cell.kind === 'lean' || cell.kind === 'rocq') && result.status === 'verified') {
       await syncVerifiedProofCell(cell, code, completedOutput);
     }
@@ -1508,7 +1508,7 @@ function renderCellPreview(id: string): void {
     }
     frame.removeAttribute('srcdoc');
     frame.dataset.awaitingPreview = '1';
-    const previewBase = location.pathname.startsWith('/irade') ? '/irade/preview' : '/preview';
+  const previewBase = '/preview';
     frame.src = `${previewBase}?r=${++previewRenderSeq}`;
     return;
   }
@@ -1538,10 +1538,10 @@ function openCellPermissionModal(id: string): void {
     }).join('')
     : '<p class="empty-search">할당된 Canvas 그룹이 없습니다.</p>';
   const lockNotice = !workspace
-    ? '<p class="modal-copy">로컬 체험 셀의 잠금 상태를 설정합니다. 그룹별 ACL 제어는 Agora 공유 Workspace에서 사용할 수 있습니다.</p>'
+    ? '<p class="modal-copy">로컬 체험 셀의 잠금 상태를 설정합니다. 그룹별 ACL 제어는 공유 Workspace에서 사용할 수 있습니다.</p>'
     : !isAdmin
       ? '<p class="modal-copy">그룹 접근 권한 변경은 Workspace 관리자만 가능합니다. 쓰기 권한자는 잠금 상태를 전환할 수 있습니다.</p>'
-      : '<p class="modal-copy">Agora Canvas 객체 단위로 읽기·쓰기·실행 그룹과 잠금 상태를 제어합니다.</p>';
+      : '<p class="modal-copy">연구 셀 단위로 읽기·쓰기·실행 그룹과 잠금 상태를 제어합니다.</p>';
   showModal(`셀 객체 권한 · ${cell.title}`, `${lockNotice}
     <div class="field">
       <span class="perm-field-label">객체 ID</span>
@@ -1607,7 +1607,7 @@ function renderNotebook(): void {
   }
   if (viewMode !== 'notebook') { return; }
   $('#notebook-title').textContent = workspaceName;
-  $('#notebook-kind').textContent = demo ? 'LOCAL PLAYGROUND NOTEBOOK' : connected ? 'AGORA WORKSPACE NOTEBOOK' : 'RESEARCH NOTEBOOK';
+  $('#notebook-kind').textContent = demo ? 'LOCAL PLAYGROUND NOTEBOOK' : connected ? 'SHARED WORKSPACE NOTEBOOK' : 'RESEARCH NOTEBOOK';
   const visible = visibleCells();
   const visibleIds = new Set(visible.map(c => c.id));
   for (const [id, ed] of cellEditors.entries()) {
@@ -2036,7 +2036,7 @@ function renderInspector(): void {
     ? `<div class="context-block"><h3 class="context-heading">CELL METRICS</h3><div class="context-stat"><span>유형 / 언어</span><b>${escape(cellTypes[cell.kind].short)}</b></div><div class="context-stat"><span>줄 수</span><b>${cellText ? cellText.split('\n').length : 0} lines</b></div><div class="context-stat"><span>글자 수</span><b>${cellText.length} chars</b></div></div>`
     : '<div class="context-flow"><div class="flow-step"><span class="step-icon mint">✧</span><span>탐색하고 대화하기<small>AGENT CONVERSATIONS</small></span></div><div class="flow-step"><span class="step-icon purple">∀</span><span>논리로 증명하기<small>LEAN 4 / ROCQ PROOFS</small></span></div><div class="flow-step"><span class="step-icon blue">λ</span><span>코드로 실험하기<small>PYTHON CELLS</small></span></div><div class="flow-step"><span class="step-icon sand">≡</span><span>지식으로 정리하기<small>MARKDOWN / HTML</small></span></div></div>';
   const typeCounts = { agent: cells.filter(cell => cell.kind === 'agent').length, proof: cells.filter(cell => ['lean', 'rocq'].includes(cell.kind)).length, code: cells.filter(cell => cell.kind === 'python').length, document: cells.filter(cell => ['markdown', 'html'].includes(cell.kind)).length };
-  $('#inspector-content').innerHTML = `<h3 class="context-heading">${cell ? 'CELL CONTEXT' : 'WORKSPACE CONTEXT'}</h3><h2 class="context-title">${escape(cell ? cellTypes[cell.kind].label : '연구의 흐름을\n하나로 연결하세요.').replace('\n', '<br>')}</h2><p class="context-copy">${cell ? escape(cellTypes[cell.kind].description) : '아이디어를 탐색하고, 가설을 증명하고,<br>결과를 코드와 문서로 남기는 공간.'}</p>${proofStateHtml}${cellAclHtml}${cellMetricsHtml}<div class="context-block"><h3 class="context-heading">${cell ? 'THIS WORKSPACE' : 'WORKSPACE OVERVIEW'}</h3><div class="context-stat"><span>대화 기록</span><b>${String(typeCounts.agent).padStart(2, '0')}</b></div><div class="context-stat"><span>형식 증명</span><b>${String(typeCounts.proof).padStart(2, '0')}</b></div><div class="context-stat"><span>Python 코드</span><b>${String(typeCounts.code).padStart(2, '0')}</b></div><div class="context-stat"><span>연구 문서</span><b>${String(typeCounts.document).padStart(2, '0')}</b></div></div>${peersHtml}<div class="context-block"><h3 class="context-heading">COLLABORATION</h3><p class="context-copy">${demo ? '로컬 체험 모드입니다.<br>내용은 현재 브라우저 탭에만 저장됩니다.' : connected ? 'Agora Workspace 객체 ID·권한 ACL로<br>실시간 델타·CRDT 동기화 중입니다.' : 'Agora workspace를 연결하면<br>함께 셀을 편집할 수 있습니다.'}</p><span class="context-tag">${demo ? 'LOCAL SESSION' : connected ? 'WORKSPACE SYNC' : 'AGORA WORKSPACE'}</span></div>`;
+  $('#inspector-content').innerHTML = `<h3 class="context-heading">${cell ? 'CELL CONTEXT' : 'WORKSPACE CONTEXT'}</h3><h2 class="context-title">${escape(cell ? cellTypes[cell.kind].label : '연구의 흐름을\n하나로 연결하세요.').replace('\n', '<br>')}</h2><p class="context-copy">${cell ? escape(cellTypes[cell.kind].description) : '아이디어를 탐색하고, 가설을 증명하고,<br>결과를 코드와 문서로 남기는 공간.'}</p>${proofStateHtml}${cellAclHtml}${cellMetricsHtml}<div class="context-block"><h3 class="context-heading">${cell ? 'THIS WORKSPACE' : 'WORKSPACE OVERVIEW'}</h3><div class="context-stat"><span>대화 기록</span><b>${String(typeCounts.agent).padStart(2, '0')}</b></div><div class="context-stat"><span>형식 증명</span><b>${String(typeCounts.proof).padStart(2, '0')}</b></div><div class="context-stat"><span>Python 코드</span><b>${String(typeCounts.code).padStart(2, '0')}</b></div><div class="context-stat"><span>연구 문서</span><b>${String(typeCounts.document).padStart(2, '0')}</b></div></div>${peersHtml}<div class="context-block"><h3 class="context-heading">COLLABORATION</h3><p class="context-copy">${demo ? '로컬 체험 모드입니다.<br>내용은 현재 브라우저 탭에만 저장됩니다.' : connected ? 'Workspace 셀 권한과 CRDT를 사용해<br>실시간으로 동기화 중입니다.' : '공유 Workspace를 연결하면<br>함께 셀을 편집할 수 있습니다.'}</p><span class="context-tag">${demo ? 'LOCAL SESSION' : connected ? 'WORKSPACE SYNC' : 'SHARED WORKSPACE'}</span></div>`;
   if (cell) {
     document.querySelector('#inspector-perm-btn')?.addEventListener('click', () => openCellPermissionModal(cell.id));
   }
@@ -2076,12 +2076,12 @@ async function startDemo(): Promise<void> {
   cells.sort((a, b) => a.frameOrder - b.frameOrder || a.id.localeCompare(b.id));
   persistScratch(); const url = new URL(location.href); url.searchParams.delete('workspace'); history.replaceState(null, '', url);
   $('#workspace-subtitle').textContent = '로컬 체험 · 현재 탭에만 저장'; $('#workspace-mode').textContent = 'Local Playground'; $('#status').textContent = '로컬 체험 · 공유되지 않음'; $('#connection-label').textContent = 'LOCAL SESSION'; $('#sync-description').textContent = '체험 내용은 현재 탭에만 저장'; $('#permission-label').textContent = '로컬 편집';
-  openNotebook(); agentPanel.onWorkspaceChanged(); log('로컬 체험 workspace를 열었습니다.'); notify('로컬 체험입니다. 공동 편집하려면 Agora workspace를 연결하세요.');
+  openNotebook(); agentPanel.onWorkspaceChanged(); log('로컬 체험 workspace를 열었습니다.'); notify('로컬 체험입니다. 공동 편집하려면 공유 Workspace를 연결하세요.');
 }
 let addingCell = false;
 async function addCell(kind?: CellKind, afterId?: string): Promise<void> {
   if (!workspace && !demo) {
-    showModal('연구 공간을 선택하세요', '<p class="modal-copy">Agora workspace에서 실시간으로 협업하거나 로컬 체험으로 셀을 살펴보세요.</p><div class="choice-list"><button class="choice" data-action="open"><span class="type-icon mint">↔</span><span><strong>공유 workspace 열기</strong><small>ORCID로 로그인하고 공동 편집</small></span><span class="choice-arrow">↗</span></button><button class="choice" data-action="demo"><span class="type-icon blue">λ</span><span><strong>로컬 체험 시작</strong><small>계정 없이 현재 탭에서 셀 편집 체험</small></span><span class="choice-arrow">→</span></button></div>'); return;
+    showModal('연구 공간을 선택하세요', '<p class="modal-copy">공유 Workspace에서 실시간으로 협업하거나 로컬 체험으로 셀을 살펴보세요.</p><div class="choice-list"><button class="choice" data-action="open"><span class="type-icon mint">↔</span><span><strong>공유 workspace 열기</strong><small>ORCID로 로그인하고 공동 편집</small></span><span class="choice-arrow">↗</span></button><button class="choice" data-action="demo"><span class="type-icon blue">λ</span><span><strong>로컬 체험 시작</strong><small>계정 없이 현재 탭에서 셀 편집 체험</small></span><span class="choice-arrow">→</span></button></div>'); return;
   }
   if (workspace && !workspace.client.canWrite) { notify('이 workspace는 읽기 전용입니다.', true); return; }
   if (!kind) {
@@ -2179,7 +2179,7 @@ function message(): void {
   }
   selectCell(cell.id, 'center');
 }
-function help(): void { showModal('연결된 연구를 시작하세요', '<div class="help-grid"><p><b>Workspace</b>는 공동 연구 공간입니다. 같은 workspace를 열면 같은 셀을 편집하고 변경을 실시간으로 공유합니다.</p><p><b>AI 에이전트</b>는 EXAONE 2.5와 MCP 도구로 Workspace 셀을 생성·수정하며 API별 잔여 한도를 표시합니다.<br><b>Lean 4 / Rocq</b>는 형식 증명 소스를 검증합니다.<br><b>Python</b>은 Agora VM에서 실험 코드를 실행합니다.<br><b>Markdown / HTML</b>은 문서와 미리보기를 제공합니다.</p><p><kbd>Ctrl K</kbd> 검색 · <kbd>Alt N</kbd> 새 셀<br><kbd>Ctrl S</kbd> 저장 · <kbd>Ctrl Shift F</kbd> 집중 모드</p></div>'); }
+function help(): void { showModal('연결된 연구를 시작하세요', '<div class="help-grid"><p><b>Workspace</b>는 공동 연구 공간입니다. 같은 workspace를 열면 같은 셀을 편집하고 변경을 실시간으로 공유합니다.</p><p><b>AI 에이전트</b>는 EXAONE 2.5와 MCP 도구로 Workspace 셀을 생성·수정하며 API별 잔여 한도를 표시합니다.<br><b>Lean 4 / Rocq</b>는 형식 증명 소스를 검증합니다.<br><b>Python</b>은 격리 실행 VM에서 실험 코드를 실행합니다.<br><b>Markdown / HTML</b>은 문서와 미리보기를 제공합니다.</p><p><kbd>Ctrl K</kbd> 검색 · <kbd>Alt N</kbd> 새 셀<br><kbd>Ctrl S</kbd> 저장 · <kbd>Ctrl Shift F</kbd> 집중 모드</p></div>'); }
 function settings(initialTab: 'general' | 'monitoring' = 'general'): void {
   const savedLines = localStorage.getItem('irade.lineNumbers') === 'off' ? 'off' : 'on';
   const savedSize = Number(localStorage.getItem('irade.fontSize') || 14);
@@ -2250,7 +2250,7 @@ function settings(initialTab: 'general' | 'monitoring' = 'general'): void {
   }
 }
 async function share(): Promise<void> {
-  if (!workspace) { notify('공유하려면 Agora workspace를 먼저 연결하세요.'); return; }
+  if (!workspace) { notify('공유하려면 Workspace를 먼저 연결하세요.'); return; }
   const url = new URL(location.pathname, origin); url.searchParams.set('workspace', String(workspace.client.config.canvasId));
   try { await navigator.clipboard.writeText(String(url)); notify('Workspace 링크를 복사했습니다. 참여자는 자신의 ORCID 로그인과 접근 권한이 필요합니다.'); }
   catch { showModal('Workspace 공유 링크', `<p class="modal-copy">참여자는 자신의 ORCID 로그인과 접근 권한이 필요합니다.</p><label class="field">공유 링크<input readonly value="${escape(String(url))}"></label>`); }
@@ -2260,7 +2260,7 @@ async function action(name: string): Promise<void> {
   else if (name === 'login') {
     if (token) {
       const profile = await api<{ name: string; orcid: string; issuer: string }>('/api/irade/auth/me');
-      showModal('연구자 계정', `<p class="modal-copy">${escape(profile.name)}</p><a class="orcid-profile" href="${escape(profile.issuer)}/${escape(profile.orcid)}" target="_blank" rel="noopener noreferrer"><img src="/irade-assets/orcid-id.svg" width="24" height="24" alt="ORCID iD"> ${escape(profile.issuer)}/${escape(profile.orcid)}</a><div class="form-actions"><button class="button ghost" data-action="logout">이 탭에서 로그아웃</button></div>`);
+      showModal('연구자 계정', `<p class="modal-copy">${escape(profile.name)}</p><a class="orcid-profile" href="${escape(profile.issuer)}/${escape(profile.orcid)}" target="_blank" rel="noopener noreferrer"><img src="/assets/orcid-id.svg" width="24" height="24" alt="ORCID iD"> ${escape(profile.issuer)}/${escape(profile.orcid)}</a><div class="form-actions"><button class="button ghost" data-action="logout">이 탭에서 로그아웃</button></div>`);
     } else { await signIn(); }
   }
   else if (name === 'logout') {
@@ -2465,7 +2465,7 @@ async function runLocalAssistantTurn(message: string, selectedCell?: Cell): Prom
   if (selectedCell) {
     const previewLines = selectedCell.text.split(/\r?\n/).slice(0, 6).join('\n');
     return {
-      answer: `선택한 **${cellTypes[selectedCell.kind].label}** 셀 \`${selectedCell.title}\` 기준 요약입니다.\n\n\`\`\`${cellTypes[selectedCell.kind].language}\n${previewLines}\n\`\`\`\n\n- 총 ${selectedCell.text.split(/\r?\n/).length}줄 · 권한: \`${permissionSummary(selectedCell)}\`\n- 공유 Agora Workspace에 연결하면 실제 **EXAONE 2.5** 모델이 셀 수정과 검증까지 직접 실행합니다.`,
+      answer: `선택한 **${cellTypes[selectedCell.kind].label}** 셀 \`${selectedCell.title}\` 기준 요약입니다.\n\n\`\`\`${cellTypes[selectedCell.kind].language}\n${previewLines}\n\`\`\`\n\n- 총 ${selectedCell.text.split(/\r?\n/).length}줄 · 권한: \`${permissionSummary(selectedCell)}\`\n- 공유 Workspace에 연결하면 EXAONE 2.5 에이전트가 셀 초안 작성과 수정을 지원합니다.`,
     };
   }
 
@@ -2478,7 +2478,7 @@ async function runLocalAssistantTurn(message: string, selectedCell?: Cell): Prom
   ).map(([k, v]) => `${k} ${v}개`).join(', ');
 
   return {
-    answer: `현재 **${workspaceName}**에는 총 ${cells.length}개의 셀(${kindsSummary || '없음'})이 있습니다.\n\n- 예: \`"Lean 4 정리 셀 생성해 줘"\`, \`"Python 실험 코드 추가"\`처럼 지시하면 즉시 셀을 추가할 수 있습니다.\n- 전체 AI 추론·MCP 편집은 ORCID 로그인 후 Agora Workspace에서 사용할 수 있습니다.`,
+    answer: `현재 **${workspaceName}**에는 총 ${cells.length}개의 셀(${kindsSummary || '없음'})이 있습니다.\n\n- 예: \`"Lean 4 정리 셀 생성해 줘"\`, \`"Python 실험 코드 추가"\`처럼 지시하면 즉시 셀을 추가할 수 있습니다.\n- AI 추론·MCP 편집은 ORCID 로그인 후 공유 Workspace에서 사용할 수 있습니다.`,
   };
 }
 

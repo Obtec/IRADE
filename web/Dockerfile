@@ -24,4 +24,4 @@ COPY scripts/ ./scripts/
 
 USER 10001:10001
 EXPOSE 8090
-CMD ["node", "scripts/serve-https.mjs", "--cert", "/run/tls/fullchain.pem", "--key", "/run/tls/privkey.pem", "--host", "0.0.0.0", "--port", "8090", "--base-path", "/irade/", "--studio-path", "/app/dist/studio"]
+CMD ["node", "scripts/serve-https.mjs", "--cert", "/run/tls/fullchain.pem", "--key", "/run/tls/privkey.pem", "--host", "0.0.0.0", "--port", "8090", "--base-path", "/", "--studio-path", "/app/dist/studio"]

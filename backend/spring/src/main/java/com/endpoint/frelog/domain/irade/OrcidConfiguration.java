@@ -11,7 +11,7 @@ public record OrcidConfiguration(boolean enabled,String clientId,String clientSe
             @Value("${app.irade.orcid.client-id:}") String clientId,
             @Value("${app.irade.orcid.client-secret:}") String clientSecret,
             @Value("${app.irade.orcid.issuer:https://orcid.org}") String issuer,
-            @Value("${app.irade.orcid.redirect-uri:https://frelog.p-e.kr/api/irade/auth/orcid/callback}") String redirectUri) {
+            @Value("${app.irade.orcid.redirect-uri:https://irade.p-e.kr/api/irade/auth/orcid/callback}") String redirectUri) {
         this.enabled=enabled;this.clientId=clientId;this.clientSecret=clientSecret;this.issuer=issuer;this.redirectUri=redirectUri;
         if(!issuer.equals("https://orcid.org")&&!issuer.equals("https://sandbox.orcid.org"))throw new IllegalArgumentException("Only official ORCID issuers are supported");
         var uri=URI.create(redirectUri);

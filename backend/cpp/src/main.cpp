@@ -246,13 +246,13 @@ void stop_servers(CanvasLifecycleMemory& canvas_pool) {
     g_cleanup_cv.notify_all();
 
     RegistryServiceMemory(g_db_host, g_db_port).setServerInactive(g_advertise_ip, g_port);
-    std::cout << "[Agora C++ Server] 서버를 DB에서 비활성화했습니다.\n";
+    std::cout << "[IRADE C++ Server] 서버를 DB에서 비활성화했습니다.\n";
 
     if (g_server) g_server->stop();
     if (g_broker_server) g_broker_server->stop();
 
     if (!canvas_pool.saveCanvasesForShutdown()) {
-        std::cerr << "[Agora C++ Server] 일부 Canvas를 Elasticsearch에 저장하지 못했습니다. "
+        std::cerr << "[IRADE C++ Server] 일부 Canvas를 Elasticsearch에 저장하지 못했습니다. "
                      "Redis 캐시는 보존한 채 종료를 계속합니다.\n";
     }
 

@@ -1,25 +1,64 @@
 # 운영 배포
 
-공개 주소: **https://proof-notebook.p-e.kr**. `/ide`와 `/ide/`는 workspace 쿼리를 보존해 `/irade/`로 308 리다이렉트합니다.
+IRADE Web Studio의 공개 주소는 **https://irade.p-e.kr/**입니다. Nginx가 웹 앱, Spring API, 실행 API, WebSocket 브로커를 URL 경로에 따라 내부 서비스로 전달합니다.
 
-## 구성
+| 경로 | 내부 서비스 |
+| --- | --- |
+| `/`, `/studio`, `/login`, `/assets/`, `/preview` | IRADE Web (`irade-web:8090`) |
+| `/api/execute`, `/api/metrics` | IRADE Web 실행·상태 API |
+| `/api/`, `/api/irade/` | Spring API (`irade-spring:8080`) |
+| `/wss/` | 실시간 브로커 (`irade-broker:4443`) |
 
-- systemd: `/etc/systemd/system/irade-web.service` (선택적 호스트 UI 서비스), 사용자 `steam`, 내부 HTTPS `127.0.0.1:8090` (Docker 구성에서는 `irade-web` 컨테이너가 내부 TLS로 동작).
-- 공개 nginx: 분리된 가상 호스트 [proof-notebook.p-e.kr.conf](../wall/deploy/nginx/proof-notebook.p-e.kr.conf)가 Let's Encrypt 인증서(`/etc/letsencrypt/live/proof-notebook.p-e.kr/`)로 TLS를 종단하고 `https://127.0.0.1:8453`(IRADE Wall Nginx)으로 `proxy_ssl_verify on` 프록시합니다.
-- 외부는 Let's Encrypt 인증서(`wall/scripts/public-tls.sh`), 내부 컨테이너 간 통신은 IRADE 내부 CA(`root-ca.pem`) 검증을 사용합니다. 자세한 절차는 [PUBLIC_TLS.md](../backend/docs/PUBLIC_TLS.md)를 참고하세요.
-- 운영 UI: `/home/steam/Github/IRADE/web/dist/studio/` 또는 `--studio-path`로 지정한 릴리스 디렉터리. 서버는 시작 시 파일을 메모리에 읽으며 소스·개발 파일을 공개하지 않고 HTTPS만 허용합니다.
-- 외부 마켓플레이스, VS Code 다운로드와 워크벤치 경로를 운영 서버에서 제공하지 않습니다. Monaco와 worker, WASM은 번들에 포함됩니다. 와일드카드 DNS·인증서가 필요하지 않습니다.
+443 포트의 TLS SNI 라우터가 도메인별 loopback HTTPS listener로 연결합니다. IRADE는 별도 `9446` listener를 사용하며, [독립 도메인 가상 호스트](deploy/irade.p-e.kr.conf)가 공개 인증서를 제시하고 내부 게이트웨이의 CA도 검증합니다. Wall Nginx의 서비스별 라우팅은 [irade.conf.example](../wall/nginx/irade.conf.example)에 있습니다.
 
-서버 자체 NAT loopback 문제에 대한 `/etc/hosts`의 해당 도메인→`127.0.0.1` 매핑은 유지합니다. 외부 DNS는 변경하지 않았습니다.
+## 인증서와 Nginx
 
-## 갱신
+새 Let's Encrypt 인증서는 DNS-01 방식으로 발급합니다. Certbot은 계정과 인증서를 사용자 전용 디렉터리에 보관합니다. 아래 명령을 실행하고 Certbot이 표시하는 `_acme-challenge.irade.p-e.kr` TXT 값을 DNS에 등록합니다.
 
-1. [README](README.md)의 빌드와 테스트(`npm --prefix /home/steam/Github/IRADE/web run check && npm test && npm run test:studio`)를 실행합니다.
-2. `web/dist/studio/`를 `/opt/irade-web/releases/<릴리스>/studio/`로 복사합니다. 소스와 테스트 데이터는 제외합니다.
-3. [서비스 템플릿](deploy/irade-web.service)의 `WorkingDirectory=/home/steam/Github/IRADE/web` 및 인증서·사용자를 서버에 맞추고 `--studio-path`를 지정합니다. `systemctl daemon-reload`, `systemctl restart irade-web.service`를 실행합니다.
-4. [nginx 템플릿](deploy/irade-web.conf)을 적용하고 `nginx -t` 성공 후 reload합니다. 프록시 CA 설정은 기존 `irade-web-proxy.conf`를 사용합니다.
-5. `systemctl is-active irade-web.service agora-runtime-manager.service`, 공개 `/irade/`의 HTTP 200, `/ide/`의 308·쿼리 보존, manifest의 `/irade/` scope, 실제 브라우저 로딩과 네트워크 요청을 확인합니다.
+```bash
+certbot certonly --manual --preferred-challenges dns --key-type ecdsa \
+  --cert-name irade.p-e.kr -d irade.p-e.kr --agree-tos \
+  --register-unsafely-without-email --no-eff-email \
+  --config-dir "$HOME/.config/irade/certbot" \
+  --work-dir "$HOME/.local/state/irade/certbot-work" \
+  --logs-dir "$HOME/.local/state/irade/certbot-log"
+./wall/scripts/public-tls.sh sync irade.p-e.kr \
+  --source-dir "$HOME/.config/irade/certbot/live/irade.p-e.kr" --no-reload
+```
 
-Spring ORCID API와 DB의 `2026-11-13-irade-orcid.sql` 마이그레이션을 함께 적용합니다. Wall nginx와 공개 nginx는 ORCID 콜백의 쿼리 로깅을 끄고 `no-referrer`를 적용합니다. C++·VM 셀 동기화 프로토콜은 이전 배포를 그대로 사용합니다. 기존 VM과 파일은 보존합니다. 이전 설정과 릴리스 디렉터리를 보관해 서비스 경로와 nginx 설정을 되돌릴 수 있습니다. 인증 정보가 있을 수 있는 서버 백업은 저장소에 추가하지 않습니다.
+발급이 끝나면 인증서는 `/home/steam/.local/share/irade/letsencrypt/irade.p-e.kr/`에 설치됩니다. 저장소 루트에서 설치 스크립트를 실행하면 기존 443 SNI map에 IRADE 도메인만 9446으로 보내는 항목을 추가하고, 가상 호스트를 활성화한 뒤 Nginx를 검증·재적용합니다.
 
-ORCID 로그인 페이지는 `/irade/login`입니다. `/api/irade/auth/orcid/status`가 `available:true`인지 확인하고, 실제 ORCID 인증은 등록된 Redirect URI `https://proof-notebook.p-e.kr/api/irade/auth/orcid/callback`으로 돌아와야 합니다. 클라이언트 설정은 저장소 밖 `/home/steam/.config/irade/orcid.env`(0600)에서 관리하고 Spring Compose가 raw env file로 읽습니다. 비밀키를 출력하는 `docker compose config` 대신 `config --quiet`를 사용합니다.
+```bash
+sudo web/deploy/activate-irade-vhost.sh
+```
+
+수동 DNS 방식은 자동 갱신되지 않으므로 만료 전에 [갱신 스크립트](deploy/renew-irade-certificate.sh)를 실행해 TXT 검증을 다시 완료해야 합니다. DNS 제공자의 자동화 API가 준비되면 DNS 플러그인으로 갱신을 자동화할 수 있습니다. 포트 80을 외부에서 열 수 있는 환경에서는 Nginx의 ACME HTTP-01 경로도 사용할 수 있습니다.
+
+Wall 서비스 게이트웨이에 내부 라우팅 변경을 적용하려면 `wall/.env`의 `NGINX_PUBLIC_HOSTNAME=irade.p-e.kr`를 설정하고 다음을 실행합니다.
+
+```bash
+./wall/scripts/nginx-docker.sh production
+```
+
+## 웹 앱 배포
+
+저장소의 `web/` 디렉터리에서 이미지를 빌드하고 서비스를 갱신합니다. 컨테이너 기본 경로는 도메인 루트(`/`)입니다.
+
+```bash
+docker compose up -d --build web
+docker compose ps
+```
+
+배포 확인:
+
+```bash
+curl --fail --silent --show-error https://irade.p-e.kr/ --output /dev/null
+curl --fail --silent --show-error https://irade.p-e.kr/assets/manifest.webmanifest
+curl --fail --silent --show-error https://irade.p-e.kr/api/irade/auth/orcid/status
+```
+
+## ORCID 로그인
+
+ORCID Public API 클라이언트의 application URL은 `https://irade.p-e.kr/`, Redirect URI는 `https://irade.p-e.kr/api/irade/auth/orcid/callback`으로 등록합니다. 인증 환경 파일은 저장소 밖 `/home/steam/.config/irade/orcid.env`에서 관리합니다. 설정과 재시작 절차는 [IRADE ORCID 안내](../backend/docs/IRADE_ORCID.md)를 참고하세요.
+
+기존 `/irade/...` 및 `/ide/...` 공유 링크는 새 도메인으로 옮길 수 있도록 [FreLog 이전 경로 redirect 설정](deploy/frelog-irade-redirect.conf)을 제공합니다. 새 서비스 주소와 API는 `irade.p-e.kr`만 사용합니다.

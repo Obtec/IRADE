@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WALL_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
-DEFAULT_DOMAIN="${IRADE_PUBLIC_DOMAIN:-proof-notebook.p-e.kr}"
+DEFAULT_DOMAIN="${IRADE_PUBLIC_DOMAIN:-irade.p-e.kr}"
 CERTBOT_BIN="${IRADE_CERTBOT_BIN:-$(command -v /snap/bin/certbot 2>/dev/null || command -v certbot 2>/dev/null || true)}"
 
 die() {
@@ -48,7 +48,7 @@ try:
 except ValueError:
     pass
 if not re.fullmatch(r'(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}', value):
-    sys.exit('Provide a valid public DNS hostname (e.g. proof-notebook.p-e.kr) or public IP.')
+    sys.exit('Provide a valid public DNS hostname (e.g. irade.p-e.kr) or public IP.')
 PY
 }
 

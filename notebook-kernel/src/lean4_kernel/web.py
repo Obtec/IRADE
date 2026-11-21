@@ -1,9 +1,9 @@
-"""Web-based Lean 4 + Python Proof Workspace Studio & Project-Agora R&D Bridge.
+"""Web-based Lean 4 + Python Proof Workspace Studio with workspace-service integration.
 
 Provides:
-1. ``AgoraRedisClient`` & ``WorkspaceLifecycleManager``:
+1. Redis client & ``WorkspaceLifecycleManager``:
    Redis-backed HOT/COLD lifecycle state machine for Proof Workspaces modeled after
-   ``project-agora-BE``'s ``CanvasLifecycleMemory``. When a workspace is opened in a tab,
+   the collaborative backend's ``CanvasLifecycleMemory``. When a workspace is opened in a tab,
    it is mounted into Redis (``HOT``); while active, edits and cell executions update Redis
    in real time; when closed/unmounted, the latest snapshot is flushed to persistent disk
    storage, evicted from Redis, and its live kernels are shut down (``COLD``).
@@ -12,7 +12,7 @@ Provides:
 3. ``NotebookStore``: Persistent disk store for workspaces containing Lean 4 proof cells
    (``lean4``), Python code cells (``python``), and Markdown cells (``markdown``), with
    ``.ipynb`` and ``.lean`` export/import.
-4. ``AgoraBridge``: Integration with ``project-agora`` authentication and collaborative canvases.
+4. Optional integration with the configured workspace service.
 5. ``ProofNotebookHTTPServer``: Threaded HTTP server serving the VS Code Workbench UI and REST API.
 """
 
@@ -42,7 +42,7 @@ from typing import Any
 
 try:
     import httpx
-except ImportError:  # pragma: no cover - optional dependency for AgoraBridge
+except ImportError:  # pragma: no cover - optional dependency for the workspace bridge
     httpx = None  # type: ignore[assignment]
 from jupyter_client import KernelManager
 from jupyter_client.kernelspec import KernelSpec, NoSuchKernel
@@ -203,14 +203,12 @@ def _ensure_elan_in_path(env: dict[str, str] | None = None) -> dict[str, str]:
     return merged
 
 
-def _read_agora_be_env() -> dict[str, str]:
-    """Parse IRADE/Agora backend ``.env`` if present on disk for shared Redis/TLS discovery."""
+def _read_backend_env() -> dict[str, str]:
+    """Read the configured backend environment for shared Redis/TLS discovery."""
     values: dict[str, str] = {}
     candidates = [
         Path(__file__).resolve().parents[3] / "backend" / ".env",
         Path("/home/steam/Github/IRADE/backend/.env"),
-        Path(__file__).resolve().parents[3] / "project-agora-BE" / ".env",
-        Path("/home/steam/Github/project-agora-BE/.env"),
     ]
     for env_path in candidates:
         if env_path.is_file():
@@ -227,19 +225,16 @@ def _read_agora_be_env() -> dict[str, str]:
     return values
 
 
-def _detect_agora_ca_cert() -> str | None:
-    """Auto-detect IRADE/Agora local root CA certificate if present on disk."""
+def _detect_backend_ca_cert() -> str | None:
+    """Auto-detect the configured internal root CA certificate if present on disk."""
     explicit = os.environ.get("IRADE_CA_CERT", "").strip() or os.environ.get("AGORA_CA_CERT", "").strip()
     if explicit and Path(explicit).is_file():
         return explicit
 
     candidates: list[Path] = [
         Path.home() / ".local" / "share" / "irade" / "tls-dev" / "root-ca.pem",
-        Path("/home/steam/.local/share/irade/tls-dev/root-ca.pem"),
-        Path.home() / ".local" / "share" / "project-agora" / "tls-20261013" / "root-ca.pem",
-        Path("/home/steam/.local/share/project-agora/tls-20261013/root-ca.pem"),
     ]
-    be_env = _read_agora_be_env()
+    be_env = _read_backend_env()
     if be_env.get("NGINX_TLS_CERT_DIR"):
         candidates.insert(0, Path(be_env["NGINX_TLS_CERT_DIR"]) / "root-ca.pem")
 
@@ -285,7 +280,7 @@ def resolve_tls_credentials(
             cert = cert or (base / "fullchain.pem")
             key = key or (base / "privkey.pem")
         if cert is None and key is None:
-            domain = os.environ.get("IRADE_PUBLIC_HOSTNAME", "proof-notebook.p-e.kr").strip() or "proof-notebook.p-e.kr"
+            domain = os.environ.get("IRADE_PUBLIC_HOSTNAME", "irade.p-e.kr").strip() or "irade.p-e.kr"
             for candidate in (
                 Path.home() / ".local" / "share" / "irade" / "letsencrypt" / domain,
                 Path.home() / ".local" / "share" / "irade" / "tls-dev",
@@ -483,10 +478,10 @@ def _normalize_cell(raw: Any, index: int = 0) -> dict[str, Any]:
 
 
 class AgoraRedisClient:
-    """Zero-dependency RESP2 client for Project-Agora Redis (TLS + ACL auth) with in-memory fallback.
+    """Zero-dependency RESP2 client for IRADE Workspace Redis (TLS + ACL auth) with in-memory fallback.
 
     Connects directly to ``agora-redis-primary`` (``172.20.0.2:6379`` or ``REDIS_HOST``) using
-    ``project-agora-BE/.env`` credentials and TLS CA certificate. If the Redis container is
+    configured backend credentials and TLS CA certificate. If the Redis container is
     unreachable (e.g. in isolated unit test environments), it transparently falls back to an
     in-memory RESP store with identical key/hash/set semantics.
     """
@@ -501,7 +496,7 @@ class AgoraRedisClient:
         use_tls: bool | None = None,
         force_memory: bool = False,
     ) -> None:
-        be_env = _read_agora_be_env()
+        be_env = _read_backend_env()
         self.host = (
             host
             or os.environ.get("PROOF_REDIS_HOST")
@@ -744,7 +739,7 @@ class AgoraRedisClient:
 class ProofKernelPool:
     """Bounded LRU pool of live ``lean4`` and ``python`` Jupyter kernels per ``(user_id, workspace_id, language)``.
 
-    Mirrors the kernel management pattern in ``hypervisor-for-agora/runtime/guest/notebook_worker.py``
+    Mirrors the kernel management pattern used by the isolated VM notebook worker.
     while supporting both Lean 4 proof verification (``lean4_kernel``) and Python 3 computation
     (``ipykernel_launcher``) inside the same workspace.
     """
@@ -1301,7 +1296,7 @@ def _default_seed_notebook() -> dict[str, Any]:
         "title": "Lean 4 Formal Verification & R&D Workspace",
         "description": (
             "Interactive cell-by-cell Lean 4 theorem proving and Python computation workspace "
-            "integrated with Project-Agora collaborative canvases."
+            "integrated with IRADE Workspace collaborative canvases."
         ),
         "kernelName": "lean4",
         "language": "lean4",
@@ -1685,7 +1680,7 @@ class NotebookStore:
         """Export a Proof Workspace to a standalone ``.lean`` file (wrapping Python cells in doc/comment blocks)."""
         title = notebook.get("title") or "Lean 4 Proof Workspace"
         chunks: list[str] = [
-            f"/-!\n# {title}\nExported from Lean 4 Proof Studio × Project-Agora R&D Workbench\n-/\n"
+            f"/-!\n# {title}\nExported from Lean 4 Proof Studio × IRADE Workspace R&D Workbench\n-/\n"
         ]
         for idx, cell in enumerate(notebook.get("cells", []), start=1):
             source = str(cell.get("source") or "").strip()
@@ -1918,7 +1913,7 @@ class WorkspaceLifecycleManager:
 
 
 class AgoraBridge:
-    """Client bridge connecting the Proof Workspace Studio with ``project-agora``."""
+    """Optional client bridge connecting the Proof Workspace Studio with a workspace service."""
 
     def __init__(
         self,
@@ -1933,16 +1928,16 @@ class AgoraBridge:
             or "https://127.0.0.1:8453"
         ).rstrip("/")
         if not self.api_url.startswith("https://"):
-            raise ValueError(f"IRADE/Agora API URL must use HTTPS: {self.api_url}")
+            raise ValueError(f"Workspace API URL must use HTTPS: {self.api_url}")
         self.public_url = (
             public_url
             or os.environ.get("IRADE_PUBLIC_URL")
             or os.environ.get("AGORA_PUBLIC_URL")
-            or self.api_url
+            or "https://irade.p-e.kr"
         ).rstrip("/")
         if not self.public_url.startswith("https://"):
             raise ValueError(f"Public web URL must use HTTPS: {self.public_url}")
-        self.ca_cert = ca_cert if ca_cert is not None else _detect_agora_ca_cert()
+        self.ca_cert = ca_cert if ca_cert is not None else _detect_backend_ca_cert()
 
     def _ssl_verify(self) -> ssl.SSLContext | bool:
         if self.ca_cert and Path(self.ca_cert).is_file():
@@ -1953,7 +1948,7 @@ class AgoraBridge:
 
     def _http_client(self, token: str | None = None, timeout: float = 10.0) -> Any:
         if httpx is None:
-            raise RuntimeError("httpx is required for AgoraBridge HTTP client but is not installed")
+            raise RuntimeError("httpx is required for the workspace integration but is not installed")
         headers: dict[str, str] = {"Accept": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
@@ -1966,7 +1961,7 @@ class AgoraBridge:
 
     def _sdk_client(self, token: str) -> Any:
         if AgoraClient is None:
-            raise RuntimeError("agora-canvas SDK is not installed in this Python environment")
+            raise RuntimeError("Workspace client package is not installed in this Python environment")
         return AgoraClient(
             api_url=self.api_url,
             token=token,
@@ -1975,7 +1970,7 @@ class AgoraBridge:
         )
 
     def check_health(self) -> dict[str, Any]:
-        """Probe Project-Agora Auth Service health endpoint."""
+        """Probe IRADE Workspace Auth Service health endpoint."""
         try:
             with self._http_client(timeout=3.5) as client:
                 resp = client.get("/api/auth/health")
@@ -1998,7 +1993,7 @@ class AgoraBridge:
             }
 
     def login(self, email: str, password: str) -> dict[str, Any]:
-        """Authenticate against Project-Agora ``/api/auth/login``."""
+        """Authenticate against IRADE Workspace ``/api/auth/login``."""
         with self._http_client() as client:
             resp = client.post(
                 "/api/auth/login",
@@ -2015,7 +2010,7 @@ class AgoraBridge:
             return body.get("data") if isinstance(body.get("data"), dict) else body
 
     def verify_mfa(self, mfa_token: str, code: str) -> dict[str, Any]:
-        """Complete Project-Agora MFA login step."""
+        """Complete IRADE Workspace MFA login step."""
         with self._http_client() as client:
             resp = client.post(
                 "/api/auth/mfa/verify",
@@ -2032,7 +2027,7 @@ class AgoraBridge:
             return body.get("data") if isinstance(body.get("data"), dict) else body
 
     def get_me(self, token: str) -> dict[str, Any]:
-        """Fetch current authenticated user profile from Project-Agora ``/api/auth/me``."""
+        """Fetch current authenticated user profile from IRADE Workspace ``/api/auth/me``."""
         with self._http_client(token=token) as client:
             resp = client.get("/api/auth/me")
             body = resp.json() if resp.content else {}
@@ -2046,7 +2041,7 @@ class AgoraBridge:
             return body.get("data") if isinstance(body.get("data"), dict) else body
 
     def list_canvases(self, token: str, query: str = "") -> list[dict[str, Any]]:
-        """List accessible canvases in Project-Agora."""
+        """List accessible canvases in IRADE Workspace."""
         if AgoraClient is not None:
             with self._sdk_client(token) as sdk:
                 result = sdk.search_canvases(q=query or None, size=30)
@@ -2077,7 +2072,7 @@ class AgoraBridge:
         title: str,
         description: str = "",
     ) -> dict[str, Any]:
-        """Create a new collaborative R&D canvas in Project-Agora."""
+        """Create a new collaborative R&D canvas in IRADE Workspace."""
         if AgoraClient is not None:
             with self._sdk_client(token) as sdk:
                 return sdk.create_canvas(
@@ -2103,7 +2098,7 @@ class AgoraBridge:
         y: float = 120.0,
         include_summary_card: bool = True,
     ) -> dict[str, Any]:
-        """Export a Proof Workspace to a Project-Agora canvas using ``AgoraClient``."""
+        """Export a proof workspace to the configured shared workspace service."""
         agora_cells = []
         verified_theorems: list[str] = []
         for idx, cell in enumerate(notebook.get("cells", [])):
@@ -2204,7 +2199,7 @@ class AgoraBridge:
         token: str,
         canvas_id: str,
     ) -> dict[str, Any]:
-        """Import ``notebook``, ``code``, and ``text`` objects from a Project-Agora canvas."""
+        """Import ``notebook``, ``code``, and ``text`` objects from a IRADE Workspace canvas."""
         with self._sdk_client(token) as sdk:
             canvas_data = sdk.get_canvas(canvas_id)
 
@@ -2275,7 +2270,7 @@ class AgoraBridge:
 
         return {
             "title": f"{title}",
-            "description": str(canvas_data.get("description") or f"Imported from Project-Agora canvas {canvas_id}"),
+            "description": str(canvas_data.get("description") or f"Imported from IRADE Workspace canvas {canvas_id}"),
             "linkedCanvasId": canvas_id,
             "linkedCanvasItemId": linked_item_id,
             "cells": extracted_cells,
@@ -2402,7 +2397,7 @@ class RealtimeNotebookHub:
 
 
 class ProofStudioApp:
-    """Application container holding the kernel pool, store, Redis lifecycle manager, realtime hub, and Agora bridge."""
+    """Application container for the kernel pool, store, Redis lifecycle manager, and realtime hub."""
 
     def __init__(
         self,
@@ -2436,7 +2431,7 @@ class ProofStudioApp:
         notebook: dict[str, Any],
         sender_client_id: str | None = None,
     ) -> None:
-        """Automatically push live workspace changes to a linked Project-Agora canvas in the background."""
+        """Automatically push live workspace changes to a linked IRADE Workspace canvas in the background."""
         canvas_id = notebook.get("linkedCanvasId")
         if not token or not canvas_id:
             return
@@ -2470,7 +2465,7 @@ class ProofStudioApp:
         threading.Thread(target=_worker, daemon=True).start()
 
     def resolve_user(self, headers: Any) -> dict[str, Any]:
-        """Resolve user identity from Project-Agora JWT Bearer token or local researcher header."""
+        """Resolve user identity from IRADE Workspace JWT Bearer token or local researcher header."""
         auth_header = ""
         local_user_header = ""
         if hasattr(headers, "get"):
@@ -2498,7 +2493,7 @@ class ProofStudioApp:
                     profile = {
                         "userId": _sanitize_id(uid, f"agora-{token_hash[:10]}"),
                         "email": me.get("email") or "",
-                        "nickname": me.get("nickname") or me.get("name") or "Agora Researcher",
+                        "nickname": me.get("nickname") or me.get("name") or "Researcher",
                         "tagNumber": me.get("tag_number") or me.get("tagNumber") or "",
                         "mode": "agora",
                         "authenticated": True,
@@ -2510,7 +2505,7 @@ class ProofStudioApp:
                     return {
                         "userId": f"agora-{token_hash[:12]}",
                         "email": "",
-                        "nickname": "Agora Token User",
+                        "nickname": "Workspace User",
                         "tagNumber": "",
                         "mode": "agora-offline",
                         "authenticated": True,
@@ -2789,7 +2784,7 @@ class _ProofStudioRequestHandler(BaseHTTPRequestHandler):
                 if not user.get("token"):
                     self._send_json(
                         HTTPStatus.UNAUTHORIZED,
-                        {"error": "Project-Agora Bearer token required to list canvases"},
+                        {"error": "IRADE Workspace Bearer token required to list canvases"},
                     )
                     return
                 q = (query.get("q") or [""])[0]
@@ -3081,7 +3076,7 @@ class _ProofStudioRequestHandler(BaseHTTPRequestHandler):
                 if not user.get("token"):
                     self._send_json(
                         HTTPStatus.UNAUTHORIZED,
-                        {"error": "Project-Agora Bearer token required to create a canvas"},
+                        {"error": "IRADE Workspace Bearer token required to create a canvas"},
                     )
                     return
                 title = str(body.get("title") or "Lean 4 Formal Verification Canvas").strip()
@@ -3098,7 +3093,7 @@ class _ProofStudioRequestHandler(BaseHTTPRequestHandler):
                 if not user.get("token"):
                     self._send_json(
                         HTTPStatus.UNAUTHORIZED,
-                        {"error": "Project-Agora Bearer token required to export to canvas"},
+                        {"error": "IRADE Workspace Bearer token required to export to canvas"},
                     )
                     return
                 nb_id = str(body.get("notebookId") or body.get("workspaceId") or "")
@@ -3134,7 +3129,7 @@ class _ProofStudioRequestHandler(BaseHTTPRequestHandler):
                 if not user.get("token"):
                     self._send_json(
                         HTTPStatus.UNAUTHORIZED,
-                        {"error": "Project-Agora Bearer token required to import from canvas"},
+                        {"error": "IRADE Workspace Bearer token required to import from canvas"},
                     )
                     return
                 imported = app.agora.import_canvas_to_notebook(user["token"], canvas_id)
@@ -3383,7 +3378,7 @@ def serve(
     bound_host, bound_port = server.server_address[:2]
     print(f"∀ Lean 4 Proof Workspace Studio running at https://{bound_host}:{bound_port}")
     print(f"  TLS Certificate         : {server.cert_file}")
-    print(f"  Project-Agora API Bridge: {server.app.agora.api_url}")
+    print(f"  IRADE Workspace API Bridge: {server.app.agora.api_url}")
     print(f"  Redis Lifecycle Backend : {server.app.lifecycle.redis_info()['backend']}")
     print(f"  Workspace Storage Dir   : {server.app.notebook_store.base_dir}")
     try:

@@ -1,4 +1,4 @@
-"""End-to-end tests for the Lean 4 + Python Proof Workspace Studio, Redis Lifecycle & Project-Agora Bridge."""
+"""End-to-end tests for the Lean 4 + Python Proof Workspace Studio, Redis Lifecycle & IRADE Workspace Bridge."""
 
 from __future__ import annotations
 

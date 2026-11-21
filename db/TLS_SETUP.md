@@ -2,7 +2,7 @@
 
 SQL Server·Elasticsearch·Redis/Sentinel·Redis Insight는 기본적으로 TLS를 사용합니다. 서버 인증서·개인 키·공개 CA는 직접 준비합니다. `prepare`는 환경 파일과 무작위 비밀번호를 준비하며 인증서는 생성하지 않습니다.
 
-전체 앱은 [clone부터 실행까지 안내](../project-agora-FE/docs/TLS_SETUP.md)를 따르세요. DB 설정만 먼저 준비하려면 다음을 실행합니다.
+전체 앱은 [모노레포 시작 안내](../README.md)를 따르세요. DB 설정만 먼저 준비하려면 다음을 실행합니다.
 
 ```bash
 python3 ops/configure-db.py prepare --tls-dir /path/to/certificates

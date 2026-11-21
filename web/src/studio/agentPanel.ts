@@ -376,7 +376,7 @@ export class AgentPanelController {
 	): Promise<{ answer: string; api: string; model?: string; limited?: boolean }> {
 		const workspace = this.ctx.getWorkspace();
 		if (!workspace || !this.ctx.isConnected()) {
-			throw new Error('Agora Workspace에 연결한 뒤 AI 에이전트를 실행할 수 있습니다.');
+			throw new Error('공유 Workspace에 연결한 뒤 AI 에이전트를 실행할 수 있습니다.');
 		}
 		if (!workspace.client.canWrite) {
 			throw new Error('이 Workspace는 읽기 전용입니다. 쓰기 그룹 권한이 필요합니다.');
@@ -500,7 +500,7 @@ export class AgentPanelController {
 		const workspace = this.ctx.getWorkspace();
 		if (!workspace || !this.ctx.isConnected()) {
 			if (!this.ctx.onLocalPrompt) {
-				this.ctx.onNotify('Agora Workspace에 연결한 뒤 AI 에이전트를 실행할 수 있습니다.', true);
+				this.ctx.onNotify('공유 Workspace에 연결한 뒤 AI 에이전트를 실행할 수 있습니다.', true);
 				return;
 			}
 			const selectedId = this.ctx.getSelectedId();
@@ -666,7 +666,7 @@ export class AgentPanelController {
 			this.connectionNotice.className = isLocalAssist ? 'agent-notice info' : 'agent-notice warn';
 			this.connectionNotice.textContent = isLocalAssist
 				? '로컬 어시스턴트 모드 · 실시간 EXAONE MCP 연동은 ORCID Workspace 연결 후 활성화됩니다.'
-				: '실시간 AI 에이전트 실행과 한도 조회는 상단 "열기 ↗"로 Agora Workspace에 연결한 뒤 사용할 수 있습니다.';
+				: '실시간 AI 에이전트 실행과 한도 조회는 상단 "열기 ↗"로 공유 Workspace에 연결한 뒤 사용할 수 있습니다.';
 		} else if (!canWrite) {
 			this.connectionNotice.hidden = false;
 			this.connectionNotice.className = 'agent-notice warn';

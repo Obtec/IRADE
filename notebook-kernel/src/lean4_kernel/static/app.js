@@ -1,4 +1,4 @@
-/* Lean 4 + Python Proof Workspace × Project-Agora R&D Studio (VS Code Multi-Workspace Workbench UI) */
+/* Lean 4 + Python Proof Workspace × IRADE Workspace R&D Studio (VS Code Multi-Workspace Workbench UI) */
 (function () {
   "use strict";
 
@@ -42,7 +42,7 @@
     sidebarCollapsed: false,
   };
 
-  // Check URL query params for seamless handoff from Project-Agora FE
+  // Check URL query params for seamless handoff from IRADE Workspace FE
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.get("token")) {
     state.token = urlParams.get("token").trim();
@@ -392,10 +392,10 @@
     const user = state.userProfile || {};
     const agora = state.agoraStatus || {};
     if (agora.reachable) {
-      elAgoraHealthPill.textContent = "Agora Connected";
+      elAgoraHealthPill.textContent = "Workspace Connected";
       elAgoraHealthPill.className = "vscode-pill vscode-pill-ok";
     } else {
-      elAgoraHealthPill.textContent = "Agora Offline";
+      elAgoraHealthPill.textContent = "Workspace Offline";
       elAgoraHealthPill.className = "vscode-pill vscode-pill-warn";
     }
     if (agora.publicUrl) {
@@ -408,12 +408,12 @@
       ? `${displayName} #${user.tagNumber}`
       : displayName;
     elUserSub.textContent = user.authenticated
-      ? `Project-Agora (${user.email || user.userId})`
+      ? `IRADE Workspace (${user.email || user.userId})`
       : `Local Workspace (${user.userId || "local"})`;
 
     if (elStatusRemote) {
       elStatusRemote.textContent = user.authenticated
-        ? `⇄ Agora: ${displayName}`
+        ? `⇄ Workspace: ${displayName}`
         : `⇄ Local R&D (${user.userId || "local"})`;
     }
   }
@@ -959,7 +959,7 @@
       </h1>
       <p class="vscode-welcome-subtitle">
         VS Code에서 파일을 열듯 접속할 <strong>Workspace</strong>를 선택하거나 새로 생성하세요.
-        열린 Workspace는 <code>Project-Agora</code>의 캔버스처럼 즉시 <strong>Redis (HOT)</strong>에 마운트되어 실시간 동기화되며,
+        열린 Workspace는 <code>IRADE Workspace</code>의 캔버스처럼 즉시 <strong>Redis (HOT)</strong>에 마운트되어 실시간 동기화되며,
         상단 탭을 여러 개 띄워 자유롭게 오가거나 탭을 닫아 디스크(<strong>COLD</strong>)로 내릴 수 있습니다.
       </p>
     `;
@@ -1888,13 +1888,13 @@
 
   async function refreshCanvases() {
     if (!state.token) {
-      elSelectCanvas.innerHTML = `<option value="">— Project-Agora 로그인 후 캔버스 목록 조회 가능 —</option>`;
+      elSelectCanvas.innerHTML = `<option value="">— IRADE Workspace 로그인 후 캔버스 목록 조회 가능 —</option>`;
       return;
     }
     try {
       const res = await apiFetch("/api/agora/canvases");
       const list = res.canvases || [];
-      elSelectCanvas.innerHTML = `<option value="">— Project-Agora 캔버스 선택 (${list.length}개) —</option>`;
+      elSelectCanvas.innerHTML = `<option value="">— IRADE Workspace 캔버스 선택 (${list.length}개) —</option>`;
       list.forEach((c) => {
         const cid = c.id || c.canvasId || "";
         const opt = document.createElement("option");
@@ -2091,7 +2091,7 @@
     }
   });
 
-  // Project-Agora Canvas Bridge events
+  // IRADE Workspace Canvas Bridge events
   elSelectCanvas.addEventListener("change", () => {
     if (elSelectCanvas.value) {
       elInputCanvasId.value = elSelectCanvas.value;
@@ -2106,7 +2106,7 @@
 
   document.getElementById("btn-create-canvas").addEventListener("click", async () => {
     if (!state.token) {
-      showToast("먼저 Project-Agora 로그인을 수행하거나 JWT 토큰을 설정해주세요.");
+      showToast("먼저 IRADE Workspace 로그인을 수행하거나 JWT 토큰을 설정해주세요.");
       openAuthModal();
       return;
     }
@@ -2125,7 +2125,7 @@
         elSelectCanvas.value = cid;
         elInputCanvasId.value = cid;
       }
-      showToast("Project-Agora에 새 협업 캔버스를 생성했습니다.");
+      showToast("IRADE Workspace에 새 협업 캔버스를 생성했습니다.");
     } catch (err) {
       showToast("캔버스 생성 실패: " + err.message);
     }
@@ -2137,7 +2137,7 @@
       return;
     }
     if (!state.token) {
-      showToast("캔버스로 내보내려면 Project-Agora 로그인이 필요합니다.");
+      showToast("캔버스로 내보내려면 IRADE Workspace 로그인이 필요합니다.");
       openAuthModal();
       return;
     }
@@ -2161,9 +2161,9 @@
       await refreshNotebookListOnly();
       const canvasUrl = res.export && res.export.canvasUrl;
       elBridgeStatus.innerHTML = canvasUrl
-        ? `✅ 내보내기 완료! <a href="${escapeHtml(canvasUrl)}" target="_blank" rel="noopener">Project-Agora 캔버스에서 열기 ↗</a>`
+        ? `✅ 내보내기 완료! <a href="${escapeHtml(canvasUrl)}" target="_blank" rel="noopener">IRADE Workspace 캔버스에서 열기 ↗</a>`
         : "✅ 캔버스 내보내기 완료!";
-      showToast("Project-Agora 캔버스로 Workspace를 내보냈습니다.");
+      showToast("IRADE Workspace 캔버스로 Workspace를 내보냈습니다.");
     } catch (err) {
       elBridgeStatus.textContent = "❌ 내보내기 실패: " + err.message;
       showToast("캔버스 내보내기 오류: " + err.message);
@@ -2172,13 +2172,13 @@
 
   document.getElementById("btn-import-canvas").addEventListener("click", async () => {
     if (!state.token) {
-      showToast("캔버스에서 가져오려면 Project-Agora 로그인이 필요합니다.");
+      showToast("캔버스에서 가져오려면 IRADE Workspace 로그인이 필요합니다.");
       openAuthModal();
       return;
     }
     const canvasId = (elSelectCanvas.value || elInputCanvasId.value || "").trim();
     if (!canvasId) {
-      showToast("가져올 Project-Agora 캔버스를 선택하거나 Canvas ID를 입력하세요.");
+      showToast("가져올 IRADE Workspace 캔버스를 선택하거나 Canvas ID를 입력하세요.");
       return;
     }
     elBridgeStatus.textContent = "캔버스 객체를 새 Workspace로 가져오는 중...";
@@ -2190,7 +2190,7 @@
       const ws = res.workspace || res.notebook;
       await openOrSwitchWorkspace(ws.id);
       elBridgeStatus.textContent = `✅ '${ws.title}' Workspace로 가져왔습니다.`;
-      showToast("Project-Agora 캔버스에서 Workspace를 가져왔습니다.");
+      showToast("IRADE Workspace 캔버스에서 Workspace를 가져왔습니다.");
     } catch (err) {
       elBridgeStatus.textContent = "❌ 가져오기 실패: " + err.message;
       showToast("캔버스 가져오기 오류: " + err.message);
@@ -2233,7 +2233,7 @@
 
     try {
       elModalFeedback.style.color = "#3794ff";
-      elModalFeedback.textContent = "Project-Agora 인증 중...";
+      elModalFeedback.textContent = "IRADE Workspace 인증 중...";
       let data;
       if (state.pendingMfaToken && mfaCode) {
         data = await apiFetch("/api/auth/mfa", {
@@ -2264,7 +2264,7 @@
       await refreshSession();
       await refreshNotebooks();
       elModalBackdrop.style.display = "none";
-      showToast("Project-Agora 계정으로 로그인되었습니다.");
+      showToast("IRADE Workspace 계정으로 로그인되었습니다.");
     } catch (err) {
       elModalFeedback.style.color = "#f14c4c";
       elModalFeedback.textContent = "로그인 실패: " + err.message;
@@ -2281,7 +2281,7 @@
     await refreshSession();
     await refreshNotebooks();
     elModalBackdrop.style.display = "none";
-    showToast("Project-Agora 토큰 설정이 업데이트되었습니다.");
+    showToast("IRADE Workspace 토큰 설정이 업데이트되었습니다.");
   });
 
   document.getElementById("btn-clear-jwt-token").addEventListener("click", async () => {
@@ -2291,7 +2291,7 @@
     await refreshSession();
     await refreshNotebooks();
     elModalBackdrop.style.display = "none";
-    showToast("Project-Agora 연동이 해제되고 로컬 연구자 모드로 전환되었습니다.");
+    showToast("IRADE Workspace 연동이 해제되고 로컬 연구자 모드로 전환되었습니다.");
   });
 
   document.getElementById("btn-save-local-user").addEventListener("click", async () => {

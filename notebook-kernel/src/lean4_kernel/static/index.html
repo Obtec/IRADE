@@ -18,7 +18,7 @@
           <button type="button" class="vscode-menu-item" id="menu-toggle-sidebar" title="사이드바 토글 (Ctrl+B)">View</button>
           <button type="button" class="vscode-menu-item" id="menu-run-all" title="현재 Workspace의 모든 셀 실행">Run</button>
           <button type="button" class="vscode-menu-item" id="menu-reset-kernel" title="Lean 4 & Python 커널 재시작">Kernel</button>
-          <button type="button" class="vscode-menu-item" id="menu-open-agora-modal" title="Project-Agora 계정 및 캔버스 설정">Project-Agora</button>
+          <button type="button" class="vscode-menu-item" id="menu-open-agora-modal" title="IRADE Workspace 계정 및 캔버스 설정">IRADE</button>
         </nav>
       </div>
 
@@ -39,16 +39,16 @@
       </div>
 
       <div class="vscode-titlebar-right">
-        <span id="redis-lifecycle-pill" class="vscode-pill vscode-pill-redis" title="Project-Agora 캔버스와 동일한 Redis HOT/COLD 생명주기 상태">
+        <span id="redis-lifecycle-pill" class="vscode-pill vscode-pill-redis" title="IRADE Workspace 캔버스와 동일한 Redis HOT/COLD 생명주기 상태">
           💾 Redis Standby
         </span>
         <span id="realtime-sync-pill" class="vscode-pill vscode-pill-ok" title="실시간 다중 사용자 동기화 및 캔버스 자동 저장 상태">
           ⚡ Live Sync · 👥 1 Online
         </span>
         <span id="linked-canvas-pill" class="vscode-pill vscode-pill-canvas" style="display:none;"></span>
-        <span id="agora-health-pill" class="vscode-pill">Agora Checking...</span>
-        <a id="link-open-agora" href="https://proof-notebook.p-e.kr" target="_blank" rel="noopener noreferrer" class="vscode-title-link" title="IRADE 공개 HTTPS 워크스페이스 열기">
-          ↗ Project-Agora
+        <span id="agora-health-pill" class="vscode-pill">Workspace 연결 확인 중…</span>
+        <a id="link-open-agora" href="https://irade.p-e.kr/" target="_blank" rel="noopener noreferrer" class="vscode-title-link" title="IRADE 연구 공간 열기">
+          ↗ IRADE 연구 공간
         </a>
       </div>
     </header>
@@ -61,7 +61,7 @@
           <button type="button" class="vscode-activity-btn active" data-panel="explorer" title="탐색기: Workspaces (Explorer)">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7v11a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-6l-2-2H5a2 2 0 0 0-2 2Z"/></svg>
           </button>
-          <button type="button" class="vscode-activity-btn" data-panel="agora" title="Project-Agora 협업 캔버스 브리지 (Canvas R&D Bridge)">
+          <button type="button" class="vscode-activity-btn" data-panel="agora" title="공유 Workspace 연결">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
           </button>
           <button type="button" class="vscode-activity-btn" data-panel="symbols" title="Lean 4 유니코드 기호 & 커널 매직 팔레트 (∀ Symbols & Magics)">
@@ -69,7 +69,7 @@
           </button>
         </div>
         <div class="vscode-activity-bottom">
-          <button type="button" id="btn-open-auth-modal" class="vscode-activity-btn" title="Project-Agora 계정 및 연구자 세션 설정">
+          <button type="button" id="btn-open-auth-modal" class="vscode-activity-btn" title="IRADE Workspace 계정 및 연구자 세션 설정">
             <div class="vscode-avatar-circle" id="user-avatar">R</div>
           </button>
         </div>
@@ -109,10 +109,10 @@
             </div>
           </details>
 
-          <!-- Section 2: Project-Agora Canvas R&D Bridge -->
+          <!-- Section 2: IRADE Workspace Canvas R&D Bridge -->
           <details class="vscode-pane-section" id="sec-agora" open>
             <summary class="vscode-pane-header">
-              <span>PROJECT-AGORA CANVAS BRIDGE</span>
+              <span>SHARED WORKSPACE</span>
               <button type="button" id="btn-refresh-canvases" class="vscode-inline-btn" title="캔버스 목록 새로고침">↻</button>
             </summary>
             <div class="vscode-pane-body vscode-bridge-box">
@@ -120,11 +120,11 @@
                 <div class="vscode-user-title" id="user-display-name">Local Researcher</div>
                 <div class="vscode-user-subtitle" id="user-display-sub">Local Kernel Workspace</div>
                 <button type="button" id="btn-sidebar-auth" class="vscode-btn vscode-btn-secondary vscode-btn-block">
-                  🔐 Agora 계정 로그인 / 토큰 설정
+                  🔐 연구 계정 로그인 / 토큰 설정
                 </button>
               </div>
 
-              <label class="vscode-field-label">연동할 Project-Agora 캔버스</label>
+              <label class="vscode-field-label">연동할 IRADE Workspace 캔버스</label>
               <select id="select-agora-canvas" class="vscode-select">
                 <option value="">— 캔버스 선택 또는 아래 ID 입력 —</option>
               </select>
@@ -135,7 +135,7 @@
               </div>
 
               <div class="vscode-btn-grid">
-                <button type="button" id="btn-export-canvas" class="vscode-btn vscode-btn-primary" title="현재 Workspace와 정리 요약을 Project-Agora 캔버스로 내보내기">
+                <button type="button" id="btn-export-canvas" class="vscode-btn vscode-btn-primary" title="현재 Workspace와 정리 요약을 IRADE Workspace 캔버스로 내보내기">
                   ⬆ 캔버스로 내보내기
                 </button>
                 <button type="button" id="btn-import-canvas" class="vscode-btn vscode-btn-secondary" title="선택한 캔버스의 노트북/코드/텍스트 카드를 새 Workspace로 가져오기">
@@ -220,7 +220,7 @@
     <footer class="vscode-statusbar">
       <div class="vscode-status-left">
         <span class="vscode-status-item vscode-status-remote" id="status-remote-label">
-          ⇄ Project-Agora R&amp;D
+          ⇄ IRADE Workspace R&amp;D
         </span>
         <span class="vscode-status-item" id="status-redis-lifecycle">
           Redis: COLD
@@ -243,17 +243,17 @@
   <!-- Floating Autocomplete / Symbol Inspection Popover -->
   <div id="editor-popover" class="vscode-popover" style="display:none;"></div>
 
-  <!-- Project-Agora Authentication & Researcher Session Modal -->
+  <!-- IRADE Workspace Authentication & Researcher Session Modal -->
   <div id="auth-modal-backdrop" class="vscode-modal-backdrop" style="display:none;">
     <div class="vscode-modal">
       <div class="vscode-modal-header">
-        <h2>🔐 Project-Agora 연동 및 연구자 세션 설정</h2>
+        <h2>🔐 IRADE Workspace 연동 및 연구자 세션 설정</h2>
         <button type="button" id="btn-close-auth-modal" class="vscode-modal-close">&times;</button>
       </div>
       <div class="vscode-modal-body">
         <p class="vscode-modal-desc">
-          Project-Agora 계정으로 로그인하거나 JWT Access Token을 연결하면, 검증된 Lean 4 증명과 Python 실험이 담긴 Workspace를
-          Project-Agora 협업 캔버스(<code>notebook</code> / <code>text</code> 객체)로 바로 내보내거나 가져올 수 있습니다.
+          IRADE Workspace 계정으로 로그인하거나 JWT Access Token을 연결하면, 검증된 Lean 4 증명과 Python 실험이 담긴 Workspace를
+          IRADE Workspace 협업 캔버스(<code>notebook</code> / <code>text</code> 객체)로 바로 내보내거나 가져올 수 있습니다.
         </p>
 
         <div class="vscode-tabs">
@@ -264,7 +264,7 @@
 
         <!-- Tab 1: Email/Password Login -->
         <div class="vscode-tab-panel" id="tab-panel-login">
-          <label class="vscode-field-label">Project-Agora 이메일</label>
+          <label class="vscode-field-label">IRADE Workspace 이메일</label>
           <input type="email" id="agora-login-email" class="vscode-input" placeholder="researcher@example.com" />
           <label class="vscode-field-label">비밀번호</label>
           <input type="password" id="agora-login-password" class="vscode-input" placeholder="••••••••" />
@@ -274,14 +274,14 @@
           </div>
           <div class="vscode-modal-actions">
             <button type="button" id="btn-submit-agora-login" class="vscode-btn vscode-btn-primary">
-              Project-Agora 로그인
+              IRADE Workspace 로그인
             </button>
           </div>
         </div>
 
         <!-- Tab 2: Direct JWT Bearer Token -->
         <div class="vscode-tab-panel" id="tab-panel-token" style="display:none;">
-          <label class="vscode-field-label">Project-Agora Access Token (Bearer JWT)</label>
+          <label class="vscode-field-label">IRADE Workspace Access Token (Bearer JWT)</label>
           <textarea id="agora-jwt-input" class="vscode-textarea" rows="3" placeholder="eyJhbGciOiJIUzI1NiIs..."></textarea>
           <div class="vscode-modal-actions">
             <button type="button" id="btn-save-jwt-token" class="vscode-btn vscode-btn-primary">

@@ -253,3 +253,7 @@ appendonlydir/
 
 # Private optional provider configuration
 .secrets/
+
+# AGDD local runtime
+agdd.env
+agdd-workspace/

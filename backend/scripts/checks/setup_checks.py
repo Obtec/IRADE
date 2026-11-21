@@ -247,10 +247,10 @@ class SetupTests(unittest.TestCase):
             source_le = public_root / 'live'
             source_le.mkdir()
             ext = public_root / 'leaf.cnf'
-            ext.write_text('basicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:proof-notebook.p-e.kr\n')
+            ext.write_text('basicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:frelog.p-e.kr\n')
             csr = public_root / 'leaf.csr'
             self.openssl('req', '-new', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes',
-                         '-subj', '/CN=proof-notebook.p-e.kr',
+                         '-subj', '/CN=frelog.p-e.kr',
                          '-keyout', str(source_le / 'privkey.pem'), '-out', str(csr))
             self.openssl('x509', '-req', '-in', str(csr), '-CA', str(le_ca), '-CAkey', str(le_ca_key),
                          '-set_serial', '77', '-days', '90', '-extfile', str(ext), '-out', str(source_le / 'fullchain.pem'))
@@ -266,7 +266,7 @@ class SetupTests(unittest.TestCase):
             self.assertIn('SAN does not match', bad_san.stderr)
 
             synced = subprocess.run(
-                [str(public_tls_script), 'sync', 'proof-notebook.p-e.kr',
+                [str(public_tls_script), 'sync', 'frelog.p-e.kr',
                  '--source-dir', str(source_le), '--dest-dir', str(synced_le), '--no-reload'],
                 capture_output=True, text=True,
             )
@@ -277,7 +277,7 @@ class SetupTests(unittest.TestCase):
 
             untrusted = self.run_setup(
                 parent, tls,
-                '--public-origin', 'https://proof-notebook.p-e.kr',
+                '--public-origin', 'https://frelog.p-e.kr',
                 '--public-tls-dir', str(synced_le),
             )
             self.assertNotEqual(untrusted.returncode, 0)
@@ -285,7 +285,7 @@ class SetupTests(unittest.TestCase):
 
             ok = self.run_setup(
                 parent, tls,
-                '--public-origin', 'https://proof-notebook.p-e.kr',
+                '--public-origin', 'https://frelog.p-e.kr',
                 '--public-tls-dir', str(synced_le),
                 extra_env={'SSL_CERT_FILE': str(le_ca)},
             )
@@ -294,18 +294,18 @@ class SetupTests(unittest.TestCase):
             be = (parent / 'backend/.env').read_text()
             self.assertIn(f'NGINX_TLS_CERT_DIR="{tls}"', be)
             self.assertIn(f'NGINX_PUBLIC_TLS_CERT_DIR={synced_le.resolve()}', be)
-            self.assertIn('NGINX_PUBLIC_HOSTNAME=proof-notebook.p-e.kr', be)
+            self.assertIn('NGINX_PUBLIC_HOSTNAME=frelog.p-e.kr', be)
             self.assertIn('NGINX_EDGE_TRUST=system', be)
             self.assertIn('NGINX_HTTPS_PORT=443', be)
-            self.assertIn('PASSKEY_RP_ID=proof-notebook.p-e.kr', be)
-            self.assertIn('PASSKEY_ORIGIN=https://proof-notebook.p-e.kr', be)
-            self.assertIn('GOOGLE_REDIRECT_URI=https://proof-notebook.p-e.kr/api/auth/oauth2/callback/google', be)
-            self.assertIn('KAKAO_REDIRECT_URI=https://proof-notebook.p-e.kr/api/auth/oauth2/callback/kakao', be)
+            self.assertIn('PASSKEY_RP_ID=frelog.p-e.kr', be)
+            self.assertIn('PASSKEY_ORIGIN=https://frelog.p-e.kr', be)
+            self.assertIn('GOOGLE_REDIRECT_URI=https://frelog.p-e.kr/api/auth/oauth2/callback/google', be)
+            self.assertIn('KAKAO_REDIRECT_URI=https://frelog.p-e.kr/api/auth/oauth2/callback/kakao', be)
 
             wall = (parent / 'wall/.env').read_text()
             self.assertIn(f'NGINX_TLS_CERT_DIR="{tls}"', wall)
             self.assertIn(f'NGINX_PUBLIC_TLS_CERT_DIR="{synced_le.resolve()}"', wall)
-            self.assertIn('NGINX_PUBLIC_HOSTNAME="proof-notebook.p-e.kr"', wall)
+            self.assertIn('NGINX_PUBLIC_HOSTNAME="frelog.p-e.kr"', wall)
             self.assertIn('NGINX_EDGE_TRUST="system"', wall)
             self.assertIn('NGINX_HTTPS_PORT="443"', wall)
 

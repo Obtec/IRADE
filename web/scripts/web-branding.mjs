@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 
-const prefix = '/irade-assets/';
+const prefix = '/assets/';
 const types = new Map([
 	['irade-favicon.ico', 'image/x-icon'],
 	['irade-icon-16.png', 'image/png'],

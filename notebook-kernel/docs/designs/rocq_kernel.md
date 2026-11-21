@@ -17,7 +17,7 @@ This project introduces a dedicated Rocq (formerly Coq) Jupyter kernel (`rocq_ke
 1. **Lack of Fine-Grained STM State Backtracking**: When a cell fails or when a user edits an earlier cell, existing kernels either fail to clean up internal state, require restarting the entire kernel process, or cannot branch cleanly from the state immediately preceding the modified sentence.
 2. **Missing Interactive InfoView**: Proof states in existing Coq kernels are printed as raw plaintext stdout blocks. There is no structured, split-pane InfoView comparing goals before and after tactics, displaying multiple subgoals, or tracking term types at cursor positions.
 3. **No Hybrid Editor Cursor Synchronization**: Users cannot click across lines in code cells or move their CodeMirror editor cursor to inspect intermediate proof states at each sentence boundary.
-4. **Disjoint Multi-Prover Experience**: Users must switch between disparate tools rather than utilizing a cohesive platform with unified magics (`%load`, `%goals`, `%undo`, `%reset`), consistent keyboard shortcuts (`Shift+Tab` signature inspection, backslash Unicode completion), and Project-Agora R&D workbench integration.
+4. **Disjoint Multi-Prover Experience**: Users must switch between disparate tools rather than utilizing a cohesive platform with unified magics (`%load`, `%goals`, `%undo`, `%reset`), consistent keyboard shortcuts (`Shift+Tab` signature inspection, backslash Unicode completion), and IRADE research workbench integration.
 
 ## Goals
 

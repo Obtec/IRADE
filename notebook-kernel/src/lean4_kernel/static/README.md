@@ -1,6 +1,6 @@
 # Lean 4 Proof Notebook Studio — Frontend Web Assets (`src/lean4_kernel/static`)
 
-This directory houses the static front-end assets for the **Visual Studio Code R&D Workbench** web interface of the Lean 4 Proof Notebook Studio. It provides an in-browser proof engineering studio featuring interactive cell execution, real-time split-pane InfoViews, CodeMirror cursor synchronization, and Project-Agora collaborative canvas integration.
+This directory houses the static front-end assets for the **Visual Studio Code R&D Workbench** web interface of the Lean 4 Proof Notebook Studio. It provides an in-browser proof engineering studio featuring interactive cell execution, real-time split-pane InfoViews, CodeMirror cursor synchronization, and shared workspace integration.
 
 ---
 
@@ -18,12 +18,12 @@ src/lean4_kernel/static/
 ## 2. Core Frontend Subsystems
 
 ### 2.1 Workbench Layout (`index.html`)
-- **VS Code Title Bar**: Menus (`File`, `Workspace`, `View`, `Run`, `Kernel`, `Project-Agora`), Command Center title input with dirty indicator, Redis HOT/COLD lifecycle badge, Live Sync status pill, and Project-Agora deep-link.
-- **Activity Bar (48px left rail)**: Icon buttons for Explorer (`workspaces`), Project-Agora Canvas Bridge, and Lean 4 / Rocq Unicode Symbols & Magic command reference palette.
+- **VS Code Title Bar**: Menus (`File`, `Workspace`, `View`, `Run`, `Kernel`, `Workspace`), Command Center title input with dirty indicator, Redis HOT/COLD lifecycle badge, Live Sync status pill, and workspace deep-link.
+- **Activity Bar (48px left rail)**: Icon buttons for Explorer (`workspaces`), Workspace Bridge, and Lean 4 / Rocq Unicode Symbols & Magic command reference palette.
 - **Primary Sidebar**: Collapsible sections for:
   - `Open Workspaces (Redis HOT)`: Active tabs mounted in the Redis state machine.
   - `Persistent Workspaces (Disk)`: Local workspace directory file listings.
-  - `Project-Agora Linked Canvases`: Real-time synced remote canvas objects.
+  - `Shared Workspaces`: Real-time synced remote canvas objects.
 - **Editor Area**: Tab bar supporting multiple workspaces, sticky cell toolbar (`+ Lean 4`, `+ Rocq`, `+ Python`, `+ Markdown`), language dropdown (`∀ Lean 4`, `🐓 Rocq`, `🐍 Python 3`, `¶ Markdown`), and interactive cell containers.
 - **Split-Pane Proof View**: Dual-column code and proof state inspector with responsive breakpoint at 720px width.
 

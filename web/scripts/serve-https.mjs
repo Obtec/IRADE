@@ -10,7 +10,7 @@ const { values } = parseArgs({ options: {
 	cert: { type: 'string' }, key: { type: 'string' }, 'tls-dir': { type: 'string' },
 	host: { type: 'string', default: 'localhost' },
 	port: { type: 'string', default: '8080' }, 'folder-uri': { type: 'string' }, sourcesPath: { type: 'string' },
-	'build-path': { type: 'string' }, 'base-path': { type: 'string', default: '/irade/' }, 'worker-origin': { type: 'string' },
+	'build-path': { type: 'string' }, 'base-path': { type: 'string', default: '/' }, 'worker-origin': { type: 'string' },
 	'extension-path': { type: 'string' }, 'studio-path': { type: 'string' },
 } });
 
@@ -23,7 +23,7 @@ function resolveTlsFiles() {
 		key ||= join(tlsDir, 'privkey.pem');
 	}
 	if (!cert || !key) {
-		const domain = process.env.IRADE_PUBLIC_HOSTNAME || 'proof-notebook.p-e.kr';
+		const domain = process.env.IRADE_PUBLIC_HOSTNAME || 'irade.p-e.kr';
 		const candidates = [
 			join(homedir(), '.local/share/irade/letsencrypt', domain),
 			join(homedir(), '.local/share/irade/tls-dev/internal/frontend'),

@@ -4,7 +4,7 @@ import { chromium } from 'playwright';
 import { createEditorApp } from '../scripts/web-app.mjs';
 import { fixture } from './web-fixture.mjs';
 
-const app = await createEditorApp({ basePath: '/irade/' });
+const app = await createEditorApp({ basePath: '/' });
 const cleanup = await fixture({ studio: app.callback() });
 let browser;
 const origin = 'https://localhost:9449';
@@ -25,25 +25,22 @@ try {
 
   await page.goto(origin, { waitUntil: 'networkidle' });
   assert.ok((await page.title()).includes('IRADE'));
-  await page.locator('#hero-constellation').waitFor();
-  const homeCanvasBox = await page.locator('#hero-constellation').boundingBox();
+  await page.locator('#particle-canvas').waitFor();
+  const homeCanvasBox = await page.locator('#particle-canvas').boundingBox();
   assert.ok(homeCanvasBox && homeCanvasBox.width > 400 && homeCanvasBox.height > 400, 'Home particle landing canvas must fill viewport');
-  await page.locator('[data-stage="1"]').click();
-  await page.waitForFunction(() => {
-    const panel = document.querySelector('[data-stage-panel="1"]');
-    return panel?.classList.contains('active') && Number.parseFloat(getComputedStyle(panel).opacity) >= 0.99;
-  });
+  assert.equal(await page.locator('.chapter-panel').count(), 6);
+  await page.locator('.hud-ch-btn[data-jump="1"]').click();
+  await page.waitForFunction(() => document.querySelector('.hud-ch-btn[data-jump="1"]')?.classList.contains('active'));
   await mkdir('.artifacts', { recursive: true });
   await page.screenshot({ path: '.artifacts/studio-home.png' });
 
-  // Verify research methodology evolution & significance section on homepage.
-  await page.locator('#evolution').scrollIntoViewIfNeeded();
-  assert.equal(await page.locator('.evo-card').count(), 3);
-  assert.equal(await page.locator('.impact-item').count(), 3);
-  await page.locator('#evolution').screenshot({ path: '.artifacts/studio-evolution.png' });
+  // Verify the get-started section at the end of the scroll story.
+  await page.locator('#interactive-lab').scrollIntoViewIfNeeded();
+  assert.equal(await page.locator('#interactive-lab a.home-card').count(), 3);
+  await page.locator('#interactive-lab').screenshot({ path: '.artifacts/studio-get-started.png' });
 
-  await page.getByRole('link', { name: /Workspace 스튜디오 열기/ }).click();
-  await page.waitForURL('**/irade/studio');
+  await page.locator('#interactive-lab a.home-card[href="/studio"]').click();
+  await page.waitForURL('**/studio');
   assert.equal(await page.title(), 'IRADE · Research Workspace');
   assert.equal(await page.locator('.type-card').count(), 4);
   await page.screenshot({ path: '.artifacts/studio-overview.png' });
@@ -252,7 +249,7 @@ try {
   await page.screenshot({ path: '.artifacts/studio-antigravity-right.png' });
 
   await page.locator('#account').click();
-  await page.waitForURL('**/irade/login');
+  await page.waitForURL('**/login');
   await page.locator('#login-particles').waitFor();
   const loginCanvasBox = await page.locator('#login-particles').boundingBox();
   assert.ok(loginCanvasBox && loginCanvasBox.width > 400 && loginCanvasBox.height > 400, 'Login particle landing canvas must fill viewport');
@@ -497,17 +494,16 @@ try {
   assert.equal(await page.locator('#topbar-workspace').textContent(), '나의 연구 공간');
   assert.equal(await page.locator('#overview').isHidden(), false);
 
-  // Verify mobile homepage #evolution layout has zero horizontal overflow.
+  // Verify mobile homepage get-started layout has zero horizontal overflow.
   await page.goto(origin, { waitUntil: 'networkidle' });
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-  await page.locator('#evolution').scrollIntoViewIfNeeded();
-  await page.waitForFunction(() => Number.parseFloat(getComputedStyle(document.querySelector('#evolution')).opacity) >= 0.99);
-  await page.screenshot({ path: '.artifacts/studio-evolution-mobile.png' });
+  await page.locator('#interactive-lab').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: '.artifacts/studio-home-mobile.png' });
 
   const mfaContext = await browser.newContext({ ignoreHTTPSErrors: true });
   const mfaPage = await mfaContext.newPage();
-  await mfaPage.goto(`${origin}/irade/studio`);
+  await mfaPage.goto(`${origin}/studio`);
   await mfaPage.locator('#account').click();
   await mfaContext.addCookies([{ name: 'fixture_mfa', value: '1', url: origin }]);
   await mfaPage.locator('#orcid-login:not([disabled])').click();

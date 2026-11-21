@@ -8,7 +8,7 @@
 
 ## 저장소 변경
 
-관리자 권한으로 `project-agora-DB/mssql/migrations/2026-11-01-user-erasure.sql`을 적용합니다(`TABLE_USERS=users`). 사용자 이메일을 NULL 허용으로 변경하고, NULL이 아닌 이메일만 고유성을 검사하는 필터 인덱스를 만듭니다. 활성/정지 계정에는 이메일을 필수로 유지합니다. 기존 WITHDRAWN 행도 개인정보와 관련 인증 행을 정리하며 활성 계정은 수정하지 않습니다. 새 설치용 init SQL에도 포함됩니다.
+관리자 권한으로 `db/mssql/migrations/2026-11-01-user-erasure.sql`을 적용합니다(`TABLE_USERS=users`). 사용자 이메일을 NULL 허용으로 변경하고, NULL이 아닌 이메일만 고유성을 검사하는 필터 인덱스를 만듭니다. 활성/정지 계정에는 이메일을 필수로 유지합니다. 기존 WITHDRAWN 행도 개인정보와 관련 인증 행을 정리하며 활성 계정은 수정하지 않습니다. 새 설치용 init SQL에도 포함됩니다.
 
 기존 탈퇴 계정의 프로필 파일은 같은 사용자 ID의 `canvas-resource/profiles/{id}.png`를 제거합니다. 앞으로의 탈퇴는 Spring의 UserErasureService가 DB 정리와 함께 파일을 제거합니다.
 

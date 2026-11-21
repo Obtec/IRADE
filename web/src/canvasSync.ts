@@ -222,7 +222,7 @@ export function fnv1a64(text: string): string {
 	return hash.toString(10);
 }
 
-/** Computes a UTF-8 byte delta on codepoint boundaries matching agora::textdelta::diff. */
+/** Computes a UTF-8 byte delta on codepoint boundaries matching the server text-delta implementation. */
 export function computeTextDelta(before: string, after: string): TextDeltaEdit | null {
 	if (before === after) { return null; }
 	const a = Array.from(before);
@@ -478,7 +478,7 @@ export interface SessionEvents {
 }
 
 /**
- * Mirrors Project Agora FE's ServerCanvasSession:
+ * Mirrors the server-side shared workspace session:
  * durable request_count sequencing over canvas_ops / canvas_sync with optimistic rebase.
  */
 export class ServerCanvasSession {

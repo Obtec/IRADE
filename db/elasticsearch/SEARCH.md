@@ -39,7 +39,7 @@ Orchestra `start-dev.sh` 또는 `start-deploy.sh`는 Nori ES 이미지 빌드, p
 직접 적용할 때는 기존 DB TLS 설정과 애플리케이션을 유지하면서 다음 순서를 따릅니다(컨테이너 재생성 시 서비스 중단 가능).
 
 ```sh
-# project-agora-DB에서, Nori 플러그인과 synonyms mount를 적용
+# IRADE 저장소 루트에서, Nori 플러그인과 synonyms mount를 적용
 # 기존 인증서·.env 준비 후 실행
 docker compose up -d --build --wait elasticsearch
 bash elasticsearch/init-search-index.sh
@@ -68,7 +68,7 @@ Worker는 64개씩 PIT와 search-after로 원본 메타데이터를 순회합니
 | ES_SEARCH_MIN_SIMILARITY | 0.80 (cosine, -1–1) |
 | SEARCH_SYNC_SECONDS | 30 (1–3600) |
 | EMBEDDING_THREADS | 2 (1–16) |
-| SEARCH_EMBEDDING_URL | https://agora-nginx:8444/internal/search/embedding |
+| SEARCH_EMBEDDING_URL | `https://agora-nginx:8444/internal/search/embedding` |
 
 ## 동의어와 schema 운영
 
@@ -78,6 +78,6 @@ Worker는 64개씩 PIT와 search-after로 원본 메타데이터를 순회합니
 
 ## 검증
 
-BE에서 `python3 search/tests/run-integration.py`를 실행하면 별도 내부 Docker network에 일회성 TLS ES와 TCP broker를 만들고 Nori·동의어·한국어 오타·띄어쓰기·실제 E5 k-NN·생성/수정/삭제·비공개 필드 제외·부분 실패 시 삭제 차단·실제 Wall Nginx 경유 임베딩과 토큰/TLS 검증을 검사한 뒤 정리합니다. 사전에 두 검색 이미지를 빌드해야 합니다. 배포 중인 Agora 컨테이너는 건드리지 않습니다. Spring `CanvasSearchServiceTest`는 순위 합산, 모델 revision 필터, 임베딩·projection 장애 fallback, 삭제 문서 제외를 검증합니다.
+BE에서 `python3 search/tests/run-integration.py`를 실행하면 별도 내부 Docker network에 일회성 TLS ES와 TCP broker를 만들고 Nori·동의어·한국어 오타·띄어쓰기·실제 E5 k-NN·생성/수정/삭제·비공개 필드 제외·부분 실패 시 삭제 차단·실제 Wall Nginx 경유 임베딩과 토큰/TLS 검증을 검사한 뒤 정리합니다. 사전에 두 검색 이미지를 빌드해야 합니다. 실행 중인 애플리케이션 컨테이너는 건드리지 않습니다. Spring `CanvasSearchServiceTest`는 순위 합산, 모델 revision 필터, 임베딩·projection 장애 fallback, 삭제 문서 제외를 검증합니다.
 
 참고: [Nori tokenizer](https://www.elastic.co/docs/reference/elasticsearch/plugins/analysis-nori-tokenizer), [synonym graph](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/analysis-synonym-graph-tokenfilter.html), [k-NN](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/knn-search.html), [multilingual E5 모델 카드](https://huggingface.co/intfloat/multilingual-e5-small).

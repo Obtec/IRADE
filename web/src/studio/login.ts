@@ -14,7 +14,7 @@ let linkToken: string | undefined;
 let completing: Profile | undefined;
 const start = new URL('/api/irade/auth/orcid/start', origin);
 if (workspace) { start.searchParams.set('workspace', String(workspace)); }
-const authEndpoint = (suffix: string): string => `${location.pathname.startsWith('/irade') ? '/irade/api/auth' : '/api/auth'}/${suffix}`;
+const authEndpoint = (suffix: string): string => `/api/auth/${suffix}`;
 function fail(error: unknown): void { const element = get('#login-error'); element.textContent = error instanceof Error ? error.message : String(error); element.hidden = false; }
 async function request<T>(path: string, body?: object, token?: string): Promise<T> {
   const response = await fetch(path, { method: body ? 'POST' : 'GET', credentials: 'same-origin', headers: { ...(body ? { 'Content-Type':'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(25000), redirect: 'error' });
@@ -25,7 +25,7 @@ async function request<T>(path: string, body?: object, token?: string): Promise<
 function finish(result: Login): void {
   if (!result.accessToken) { throw new Error('로그인 토큰을 받지 못했습니다.'); }
   sessionStorage.setItem(`irade.orcid.token:${origin}`, result.accessToken);
-  const url = new URL('/irade/studio', origin);
+  const url = new URL('/studio', origin);
   if (workspace) { url.searchParams.set('workspace', String(workspace)); } else { url.searchParams.set('workspaces', '1'); }
   location.replace(String(url));
 }

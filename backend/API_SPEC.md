@@ -1,4 +1,4 @@
-# Project Agora API·WebSocket 명세
+# IRADE API·WebSocket 명세
 
 ## VS Code VM workspace files
 
@@ -14,7 +14,7 @@ The guest merges text documents before atomically replacing the actual file. Mut
 
 File contents and serialized Automerge documents are each limited to 128 KiB; requests are at most 700,000 bytes, responses below 400,000 bytes. Lists return 256 entries per page and reject directories exceeding 10,000 supported entries. Symlinks, special files and traversal paths are rejected. Binary stale writes return `FILE_CONFLICT`, old file generations return `FILE_REPLACED`, and old active VM agents return `WORKSPACE_AGENT_UPGRADE_REQUIRED` without restarting the VM.
 
-The matching web extension is `IRADE/agora-workspace`. Web worker origins may be explicitly allowed using `CORS_ALLOWED_ORIGIN_PATTERNS`, for example `https://*.ide.example.com:8080`. Existing exact `CORS_ALLOWED_ORIGINS` are preserved; origin patterns default to empty.
+The matching web extension is `IRADE/web`. Web worker origins may be explicitly allowed using `CORS_ALLOWED_ORIGIN_PATTERNS`, for example `https://*.ide.example.com:8080`. Existing exact `CORS_ALLOWED_ORIGINS` are preserved; origin patterns default to empty.
 
 이 문서는 현재 소스 코드의 Spring Boot API, C++ 제어 API, DB 기반 테스트 페이지 상태 조회와 캔버스 WebSocket 프로토콜을 기준으로 작성되었습니다.
 
@@ -131,7 +131,7 @@ Spring 오류는 다음 형태입니다.
 `GET /api/auth/health` → `200`
 
 ```json
-{"status":"UP","service":"Agora Auth Service"}
+{"status":"UP","service":"IRADE Auth Service"}
 ```
 
 ## 2. 캔버스 API
@@ -251,8 +251,8 @@ C++ REST 포트는 `8000`입니다. Spring은 Wall 내부 HTTPS listener의 `/in
 | `DELETE /api/canvas/{canvasId}` | `{"status":"success","canvas_id":1,"removed":true}` |
 | `GET /api/canvas/count` | `{"status":"success","count":1}` |
 | `GET /api/canvas/active` | `{"status":"success","count":1,"canvases":[...]}` |
-| `GET /health` | `{"status":"UP","service":"Agora C++ Realtime Server"}` |
-| `GET /` | `{"status":"online","service":"Agora C++ Server"}` |
+| `GET /health` | `{"status":"UP","service":"IRADE C++ Realtime Server"}` |
+| `GET /` | `{"status":"online","service":"IRADE C++ Server"}` |
 
 `POST /api/access`와 `POST /api/access/disconnect`는 현재 제거되어 더 이상 지원되지 않습니다.
 
@@ -264,7 +264,7 @@ Phoenix → C++는 `wss://<cpp-host>:<wsPort>/broker/queries` 지속 연결에�
 
 사용자 JWT 검증은 Phoenix에서 upgrade 전에 수행합니다. C++는 검증된 principal로 현재 참여자·revision과 최신 문서를 조회하며 사용자 JWT 키나 capability 발급 기능이 없습니다. CRUD·채팅·캔버스 설정은 C++에서 처리하고 결과 및 권한별 방송 정보를 Phoenix가 전달합니다. C++에는 피어 목록·호스트 선출·브라우저 소켓·온라인 사용자 세션 저장이 없습니다.
 
-실제 프레임, 지원 쿼리, 큐 제한, 장애 및 재시도 규칙은 [브로커 프로토콜](../project-agora-Wall/BROKER_PROTOCOL.md)을 참조하세요. SQL `user_sessions` 기반 테스트베드 조회는 브로커의 온라인 상태를 나타내지 않습니다.
+실제 프레임, 지원 쿼리, 큐 제한, 장애 및 재시도 규칙은 [실시간 프로토콜](../wall/BROKER_PROTOCOL.md)을 참조하세요. SQL `user_sessions` 기반 테스트베드 조회는 브로커의 온라인 상태를 나타내지 않습니다.
 
 ### 캔버스 그룹별 읽기·쓰기·실행 권한
 

@@ -19,7 +19,7 @@ flowchart LR
 | `include/service_memory`, `src/service_memory` | 저장소를 특정 용도에 맞게 사용하고 키·SQL·스냅샷 변환을 관리 | `CanvasServiceMemory`, `CanvasEventMemory`, `CanvasLifecycleMemory`, `RegistryServiceMemory`, `CanvasSnapshotMemory` |
 | `include/memory`, `src/memory` | 범용 데이터 보관·조회·퇴거, Redis 명령 전송, SQL 실행, 문서 저장 | `MemoryClass`, `LruMemory<Value>`, `RedisMemory`, `RedisClient`, `MssqlMemory`, `ElasticsearchMemory` |
 
-`BrokerQuerySocketService`는 브로커 연결·TLS 프레임·bounded worker 큐만 관리합니다. `CanvasQueryService`는 검증된 principal의 캔버스 권한 조회·CRUD·채팅·설정과 응답 계약을 정의하고 `CanvasEventMemory`와 `CanvasServiceMemory`를 사용합니다. 브라우저 사용자·RTC·호스트 상태는 Phoenix에 있습니다. [내부 WSS 계약](../../project-agora-Wall/BROKER_PROTOCOL.md)을 참고하세요.
+`BrokerQuerySocketService`는 브로커 연결·TLS 프레임·bounded worker 큐만 관리합니다. `CanvasQueryService`는 검증된 principal의 캔버스 권한 조회·CRUD·채팅·설정과 응답 계약을 정의하고 `CanvasEventMemory`와 `CanvasServiceMemory`를 사용합니다. 브라우저 사용자·RTC·호스트 상태는 Phoenix에 있습니다. [내부 WSS 계약](../../wall/BROKER_PROTOCOL.md)을 참고하세요.
 
 ## 메모리의 책임
 

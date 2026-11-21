@@ -39,7 +39,7 @@ Spring Security의 authorization-code 흐름과 state 검증을 사용합니다.
 
 콜백 뒤 로그인 목적지는 명시적인 HTTPS 콜백 설정에서 계산하며, 전달된 Host·내부 8444 포트로 만들지 않습니다. 성공 시 이전 세션을 폐기하고 새 세션을 발급합니다. 일반 JWT/MFA handoff는 60초·한 번만 소비하며, 모든 인증 응답은 no-store입니다.
 
-DB 관리자 권한으로 `project-agora-DB/mssql/migrations/2026-11-01-oauth-subject-case.sql`을 적용합니다(`TABLE_USERS=users`). 공급자별 opaque ID를 대소문자 구분해 저장하고 비교하며, 기존 OAuth 고유 인덱스와 탈퇴 계정 인증 제약조건은 유지합니다. 신규 설치용 init SQL에도 포함됩니다.
+DB 관리자 권한으로 `db/mssql/migrations/2026-11-01-oauth-subject-case.sql`을 적용합니다(`TABLE_USERS=users`). 공급자별 opaque ID를 대소문자 구분해 저장하고 비교하며, 기존 OAuth 고유 인덱스와 탈퇴 계정 인증 제약조건은 유지합니다. 신규 설치용 init SQL에도 포함됩니다.
 
 Orchestra의 기존 production 시작 계획으로 Spring과 FE를 배포합니다. 공급자 인증서는 일반 공개 CA 신뢰 저장소로 확인하고 기존 OAuth egress 네트워크를 공유합니다. 새로운 호스트 포트는 필요하지 않습니다.
 

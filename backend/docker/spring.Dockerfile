@@ -1,4 +1,4 @@
-FROM eclipse-temurin:27-jdk AS build
+FROM amazoncorretto:27.0.1-al2023 AS build
 
 WORKDIR /workspace
 
@@ -13,11 +13,10 @@ COPY cpp/third_party/uWebSockets/LICENSE cpp/third_party/uWebSockets/LICENSE
 RUN chmod +x spring/gradlew \
     && ./spring/gradlew --no-daemon -p spring bootJar
 
-FROM eclipse-temurin:27-jre
+FROM amazoncorretto:27.0.1-al2023-headless
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/* \
+RUN dnf install -y ca-certificates curl-minimal shadow-utils \
+    && dnf clean all \
     && groupadd --system --gid 10001 irade \
     && useradd --system --uid 10001 --gid irade --home-dir /home/irade --shell /usr/sbin/nologin irade \
     && mkdir -p /home/irade/irade/workspace-resource \

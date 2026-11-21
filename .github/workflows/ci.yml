@@ -24,10 +24,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: '27'
+          java-version: '27.0.1.1'
 
       - name: Install Python test dependencies
         run: |
@@ -76,10 +76,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: '27'
+          java-version: '27.0.1.1'
 
       - uses: gradle/actions/setup-gradle@v4
 
@@ -129,7 +129,7 @@ jobs:
 
       - uses: erlef/setup-beam@v1
         with:
-          elixir-version: '1.18'
+          elixir-version: '1.20.5'
           otp-version: '27'
 
       - name: Install dependencies and run ExUnit tests
@@ -149,6 +149,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      - name: Cache Lean toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.elan
+          key: web-lean-${{ runner.os }}-${{ hashFiles('notebook-kernel/vendor/repl/lean-toolchain') }}
+
+      - name: Install Lean 4 for Studio execution
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$(tr -d '[:space:]' < notebook-kernel/vendor/repl/lean-toolchain)"
+          export ELAN_HOME="$HOME/.elan"
+          echo "ELAN_HOME=$ELAN_HOME" >> "$GITHUB_ENV"
+          if [ ! -x "$ELAN_HOME/bin/elan" ]; then
+            curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain "$TOOLCHAIN"
+          fi
+          echo "$ELAN_HOME/bin" >> "$GITHUB_PATH"
+          "$ELAN_HOME/bin/elan" default "$TOOLCHAIN"
+          "$ELAN_HOME/bin/lean" --version
 
       - name: Install dependencies and run checks
         working-directory: web

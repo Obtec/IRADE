@@ -32,7 +32,7 @@ flowchart TD
 | `renderer.py` | Theme-adaptive Jupyter MIME bundle formatter (`text/plain`, `text/html`) with syntax highlighting | `render_outcome`, `render_text_card` |
 | `unicode_map.py`| Lean 4 Unicode tab-completion table (150+ math symbols) and keyword/tactic lexicons | `UNICODE_ABBREVIATIONS`, `LEAN4_KEYWORDS`, `LEAN4_TACTICS` |
 | `kernel.py` | `ipykernel.kernelbase.Kernel` implementation for Jupyter/VS Code protocols | `Lean4Kernel` |
-| `web.py` | VS Code-style Web Workbench server, Redis HOT/COLD lifecycle, multi-prover (Lean 4, Rocq, Python) kernel pool, Project-Agora bridge | `AgoraRedisClient`, `WorkspaceLifecycleManager`, `ProofKernelPool`, `NotebookStore`, `AgoraBridge`, `serve` |
+| `web.py` | VS Code-style Web Workbench server, Redis HOT/COLD lifecycle, multi-prover (Lean 4, Rocq, Python) kernel pool, workspace service integration | `WorkspaceLifecycleManager`, `ProofKernelPool`, `NotebookStore`, `serve` |
 | `install.py` | CLI tool for installing kernelspecs, building REPL binaries, diagnostics, and launching server | `install_kernelspec`, `run_doctor`, `main` |
 
 ---

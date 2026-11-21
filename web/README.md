@@ -1,6 +1,6 @@
 # IRADE Research Workspace Web Studio
 
-**https://proof-notebook.p-e.kr** (또는 `/irade/`)
+**https://irade.p-e.kr/**
 
 대화, 증명(Lean 4 · Rocq), 코드(Python), 문서(Markdown · HTML)를 하나의 독립 Workspace에서 실시간으로 편집하고 실행하는 웹 연구 스튜디오입니다.
 
@@ -8,13 +8,13 @@
 
 ```text
 IRADE Web Studio (Monaco + Automerge CRDT + Item ACL)
-  → ORCID 인증 · Workspace Access (../backend/spring)
-  → Wall Nginx & Elixir Broker (../wall)
+  → ORCID 인증 · Workspace Access API
+  → HTTPS Gateway & Realtime Broker
   → C++ Sync Server & Workspace Store (../backend/cpp + ../db)
-  → Runtime Manager (/run/agora-runtime) → 격리 실행 VM
+  → Runtime Manager → 격리 실행 VM
 ```
 
-- 모든 Workspace와 셀(`Workspace Item ID`)은 독립 DB(`workspace_info`), 독립 Elasticsearch(`workspace`), 독립 Redis(`workspace:{id}`), 독립 JWT(`workspace-access` / `workspaceId`)를 사용합니다.
+- Web Studio의 로그인, 셀 편집, 실시간 동기화는 문서화된 Workspace API와 WSS 인터페이스를 통해 연결합니다. 웹 UI는 독립 이미지로 빌드하고 배포합니다.
 - 레거시 VS Code Web 확장(`extension.ts`, `@vscode/test-web`) 및 VM 파일트리(`workspace_files`) 프로토콜은 제거되었습니다.
 
 ## 빌드 및 검증

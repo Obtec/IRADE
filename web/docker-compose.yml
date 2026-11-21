@@ -29,7 +29,7 @@ services:
         aliases:
           - irade-frontend-dev
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "--cacert", "/run/tls/ca.pem", "--resolve", "irade-frontend-dev:8090:127.0.0.1", "https://irade-frontend-dev:8090/irade-assets/manifest.webmanifest"]
+      test: ["CMD", "curl", "--fail", "--silent", "--cacert", "/run/tls/ca.pem", "--resolve", "irade-frontend-dev:8090:127.0.0.1", "https://irade-frontend-dev:8090/assets/manifest.webmanifest"]
       interval: 15s
       timeout: 5s
       retries: 5

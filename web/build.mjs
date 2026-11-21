@@ -38,21 +38,11 @@ await build({
 	sourcemap: true,
 });
 
-await build({
-	entryPoints: ['src/studio/home.ts'],
-	outfile: 'dist/studio/home.js',
-	bundle: true,
-	platform: 'browser',
-	format: 'esm',
-	target: 'es2022',
-	sourcemap: true,
-});
-
 mkdirSync('dist/studio', { recursive: true });
 rmSync('dist/studio/monaco.css', { force: true });
 const monacoCss = readFileSync('dist/studio/studio.css', 'utf8');
 const studioCss = readFileSync('studio/studio.css', 'utf8');
 writeFileSync('dist/studio/studio.css', `${monacoCss}\n${studioCss}`);
-for (const name of ['index.html', 'home.html', 'home.css', 'login.css', 'login.html']) {
+for (const name of ['index.html', 'home.html', 'home.css', 'home.js', 'login.css', 'login.html']) {
 	copyFileSync(`studio/${name}`, `dist/studio/${name}`);
 }

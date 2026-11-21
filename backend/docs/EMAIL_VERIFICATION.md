@@ -20,7 +20,7 @@ MAIL_SECURITY=starttls
 설정 후 런타임 볼륨 override를 보존해 Spring을 재생성합니다(서버의 현재 운영 구성 기준).
 
 ```bash
-cd /home/steam/Github/project-agora-BE
+cd /home/steam/Github/IRADE/backend
 docker compose --env-file .env -f docker-compose.backend.yml -f docker-compose.runtime.yml up -d --no-deps --force-recreate --wait spring
 ```
 

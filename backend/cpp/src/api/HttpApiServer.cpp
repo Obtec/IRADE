@@ -31,7 +31,7 @@ HttpApiServer::HttpApiServer(const std::string& host, int port,
     // cpp-httplib enables SO_REUSEPORT by default on Linux. That lets a second
     // server bind the same port and makes the kernel distribute requests to a
     // stale/stopped process. Keep fast restarts via SO_REUSEADDR while ensuring
-    // that only one Agora REST server can own the port.
+    // that only one REST server can own the port.
     server_.set_socket_options([](socket_t socket) {
         int enabled = 1;
         ::setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled));
@@ -59,7 +59,7 @@ void HttpApiServer::start() {
     std::cout << "[HttpApiServer] Configuring REST Thread Pool with " << thread_pool_size << " threads.\n";
     server_.new_task_queue = [thread_pool_size] { return new httplib::ThreadPool(thread_pool_size); };
 
-    std::cout << "[HttpApiServer] Starting Agora C++ Server on " << host_ << ":" << port_ << "...\n";
+    std::cout << "[HttpApiServer] Starting IRADE C++ Server on " << host_ << ":" << port_ << "...\n";
     server_.listen(host_.c_str(), port_);
 }
 

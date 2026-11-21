@@ -99,6 +99,11 @@ export async function fixture({ studio } = {}) {
 		key: await readFile(join(temporary, 'key.pem')),
 		cert: await readFile(join(temporary, 'cert.pem')),
 	}, (request, response) => {
+		const appEndpoint = request.url.split('?', 1)[0];
+		if (studio && (appEndpoint === '/api/execute' || appEndpoint === '/api/metrics')) {
+			studio(request, response);
+			return;
+		}
 		if (studio && !request.url.startsWith('/api/') && !request.url.startsWith('/irade/api/auth/') && !request.url.startsWith('/wss/')) {
 			request.url = request.url.replace(/^\/irade(?=\/|\?|$)/, '') || '/';
 			studio(request, response);
@@ -120,7 +125,7 @@ export async function fixture({ studio } = {}) {
 			const url = new URL(request.url, 'https://localhost:9449');
 			response.setHeader('Set-Cookie', 'fixture_handoff=1; HttpOnly; Secure; SameSite=Lax; Path=/');
 			response.writeHead(303, {
-				Location: '/irade/login?orcid=success' + (url.searchParams.has('workspace') ? '&workspace=' + url.searchParams.get('workspace') : ''),
+				Location: '/login?orcid=success' + (url.searchParams.has('workspace') ? '&workspace=' + url.searchParams.get('workspace') : ''),
 			}).end();
 			return;
 		}

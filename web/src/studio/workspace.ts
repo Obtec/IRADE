@@ -244,7 +244,7 @@ function buildCanvasItemForCell(
 }
 
 /**
- * Syncs IRADE research cells cleanly as first-class Agora Canvas workspace items
+ * Syncs IRADE research cells as first-class shared workspace items.
  * with per-item IDs, group ACLs, delta text streaming, Automerge convergence, and RTC presence.
  */
 export class ResearchWorkspace {

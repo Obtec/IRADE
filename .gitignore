@@ -215,3 +215,7 @@ appendonlydir/
 /*.jpg
 /*.jpeg
 /*.webp
+
+# Local design drafts (not part of the repository)
+/DOC.md
+/graphspec_agdd.html

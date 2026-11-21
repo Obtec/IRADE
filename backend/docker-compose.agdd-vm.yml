@@ -1,0 +1,27 @@
+# Connects AGDD to the Project Agora runtime manager (hypervisor-for-agora) so every workspace gets its own VM.
+# The manager socket is root:10001 0660 inside a 0710 directory - the same access the Spring backend already has
+# (docker-compose.backend.yml). Only agdd-api and worker get it; nothing else in the stack can reach the VMs.
+#   docker compose -f docker-compose.agdd.yml -f docker-compose.agdd-vm.yml --env-file agdd.env up -d
+services:
+  agdd-api:
+    group_add: ["10001"]
+    environment:
+      AGORA_RUNTIME_SOCKET: /run/agora-runtime/manager.sock
+      AGDD_EXECUTION: vm
+      AGDD_VM_ID_BASE: ${AGDD_VM_ID_BASE:-1900000000}
+    volumes:
+      - type: bind
+        source: /run/agora-runtime
+        target: /run/agora-runtime
+        bind: {create_host_path: false}
+  worker:
+    group_add: ["10001"]
+    environment:
+      AGORA_RUNTIME_SOCKET: /run/agora-runtime/manager.sock
+      AGDD_EXECUTION: vm
+      AGDD_VM_ID_BASE: ${AGDD_VM_ID_BASE:-1900000000}
+    volumes:
+      - type: bind
+        source: /run/agora-runtime
+        target: /run/agora-runtime
+        bind: {create_host_path: false}

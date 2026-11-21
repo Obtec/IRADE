@@ -72,7 +72,7 @@ python3 ops/configure-db.py validate --profile production \
 
 ```bash
 python3 ops/configure-db.py sync-backend \
-  --backend-env ../project-agora-BE/.env \
+  --backend-env ../backend/.env \
   --db-host sql-ag-listener.internal --db-port 1433 --multi-subnet \
   --db-freetds-conf /etc/freetds/freetds.conf \
   --es-host elasticsearch.internal --es-port 9200 \

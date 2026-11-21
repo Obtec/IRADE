@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AGDD Console</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+<style>
+  :root { --bg:#f7f7f5; --panel:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e3e2dc; --accent:#2f5d50;
+          --ok:#2f7d4f; --warn:#a86b00; --bad:#b3261e; --chip:#efeee8; color-scheme: light; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#151514; --panel:#1e1e1c; --ink:#ecebe6; --muted:#9a998f;
+          --line:#33332f; --accent:#7fc0a9; --ok:#6fcf97; --warn:#e0b050; --bad:#f2827a; --chip:#2a2a27; color-scheme: dark; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 system-ui, -apple-system, "Segoe UI", "Noto Sans KR", sans-serif; }
+  header { display:flex; gap:16px; align-items:center; flex-wrap:wrap; padding:12px 20px; border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:2; }
+  header h1 { font-size:16px; margin:0 12px 0 0; letter-spacing:.02em; }
+  main { display:grid; grid-template-columns: 220px 1fr; min-height: calc(100vh - 58px); }
+  nav { border-right:1px solid var(--line); padding:12px 8px; }
+  nav button { display:block; width:100%; text-align:left; background:none; border:0; padding:8px 12px; border-radius:6px; color:var(--ink); cursor:pointer; font:inherit; }
+  nav button.on { background:var(--chip); font-weight:600; }
+  section { padding:20px 24px; max-width:1200px; }
+  h2 { font-size:18px; margin:0 0 4px; } .sub { color:var(--muted); margin:0 0 16px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin-bottom:14px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  input, select, textarea { font:inherit; color:var(--ink); background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
+  textarea { width:100%; min-height:220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12.5px; }
+  button.b { font:inherit; border:1px solid var(--accent); background:var(--accent); color:var(--bg); border-radius:6px; padding:6px 12px; cursor:pointer; }
+  button.g { font:inherit; border:1px solid var(--line); background:var(--panel); color:var(--ink); border-radius:6px; padding:6px 12px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .tbl { overflow-x:auto; } table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; }
+  .chip { display:inline-block; padding:1px 8px; border-radius:99px; background:var(--chip); font-size:12px; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  pre { white-space:pre-wrap; word-break:break-word; font-size:12.5px; background:var(--chip); padding:10px; border-radius:6px; max-height:420px; overflow:auto; margin:0; }
+  #toast { position:fixed; right:16px; bottom:16px; max-width:420px; padding:10px 14px; border-radius:8px; background:var(--ink); color:var(--bg); display:none; }
+  .muted { color:var(--muted); } .mono { font-family: ui-monospace, Menlo, monospace; font-size:12px; }
+  .term { height: 460px; background:#111; border-radius:6px; padding:6px; }
+  .grid2 { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; }
+  .bar { height:8px; border-radius:99px; background:var(--chip); overflow:hidden; } .bar > i { display:block; height:100%; background:var(--accent); }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; } nav { display:flex; overflow-x:auto; border-right:0; border-bottom:1px solid var(--line); } nav button { white-space:nowrap; } section { padding:16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>AGDD Console</h1>
+  <div class="row">
+    <input id="token" type="password" placeholder="API token" size="22" autocomplete="off">
+    <input id="user" placeholder="user id (uuid)" size="38" class="mono">
+    <button class="g" id="save">저장</button>
+  </div>
+  <div class="row">
+    <select id="ws"></select>
+    <input id="wsname" placeholder="새 워크스페이스 이름" size="18">
+    <button class="g" id="mkws">생성</button>
+  </div>
+</header>
+<main>
+  <nav id="nav"></nav>
+  <section id="view"></section>
+</main>
+<div id="toast"></div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const store = { get(k){ try { return localStorage.getItem(k) || ""; } catch { return ""; } }, set(k,v){ try { localStorage.setItem(k,v); } catch {} } };
+const uuid = () => crypto.randomUUID ? crypto.randomUUID() : "xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx".replace(/x/g, () => (Math.random()*16|0).toString(16));
+$("#token").value = store.get("agdd.token");
+$("#user").value = store.get("agdd.user") || uuid();
+let WS = store.get("agdd.ws"), TAB = store.get("agdd.tab") || "vm", ES = null, TERM = null;
+
+function toast(msg, bad) { const t = $("#toast"); t.textContent = msg; t.style.background = bad ? "var(--bad)" : "var(--ink)"; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", 4000); }
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: { "authorization": "Bearer " + $("#token").value, "x-user-id": $("#user").value, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error?.message || data.error || ("HTTP " + r.status));
+  return data;
+}
+const run = fn => async (...a) => { try { await fn(...a); } catch (e) { toast(e.message, true); } };
+
+$("#save").onclick = run(async () => { store.set("agdd.token", $("#token").value); store.set("agdd.user", $("#user").value); await loadWs(); toast("저장됨"); });
+$("#mkws").onclick = run(async () => { const w = await api("POST", "/workspaces", { name: $("#wsname").value }); WS = w.workspace_id; store.set("agdd.ws", WS); $("#wsname").value = ""; await loadWs(); });
+$("#ws").onchange = () => { WS = $("#ws").value; store.set("agdd.ws", WS); render(); };
+
+async function loadWs() {
+  const list = await api("GET", "/workspaces");
+  $("#ws").innerHTML = list.length ? list.map(w => `<option value="${esc(w.workspace_id)}">${esc(w.name)} · ${esc(w.role)}</option>`).join("") : `<option value="">워크스페이스 없음</option>`;
+  if (!list.find(w => w.workspace_id === WS)) WS = list[0]?.workspace_id || "";
+  $("#ws").value = WS; store.set("agdd.ws", WS); render();
+}
+
+const TABS = { vm: "VM · 터미널", agents: "CLI 에이전트", specs: "명세 테이블", gate: "사전 검사", graphs: "그래프", runs: "실행", hitl: "HITL 결정", ux: "UX 오버라이드", research: "리서치", dash: "대시보드·예산" };
+function nav() { $("#nav").innerHTML = Object.entries(TABS).map(([k, v]) => `<button data-t="${k}" class="${k === TAB ? "on" : ""}">${v}</button>`).join(""); $("#nav").querySelectorAll("button").forEach(b => b.onclick = () => { TAB = b.dataset.t; store.set("agdd.tab", TAB); render(); }); }
+const V = html => $("#view").innerHTML = html;
+const statusCls = s => ({ ACCEPT_NOW: "ok", SUCCEEDED: "ok", APPROVED: "ok", DEFER: "warn", HOLD: "warn", WAITING_HITL: "warn", RUNNING: "warn", PENDING: "warn", REJECT: "bad", FAILED: "bad", ESCALATED: "bad", HALTED: "bad", REJECTED: "bad" }[s] || "");
+
+const render = run(async () => {
+  nav(); if (ES) { ES.close(); ES = null; } if (TERM) { TERM.stop(); TERM = null; }
+  if (!WS) return V(`<h2>시작하기</h2><p class="sub">상단에 API 토큰(agdd.env의 AGDD_API_TOKEN)을 넣고 저장한 뒤 워크스페이스를 만드세요. 사용자 ID는 이 브라우저에서 자동 생성됩니다.</p>`);
+  await VIEWS[TAB]();
+});
+
+function openTerminal(el, name, readOnly) {
+  const term = new Terminal({ fontSize: 13, cursorBlink: !readOnly, convertEol: false, scrollback: 5000, disableStdin: !!readOnly,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', theme: { background: "#111111" } });
+  const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(el); fit.fit();
+  let offset = 0, alive = true, queue = "", busy = false;
+  const path = `/workspaces/${WS}/vm/terminal/${name}`;
+  const call = (op, extra = {}) => api("POST", path, { operation: op, cols: term.cols, rows: term.rows, offset, data: "", ...extra });
+  const take = r => { if (r.data) { const bin = atob(r.data); const u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); term.write(u8); } if (typeof r.offset === "number") offset = r.offset; if (r.expired) { term.write("\r\n[세션 만료 — 다시 열기]\r\n"); alive = false; } };
+  (async () => {
+    try { term.write(readOnly ? "[자동화 세션 관전 중 — 읽기 전용]\r\n" : "VM 부팅/연결 중… (처음은 최대 1~2분)\r\n"); take(await call("open")); } catch (e) { term.write("\r\n[연결 실패] " + e.message + "\r\n"); return; }
+    while (alive) {
+      try {
+        if (queue && !busy) { busy = true; const d = queue.slice(0, 4000); queue = queue.slice(d.length); take(await call("input", { data: d })); busy = false; continue; }
+        take(await call("poll"));
+      } catch (e) { term.write("\r\n[오류] " + e.message + "\r\n"); await new Promise(r => setTimeout(r, 2000)); }
+      await new Promise(r => setTimeout(r, queue ? 0 : 250));
+    }
+  })();
+  if (!readOnly) term.onData(d => { queue += d; });
+  const onResize = () => { fit.fit(); if (!readOnly) call("resize").catch(() => {}); };
+  window.addEventListener("resize", onResize);
+  return { term, type: t => { queue += t; term.focus(); }, stop() { alive = false; window.removeEventListener("resize", onResize); term.dispose(); } };
+}
+
+const VIEWS = {
+  async vm() {
+    let st = null, err = "";
+    try { st = await api("GET", `/workspaces/${WS}/vm`); } catch (e) { err = e.message; }
+    const rt = st?.runtime || {};
+    V(`<h2>워크스페이스 VM</h2><p class="sub">이 워크스페이스 전용 Cloud Hypervisor VM(Project Agora 런타임)입니다. AGDD의 저장소·테스트·CLI 에이전트 실행은 모두 이 VM 안에서 수행됩니다. 셸은 UID 1000, HOME=/workspace이며 <span class="mono">apt install</span>은 게스트의 승인된 패키지 브리지로 동작합니다(sudo 없음).</p>
+      ${err ? `<div class="card bad">${esc(err)}</div>` : `<div class="card row"><span>VM id <span class="mono">${esc(st.canvas_id)}</span></span>
+        <span>사양 <select id="tpl">${(Array.isArray(rt.resourceTemplates) ? rt.resourceTemplates.map(k => [k, {}]) : Object.entries(rt.resourceTemplates || {})).map(([k, t]) => `<option value="${esc(k)}" ${k === rt.resourceTemplate ? "selected" : ""}>${esc(t.label || k)}${t.vcpus ? ` · ${t.vcpus} vCPU · ${t.memoryMiB / 1024} GiB` : ""}</option>`).join("")}</select></span>
+        <span>디스크 <select id="disk">${(rt.diskSizesGiB || [6,12,24]).map(g => `<option ${g === rt.diskGiB ? "selected" : ""}>${g}</option>`).join("")}</select> GiB</span>
+        <button class="g" id="applyvm">적용 (OWNER)</button><button class="g" id="resetvm">메모리 초기화</button>
+        <span class="muted">저장소 위치: <span class="mono">${esc(st.repos_dir)}/&lt;repo_key&gt;</span></span></div>`}
+      <div class="card"><div class="row" style="margin-bottom:8px"><b>터미널</b>
+        <select id="tname"><option value="main">main</option><option value="t2">t2</option><option value="t3">t3</option></select>
+        <button class="g" id="topen">열기</button><span class="muted">자동화 세션 관전:</span><input id="watch" placeholder="agdd-xxxxxxxx" size="16"><button class="g" id="twatch">관전</button>
+        <span class="muted">빠른 명령:</span>
+        <button class="g" data-cmd="cd /workspace/repos 2>/dev/null || mkdir -p /workspace/repos && cd /workspace/repos; ls -la\r">repos</button>
+        <button class="g" data-cmd="apt update\r">apt update</button>
+        <button class="g" id="demo">데모 저장소 만들기</button></div>
+        <div id="term" class="term"></div></div>`);
+    const start = (name, ro) => { if (TERM) TERM.stop(); $("#term").innerHTML = ""; TERM = openTerminal($("#term"), name, ro); };
+    if (!err) {
+      start("main");
+      $("#topen").onclick = () => start($("#tname").value);
+      $("#twatch").onclick = () => start($("#watch").value.trim(), true);
+      document.querySelectorAll("button[data-cmd]").forEach(b => b.onclick = () => TERM?.type(b.dataset.cmd.replace(/\\r/g, "\r")));
+      $("#demo").onclick = run(async () => { toast("데모 저장소 생성 중…"); const r = await api("POST", `/workspaces/${WS}/vm/demo-repo`, {}); toast(`생성됨: ${r.path}`); });
+      $("#applyvm").onclick = run(async () => {
+        if ($("#tpl").value !== rt.resourceTemplate) await api("PUT", `/workspaces/${WS}/vm/resources`, { template: $("#tpl").value, revision: rt.revision ?? 0 });
+        if (Number($("#disk").value) !== rt.diskGiB) { const s2 = await api("GET", `/workspaces/${WS}/vm`); await api("PUT", `/workspaces/${WS}/vm/resources`, { sizeGiB: Number($("#disk").value), revision: s2.runtime.revision ?? 0 }); }
+        toast("적용됨"); render(); });
+      $("#resetvm").onclick = run(async () => { await api("POST", `/workspaces/${WS}/vm/reset`, {}); toast("초기화됨"); });
+    }
+  },
+  async agents() {
+    const cfg = await api("GET", `/workspaces/${WS}/agent-settings`);
+    const s = cfg.settings;
+    let clis = {}, cliErr = "";
+    try { clis = await api("GET", `/workspaces/${WS}/vm/clis`); } catch (e) { cliErr = e.message; }
+    const opt = (list, cur) => list.map(v => `<option ${v === cur ? "selected" : ""}>${esc(v)}</option>`).join("");
+    V(`<h2>CLI 에이전트</h2><p class="sub">AGDD의 모든 모델 단계(사전 검사, 모호성, 라우팅, Dev, 의미 검증, Watchdog, HITL 카드)는 이 워크스페이스 VM 안에서 선택한 CLI로 실행됩니다. 기본 엔진: <b>${esc(cfg.engine_default)}</b></p>
+      <div class="grid2">${Object.entries(cfg.clis).map(([k, c]) => `<div class="card"><h3>${esc(k)}</h3>
+        ${cliErr ? `<p class="bad">${esc(cliErr)}</p>` : clis[k]?.installed ? `<p class="ok">설치됨 · <span class="mono">${esc(clis[k].version)}</span></p>` : `<p class="warn">미설치</p>`}
+        <div class="row"><button class="g" data-install="${esc(k)}">VM 터미널에서 설치</button><button class="g" data-login="${esc(k)}">로그인</button></div>
+        <p class="muted mono" style="font-size:11px">${esc(c.install)}</p><p class="muted" style="font-size:12px">로그인: ${esc(c.login)}</p>
+        <div class="row"><button class="g" data-usage="${esc(k)}">남은 사용량</button><button class="g" data-sess="${esc(k)}">세션 목록</button></div></div>`).join("")}</div>
+      <div class="card"><h3>기본 실행 설정</h3><div class="row">
+        <label>CLI <select id="cli">${opt(Object.keys(cfg.clis), s.cli)}</select></label>
+        <label>모델 <input id="model" list="models" value="${esc(s.model)}" placeholder="기본값" size="16"><datalist id="models"></datalist></label>
+        <label>추론 강도 <select id="effort">${opt(cfg.efforts, s.effort)}</select></label>
+        <label>세션 <input id="session" value="${esc(s.session)}" size="22" title="new | per-run | 세션 ID"></label>
+        <label>권한 <select id="perm">${opt(["sandbox", "ask-edits"], s.permission)}</select></label></div>
+        <div class="row" style="margin-top:8px"><label>저가 단계 모델 <input id="cmodel" value="${esc(s.cheap_model)}" placeholder="모델과 동일" size="16"></label>
+        <label>저가 단계 추론 <select id="ceffort">${opt(cfg.efforts, s.cheap_effort)}</select></label><button class="b" id="saveag">저장</button></div>
+        <p class="muted" style="font-size:12px">세션: <b>new</b> = 매 시도 새 컨텍스트(DOC 노드 리셋), <b>per-run</b> = 실행 내 재시도는 같은 세션 이어가기, 세션 ID = 기존 CLI 세션에서 계속. 권한 sandbox = VM 안에서 승인 없이 셸·편집 허용(VM이 격리 경계), ask-edits = 편집만 허용.</p></div>
+      <div id="agout"></div>`);
+    const setModels = () => { $("#models").innerHTML = (cfg.clis[$("#cli").value]?.models || []).map(m => `<option value="${esc(m)}">`).join(""); };
+    setModels(); $("#cli").onchange = setModels;
+    $("#saveag").onclick = run(async () => { await api("PUT", `/workspaces/${WS}/agent-settings`, { cli: $("#cli").value, model: $("#model").value.trim(), effort: $("#effort").value, session: $("#session").value.trim() || "per-run", permission: $("#perm").value, cheap_model: $("#cmodel").value.trim(), cheap_effort: $("#ceffort").value }); toast("저장됨"); });
+    const toTerm = cmd => { TAB = "vm"; store.set("agdd.tab", "vm"); render().then(() => setTimeout(() => TERM?.type(cmd + "\r"), 1500)); };
+    document.querySelectorAll("[data-install]").forEach(b => b.onclick = () => toTerm(cfg.clis[b.dataset.install].install));
+    document.querySelectorAll("[data-login]").forEach(b => b.onclick = () => toTerm({ claude: "claude", codex: "codex login --device-auth", agy: "agy" }[b.dataset.login]));
+    document.querySelectorAll("[data-usage]").forEach(b => b.onclick = run(async () => {
+      $("#agout").innerHTML = `<div class="card muted">${esc(b.dataset.usage)} 사용량 조회 중… (CLI 호출, 최대 2분)</div>`;
+      const u = await api("GET", `/workspaces/${WS}/vm/usage/${b.dataset.usage}`);
+      const rl = u.rate_limits || {};
+      const bars = Object.entries(rl).filter(([, v]) => v && typeof v === "object" && "used_percent" in v).map(([k, v]) => `<p>${esc(k)} (${esc(v.window_minutes ? Math.round(v.window_minutes / 60) + "h" : "")}): 남은 ${(100 - v.used_percent).toFixed(0)}% ${v.resets_at ? `· 리셋 ${esc(new Date(v.resets_at * 1000).toLocaleString())}` : ""}</p><div class="bar"><i style="width:${Math.max(0, 100 - v.used_percent)}%"></i></div>`).join("");
+      $("#agout").innerHTML = `<div class="card"><h3>${esc(u.cli)} 남은 사용량</h3>${bars || (Object.keys(rl).length ? `<pre>${esc(JSON.stringify(rl, null, 2))}</pre>` : "<p class='muted'>구조화된 한도 정보 없음 — CLI 보고서를 확인하세요.</p>")}
+        ${u.rate_limits_at ? `<p class="muted">스냅샷: ${esc(u.rate_limits_at)}</p>` : ""}<h4>CLI 보고서</h4><pre>${esc(u.report)}</pre>
+        <h4>AGDD 사용 기록 (7일)</h4><div class="tbl"><table><tr><th>model</th><th>calls</th><th>prompt</th><th>cached</th><th>output</th><th>thinking</th><th>$</th></tr>${u.agdd_7d.map(t => `<tr><td>${esc(t.model_name)}</td><td>${t.calls}</td><td>${t.prompt}</td><td>${t.cached}</td><td>${t.output}</td><td>${t.thinking}</td><td>${Number(t.cost || 0).toFixed(4)}</td></tr>`).join("")}</table></div></div>`;
+    }));
+    document.querySelectorAll("[data-sess]").forEach(b => b.onclick = run(async () => {
+      const r = await api("GET", `/workspaces/${WS}/vm/sessions/${b.dataset.sess}`);
+      $("#agout").innerHTML = `<div class="card"><h3>${esc(b.dataset.sess)} 세션</h3>${r.sessions.length ? `<div class="tbl"><table><tr><th>session id</th><th>최근</th><th>위치</th><th></th></tr>${r.sessions.map(x => `<tr><td class="mono">${esc(x.id)}</td><td>${esc(new Date(x.mtime * 1000).toLocaleString())}</td><td class="mono">${esc(x.where)}</td><td><button class="g" data-use="${esc(x.id)}">이 세션 사용</button></td></tr>`).join("")}</table></div>` : `<pre>${esc(r.raw || "세션 없음")}</pre>`}</div>`;
+      document.querySelectorAll("[data-use]").forEach(u => u.onclick = () => { $("#session").value = u.dataset.use; $("#cli").value = b.dataset.sess; toast("세션 선택됨 — 저장을 누르세요"); });
+    }));
+  },
+  async specs() {
+    const s = await api("GET", `/workspaces/${WS}/specs`);
+    const cols = { srs: ["req_id","domain","title","acceptance_criteria"], arc: ["arch_id","layer","component_name","tech_stack"], sch: ["schema_id","storage_engine","table_or_key_name","role_content"] };
+    const typ = { srs: "SRS", arc: "ARC", sch: "SCH" }, pk = { srs: "req_id", arc: "arch_id", sch: "schema_id" };
+    let html = `<h2>명세 테이블</h2><p class="sub">수용 여부를 바꾸면 즉시 새 스냅샷으로 저장됩니다. 실행 전 반드시 사전 검사를 통과해야 합니다.</p>
+      <div class="card row"><button class="g" id="seed">예시 명세 불러오기 (DOC §3.3)</button><span class="muted">JSON으로 행 추가/수정:</span>
+      <select id="ntype"><option>SRS</option><option>ARC</option><option>SCH</option></select><button class="g" id="addrow">JSON 행 저장</button></div>
+      <div class="card" id="jsonbox" hidden><textarea id="rowjson"></textarea></div>`;
+    for (const k of ["srs","arc","sch"]) {
+      html += `<div class="card"><h3>${typ[k]}</h3><div class="tbl"><table><tr>${cols[k].map(c=>`<th>${c}</th>`).join("")}<th>adoption_status</th><th>phase</th><th>v</th></tr>` +
+        (s[k] || []).map(r => `<tr>${cols[k].map(c=>`<td>${esc(r[c])}</td>`).join("")}<td><select data-t="${typ[k]}" data-id="${esc(r[pk[k]])}">${["ACCEPT_NOW","DEFER","REJECT","HOLD"].map(o=>`<option ${o===r.adoption_status?"selected":""}>${o}</option>`).join("")}</select></td><td>${esc(r.target_phase)}</td><td>${r.version}</td></tr>`).join("") + `</table></div></div>`;
+    }
+    html += `<div class="card"><h3>추적성</h3><div class="tbl"><table><tr><th>source</th><th>relation</th><th>target</th></tr>${(s.trace||[]).map(t=>`<tr><td>${esc(t.source_type)} ${esc(t.source_id)}</td><td>${esc(t.relation_type)}</td><td>${esc(t.target_type)} ${esc(t.target_id)}</td></tr>`).join("")}</table></div></div>`;
+    V(html);
+    $("#seed").onclick = run(async () => { await api("POST", `/workspaces/${WS}/seed-example`, {}); toast("예시 명세를 불러왔습니다"); render(); });
+    const rows = { SRS: s.srs, ARC: s.arc, SCH: s.sch };
+    $("#addrow").onclick = run(async () => {
+      const box = $("#jsonbox");
+      if (box.hidden) { box.hidden = false; const ex = (rows[$("#ntype").value] || [])[0]; $("#rowjson").value = JSON.stringify(ex ? Object.fromEntries(Object.entries(ex).filter(([k]) => !["version","updated_at"].includes(k))) : {}, null, 2); return; }
+      await api("PUT", `/workspaces/${WS}/specs/${$("#ntype").value}`, JSON.parse($("#rowjson").value)); toast("저장됨"); render();
+    });
+    document.querySelectorAll("select[data-t]").forEach(sel => sel.onchange = run(async () => {
+      const t = sel.dataset.t, id = sel.dataset.id, key = { SRS: "req_id", ARC: "arch_id", SCH: "schema_id" }[t];
+      const row = rows[t].find(r => r[key] === id); const { version, updated_at, ...rest } = row;
+      await api("PUT", `/workspaces/${WS}/specs/${t}`, { ...rest, adoption_status: sel.value }); toast(`${id} → ${sel.value}`); render();
+    }));
+  },
+  async gate() {
+    const last = await api("GET", `/workspaces/${WS}/conflicts`);
+    V(`<h2>사전 검사 (Pre-Flight Gate)</h2><p class="sub">1) SQL 무결성 → 2) 배치 묶기 → 3) 저렴한 모델 의미 검사 → 4) CRITICAL 0건이면 실행 허가. 모호성 린터도 함께 실행됩니다.</p>
+      <div class="card row"><span>최신 스냅샷 v${esc(last.version ?? "-")}: ${last.conflict_passed ? '<b class="ok">통과</b>' : '<b class="warn">미통과/미검사</b>'}</span>
+      <label><input type="checkbox" id="sem" checked> 의미 검사</label><label><input type="checkbox" id="amb" checked> 모호성 린터</label><button class="b" id="go">검사 실행</button></div><div id="out"></div>`);
+    $("#go").onclick = run(async () => {
+      $("#go").disabled = true; $("#out").innerHTML = `<p class="muted">검사 중…</p>`;
+      try {
+        const r = await api("POST", `/workspaces/${WS}/preflight`, { semantic: $("#sem").checked, ambiguity: $("#amb").checked });
+        $("#out").innerHTML = `<div class="card"><b class="${r.passed ? "ok" : "bad"}">${r.passed ? "통과 — 실행 가능" : "차단 — CRITICAL 충돌"}</b> · 스냅샷 ${esc(r.snapshot_id)}</div>` +
+          r.conflicts.map(c => `<div class="card"><span class="chip ${c.severity === "CRITICAL" ? "bad" : "warn"}">${esc(c.severity)}</span> <b>${esc(c.conflict_type)}</b> <span class="mono">${esc(c.involved_ids.join(", "))}</span> <span class="muted">${esc(c.check_stage)}</span><p>${esc(c.explanation)}</p><ol>${c.resolution_options.options.map((o, i) => `<li>${esc(o)}${i === c.resolution_options.recommended ? " <span class='chip'>권장</span>" : ""}</li>`).join("")}</ol></div>`).join("") +
+          (r.ambiguity_questions.length ? `<div class="card"><h3>미결정 항목 (권장 기본값으로 진행됨)</h3>${r.ambiguity_questions.map(q => `<p><span class="chip">${esc(q.category)}</span> <span class="mono">${esc(q.spec_id)}</span> ${esc(q.question)}<br>${q.options.map((o, i) => i === q.recommended ? `<b>${esc(o)}</b>` : esc(o)).join(" / ")}</p>`).join("")}</div>` : "") +
+          (r.scope ? `<div class="card"><h3>Executable Scope</h3><pre>${esc(JSON.stringify(r.scope.requirements.map(x => x.req_id)))} + ARC ${esc(JSON.stringify(r.scope.architecture.map(x => x.arch_id)))} + SCH ${esc(JSON.stringify(r.scope.schemas.map(x => x.schema_id)))}</pre></div>` : "");
+      } finally { $("#go").disabled = false; }
+    });
+  },
+  async graphs() {
+    const gs = await api("GET", `/workspaces/${WS}/graphs`);
+    const tpl = { entry: "ambiguity", fast_track_entry: "dev", nodes: [
+      { name: "ambiguity", kind: "AMBIGUITY_GATE" },
+      { name: "dev", kind: "DEV", max_retries: 2, command: ["python", "-m", "pytest", "-q"] },
+      { name: "semantic", kind: "SEMANTIC_VERIFY", max_retries: 2 },
+      { name: "verify", kind: "VERIFY", max_retries: 2, command: ["python", "-m", "pytest", "-q", "--junitxml=.agdd/junit.xml"], reports: { junit: ".agdd/junit.xml" } },
+      { name: "audit", kind: "AUDIT", max_retries: 1 },
+      { name: "review", kind: "HITL", reversibility: "REVERSIBLE" } ],
+      edges: [ { from: "ambiguity", to: "dev" }, { from: "dev", to: "semantic" }, { from: "dev", to: "dev", on: "failure" },
+        { from: "semantic", to: "verify" }, { from: "semantic", to: "dev", on: "failure" },
+        { from: "verify", to: "audit" }, { from: "verify", to: "dev", on: "failure" },
+        { from: "audit", to: "review" }, { from: "audit", to: "dev", on: "failure" } ] };
+    V(`<h2>그래프</h2><p class="sub">JSON 그래프는 검증을 통과해야 게시됩니다. 노드 종류: SPEC, AMBIGUITY_GATE, DEV, SEMANTIC_VERIFY, VERIFY, AUDIT, HITL.</p>
+      <div class="card"><textarea id="g">${esc(JSON.stringify(tpl, null, 2))}</textarea><div class="row" style="margin-top:8px"><button class="b" id="pub">게시</button><span class="muted">기본 템플릿: Dev ↔ Verify 루프 + 의미 검증 + Audit + 다이제스트 검토</span></div></div>
+      <div class="card"><h3>게시된 그래프</h3><div class="tbl"><table><tr><th>graph_id</th><th>v</th><th>entry</th><th>nodes</th></tr>${gs.map(g => `<tr><td class="mono">${esc(g.graph_id)}</td><td>${g.version}</td><td>${esc(g.definition_json.entry)}</td><td>${esc(g.definition_json.nodes.map(n => n.name).join(" → "))}</td></tr>`).join("")}</table></div></div>`);
+    $("#pub").onclick = run(async () => { const r = await api("POST", `/workspaces/${WS}/graphs`, { definition: JSON.parse($("#g").value) }); toast(`게시됨 ${r.graph_id} v${r.version}`); render(); });
+  },
+  async runs() {
+    const [gs, rs] = await Promise.all([api("GET", `/workspaces/${WS}/graphs`), api("GET", `/workspaces/${WS}/runs`)]);
+    V(`<h2>실행</h2><p class="sub">VM 엔진: 저장소는 VM의 <span class="mono">/workspace/repos/&lt;repo_key&gt;</span>에 git 저장소로 있어야 합니다(VM 터미널에서 clone 또는 데모 저장소). 요청이 작으면 Fast-Track으로 우회합니다. 실행 상세에서 자동화 터미널 이름(agdd-로 시작)을 VM 탭에서 관전할 수 있습니다.</p>
+      <div class="card"><div class="row"><select id="gid">${gs.map(g => `<option value="${esc(g.graph_id)}">${esc(g.graph_id.slice(0, 8))} v${g.version} (${esc(g.definition_json.entry)})</option>`).join("")}</select>
+      <input id="repo" placeholder="repo_key (예: demo)" value="${esc(store.get("agdd.repo") || "demo")}"></div>
+      <div class="row" style="margin-top:8px"><span class="muted">이번 실행만:</span>
+        <select id="r_engine"><option value="">엔진 기본</option><option value="vm-cli">VM CLI</option><option value="gateway">Gateway</option></select>
+        <select id="r_cli"><option value="">CLI 기본</option><option>claude</option><option>codex</option><option>agy</option></select>
+        <input id="r_model" placeholder="모델" size="12"><select id="r_effort"><option value="">추론 기본</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select>
+        <input id="r_session" placeholder="세션 (new/per-run/ID)" size="18"></div>
+      <textarea id="req" style="min-height:90px;margin-top:8px" placeholder="변경 요청 (예: calc.py의 add 함수 버그를 고치고 테스트를 통과시켜라)"></textarea>
+      <div class="row" style="margin-top:8px"><button class="b" id="start" ${gs.length ? "" : "disabled"}>실행 시작</button></div></div>
+      <div class="card"><h3>최근 실행</h3><div class="tbl"><table><tr><th>run</th><th>mode</th><th>node</th><th>status</th><th>updated</th></tr>${rs.map(r => `<tr><td><a href="#" data-run="${esc(r.run_id)}" class="mono">${esc(r.run_id.slice(0, 8))}</a></td><td>${esc(r.route_mode)}</td><td>${esc(r.current_node)}</td><td class="${statusCls(r.status)}">${esc(r.status)}</td><td class="muted">${esc(r.updated_at)}</td></tr>`).join("")}</table></div></div><div id="detail"></div>`);
+    $("#start").onclick = run(async () => { store.set("agdd.repo", $("#repo").value); const agent = Object.fromEntries([["cli", $("#r_cli").value], ["model", $("#r_model").value.trim()], ["effort", $("#r_effort").value], ["session", $("#r_session").value.trim()]].filter(([, v]) => v));
+      const r = await api("POST", `/workspaces/${WS}/runs`, { graph_id: $("#gid").value, request: $("#req").value, repo_key: $("#repo").value, agent, ...($("#r_engine").value ? { engine: $("#r_engine").value } : {}) }); toast(`${r.route_mode} 실행 시작`); await VIEWS.runs(); showRun(r.run_id); });
+    document.querySelectorAll("a[data-run]").forEach(a => a.onclick = e => { e.preventDefault(); showRun(a.dataset.run); });
+  },
+  async hitl() {
+    const hs = await api("GET", `/workspaces/${WS}/hitl`);
+    V(`<h2>HITL 결정</h2><p class="sub">IRREVERSIBLE은 실행이 멈춰 있습니다. REVERSIBLE은 권장안으로 진행되었고 10:00/16:00 다이제스트로 사후 검토합니다.</p>` +
+      (hs.length ? hs.map(h => { const c = h.decision_card_json || {}; return `<div class="card"><span class="chip ${h.reversibility === "IRREVERSIBLE" ? "bad" : "warn"}">${esc(h.reversibility)}</span> <b>${esc(h.reason_code)}</b> <span class="mono muted">run ${esc(String(h.run_id).slice(0, 8))} · ${esc(c.module)}</span>
+        <ul>${(c.impact || []).map(i => `<li>${esc(i)}</li>`).join("")}</ul>
+        <ol>${(c.options || []).map((o, i) => `<li>${esc(o.label)} ${o.pros ? `<span class="ok">+ ${esc(o.pros)}</span>` : ""} ${o.cons ? `<span class="bad">− ${esc(o.cons)}</span>` : ""} ${i === c.recommended ? "<span class='chip'>권장</span>" : ""}</li>`).join("")}</ol>
+        <div class="row"><button class="b" data-d="${h.decision_id}" data-s="APPROVED">승인</button><button class="g" data-d="${h.decision_id}" data-s="REJECTED">거절</button></div></div>`; }).join("") : `<div class="card muted">대기 중인 결정이 없습니다.</div>`));
+    document.querySelectorAll("button[data-d]").forEach(b => b.onclick = run(async () => { await api("POST", `/hitl/${b.dataset.d}/decide`, { status: b.dataset.s }); toast("결정 저장"); render(); }));
+  },
+  async ux() {
+    V(`<h2>UX 오버라이드</h2><p class="sub">잠금된 항목은 에이전트가 수정할 수 없고, 수정하려는 diff는 Audit에서 차단됩니다. 허용 키: layout, tokens, visibility, order, size, spacing, variant, props.</p>
+      <div class="card row"><input id="view" placeholder="view_key (예: home)" value="home"><button class="g" id="load">불러오기</button></div>
+      <div class="card"><textarea id="ux">{\n  "#hero": {"config": {"layout": {"columns": 2}}, "locked": true}\n}</textarea><div class="row" style="margin-top:8px"><button class="b" id="saveux">저장</button><input id="unl" placeholder="잠금 해제할 selector"><button class="g" id="unlock">잠금 해제</button></div></div><div id="cur"></div>`);
+    const load = run(async () => { const b = await api("GET", `/workspaces/${WS}/ux/${encodeURIComponent($("#view").value)}`); $("#cur").innerHTML = `<div class="card"><h3>현재 바인딩 (ux-overrides.json)</h3><pre>${esc(JSON.stringify(b, null, 2))}</pre></div>`; });
+    $("#load").onclick = load; load();
+    $("#saveux").onclick = run(async () => { await api("PUT", `/workspaces/${WS}/ux/${encodeURIComponent($("#view").value)}`, JSON.parse($("#ux").value)); toast("저장됨"); load(); });
+    $("#unlock").onclick = run(async () => { await api("POST", `/workspaces/${WS}/ux/${encodeURIComponent($("#view").value)}/unlock`, { selectors: [$("#unl").value] }); toast("해제됨"); load(); });
+  },
+  async research() {
+    V(`<h2>즉시 리서치</h2><p class="sub">사내 이름·경로·비밀값·PII를 제거한 질의로 과거 사례 → arXiv / Semantic Scholar / 공식 문서를 검색해 1,000토큰 이내 Insight Brief를 만듭니다.</p>
+      <div class="card"><textarea id="prob" style="min-height:120px" placeholder="막힌 문제 / 에러 메시지를 붙여넣으세요"></textarea><div class="row" style="margin-top:8px"><button class="b" id="go">리서치</button></div></div><div id="out"></div>`);
+    $("#go").onclick = run(async () => { $("#go").disabled = true; $("#out").innerHTML = `<p class="muted">검색 중… (최대 2~3분)</p>`;
+      try { const r = await api("POST", `/workspaces/${WS}/research`, { problem: $("#prob").value });
+        $("#out").innerHTML = `<div class="card"><p class="muted">외부 질의: <span class="mono">${esc(r.query)}</span> ${r.reused ? "<span class='chip'>과거 사례 재사용</span>" : ""}</p><pre>${esc(r.insight_brief_md)}</pre>${(r.errors || []).length ? `<p class="warn">일부 검색 실패: ${esc(r.errors.join(", "))}</p>` : ""}</div>`;
+      } finally { $("#go").disabled = false; } });
+  },
+  async dash() {
+    const d = await api("GET", `/workspaces/${WS}/dashboard`);
+    const b = d.budget;
+    V(`<h2>대시보드 · 예산</h2><p class="sub">예산 80% 도달 시 저가 모델로 자동 전환, 100% 도달 시 모델 호출이 차단됩니다.</p>
+      <div class="card row">${b ? `<span>${esc(b.period_ym)}: <b>$${Number(b.spent_usd).toFixed(4)}</b> / $${Number(b.limit_usd).toFixed(2)} (${(100 * b.spent_usd / b.limit_usd).toFixed(1)}%)</span>` : "<span class='muted'>예산 미설정 (무제한)</span>"}
+      <input id="lim" type="number" min="0" step="1" placeholder="월 한도 USD" style="width:140px"><button class="g" id="setb">설정 (OWNER)</button></div>
+      <div class="card"><h3>실행 상태</h3>${d.runs.map(r => `<span class="chip ${statusCls(r.status)}">${esc(r.status)} ${r.n}</span> `).join("") || "<span class='muted'>없음</span>"}</div>
+      <div class="card"><h3>최근 7일 모델 사용량</h3><div class="tbl"><table><tr><th>model</th><th>prompt</th><th>cached</th><th>cache hit</th><th>thinking</th><th>cost</th></tr>${d.tokens.map(t => `<tr><td>${esc(t.model_name)}</td><td>${t.p}</td><td>${t.cached}</td><td>${t.p ? (100 * t.cached / t.p).toFixed(0) + "%" : "-"}</td><td>${t.thinking}</td><td>$${Number(t.cost).toFixed(4)}</td></tr>`).join("")}</table></div></div>`);
+    $("#setb").onclick = run(async () => { await api("PUT", `/workspaces/${WS}/budget`, { limit_usd: Number($("#lim").value) }); toast("예산 설정됨"); render(); });
+  },
+};
+
+async function showRun(id) {
+  const r = await api("GET", `/runs/${id}`);
+  const h = r.handoff_json || {};
+  $("#detail").innerHTML = `<div class="card"><h3>run <span class="mono">${esc(id)}</span> <span class="${statusCls(r.status)}">${esc(r.status)}</span> @ ${esc(r.current_node)}</h3>
+    <p class="muted">엔진 ${esc(h.engine || "gateway")} ${h.agent && Object.keys(h.agent).length ? "· " + esc(JSON.stringify(h.agent)) : ""} ${h.cli_session ? `· CLI 세션 <span class="mono">${esc(h.cli_session)}</span>` : ""} · 자동화 터미널 <span class="mono">agdd-${esc(id.slice(0, 8))}</span></p>
+    ${h.dev_summary ? `<p><b>Dev 요약:</b> ${esc(h.dev_summary)}</p>` : ""}${h.feedback ? `<p class="bad"><b>피드백:</b></p><pre>${esc(h.feedback)}</pre>` : ""}
+    ${h.last_patch ? `<details><summary>변경 diff (${esc((h.changed_files || []).join(", "))})</summary><pre>${esc(h.last_patch)}</pre></details>` : ""}
+    ${h.insight_brief ? `<details><summary>Insight Brief</summary><pre>${esc(h.insight_brief)}</pre></details>` : ""}
+    <h4>노드 실행·비용</h4><div class="tbl"><table><tr><th>node</th><th>model</th><th>prompt</th><th>cached</th><th>out</th><th>thinking</th><th>$</th><th>ms</th></tr>${r.executions.map(e => `<tr><td>${esc(e.node_name)}</td><td>${esc(e.model_name)}</td><td>${e.prompt_tokens}</td><td>${e.cached_tokens}</td><td>${e.output_tokens}</td><td>${e.thinking_tokens}</td><td>${Number(e.cost_usd).toFixed(5)}</td><td>${e.duration_ms}</td></tr>`).join("")}</table></div>
+    <h4>실시간 로그</h4><pre id="logs"></pre></div>`;
+  if (ES) ES.close();
+  // EventSource cannot send headers, so the log stream is read with fetch + ReadableStream.
+  const ctl = new AbortController(); ES = { close: () => ctl.abort() };
+  fetch(`/runs/${id}/logs`, { headers: { "authorization": "Bearer " + $("#token").value, "x-user-id": $("#user").value }, signal: ctl.signal }).then(async res => {
+    const rd = res.body.getReader(), dec = new TextDecoder(); let buf = "";
+    for (;;) { const { value, done } = await rd.read(); if (done) break; buf += dec.decode(value, { stream: true });
+      let i; while ((i = buf.indexOf("\n\n")) >= 0) { const ev = buf.slice(0, i); buf = buf.slice(i + 2);
+        const line = ev.split("\n").find(l => l.startsWith("data: ")); if (line && $("#logs")) { $("#logs").textContent += JSON.parse(line.slice(6)).line + "\n"; $("#logs").scrollTop = 1e9; } } }
+  }).catch(() => {});
+}
+
+if ($("#token").value) loadWs().catch(e => { toast(e.message, true); render(); }); else render();
+</script>
+</body>
+</html>

@@ -26,7 +26,7 @@
 ### 3. Proof Notebook Studio & 다중 커널 플랫폼 (`web.py` + `app.js`)
 - **다중 증명기 지원 (`ProofKernelPool`)**: 단일 웹 인터페이스에서 Lean 4, Rocq (Coq), Python 3 노트북 커널 인스턴스를 격리 관리하고 동시 실행합니다.
 - **실시간 반응형 웹 에디터**: 브라우저 상에서 분할 뷰로 코드 작성, 셀 단위 실행, 커서 연동 InfoView 조회, 마크다운/수식 렌더링을 제공합니다.
-- **Project-Agora 캔버스 브리지**: `project-agora` 인증 및 작업공간 마운트 API를 통해 검증된 증명 노트북을 협업 캔버스 객체로 공유하거나 가져올 수 있습니다.
+- **공유 Workspace 브리지**: 인증 및 작업공간 마운트 API를 통해 검증된 증명 노트북을 협업 캔버스 객체로 공유하거나 가져올 수 있습니다.
 
 ---
 
@@ -43,7 +43,7 @@ proof-notebook/
 │   ├── renderer.py              # 다크/라이트 테마 대응 HTML 및 텍스트 출력 렌더러
 │   ├── unicode_map.py           # Lean 4 백슬래시 유니코드 기호 및 키워드/전술 사전
 │   ├── kernel.py                # ipykernel 기반 Lean4Kernel 구현
-│   ├── web.py                   # 다중 증명기 Web Studio 서버 & Project-Agora 브리지
+│   ├── web.py                   # 다중 증명기 Web Studio 서버 & Workspace 브리지
 │   ├── static/                  # 웹 프론트엔드 에셋 (index.html, styles.css, app.js)
 │   └── install.py               # `lean4-kernel` CLI (설치, REPL 빌드, 상태 점검, 웹 서버 실행)
 ├── src/rocq_kernel/             # Rocq (Coq) Jupyter 커널
@@ -108,7 +108,7 @@ python3 -m venv .venv
 # (A) 웹 기반 다중 증명기 Web Studio 실행 (HTTPS 전용, 기본 포트: 8890)
 .venv/bin/lean4-kernel serve --host 127.0.0.1 --port 8890 --self-signed
 # 또는 Let's Encrypt/내부 TLS 인증서 지정:
-# .venv/bin/lean4-kernel serve --host 127.0.0.1 --port 8890 --tls-dir ~/.local/share/irade/letsencrypt/proof-notebook.p-e.kr
+# .venv/bin/lean4-kernel serve --host 127.0.0.1 --port 8890 --tls-dir ~/.local/share/irade/letsencrypt/irade.p-e.kr
 # 또는
 .venv/bin/lean4-proof-studio
 

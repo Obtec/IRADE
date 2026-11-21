@@ -178,14 +178,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate an ephemeral self-signed localhost/127.0.0.1 TLS certificate",
     )
     p_serve.add_argument(
-        "--agora-url",
+        "--workspace-api-url",
+        dest="agora_url",
         default=None,
-        help="IRADE/Agora API base URL (default: $IRADE_API_URL or https://127.0.0.1:8453)",
+        help="HTTPS URL of the workspace API (default: $IRADE_API_URL or https://127.0.0.1:8453)",
+    )
+    p_serve.add_argument(
+        "--agora-url",
+        dest="agora_url",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
+    )
+    p_serve.add_argument(
+        "--workspace-public-url",
+        dest="agora_public_url",
+        default=None,
+        help="Public IRADE web URL used for workspace links",
     )
     p_serve.add_argument(
         "--agora-public-url",
-        default=None,
-        help="Public Project-Agora web URL for browser links",
+        dest="agora_public_url",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
     )
     p_serve.add_argument(
         "--data-dir",

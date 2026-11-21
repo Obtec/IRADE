@@ -275,7 +275,7 @@ private:
             }
             DBSETLUSER(login, user_.c_str());
             DBSETLPWD(login, pass_.c_str());
-            DBSETLAPP(login, "AgoraCppServer");
+    DBSETLAPP(login, "IRADECppServer");
             // Token nicknames and SQL text are UTF-8. FreeTDS otherwise depends on
             // freetds.conf/LANG and may interpret Korean bytes as ISO-8859-1.
             if (DBSETLCHARSET(login, "UTF-8") != SUCCEED) {

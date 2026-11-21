@@ -41,11 +41,11 @@ BE의 `setup-docker.py`/`sync-docker-env.py`가 현재 DB 설정으로 매핑을
 전체 초기 설정은 FE의 `scripts/setup-projects.py`를 사용합니다. 저장소를 먼저 실행·초기화한 다음 다음 순서로 실행합니다.
 
 ```bash
-cd ../project-agora-Wall
+cd ../wall
 ./scripts/storage-broker-docker.sh up
-cd ../project-agora-BE
+cd ../backend
 ./scripts/backend-docker.sh up
-cd ../project-agora-Wall
+cd ../wall
 ./scripts/broker-docker.sh up
 ./scripts/nginx-docker.sh development
 ```

@@ -22,7 +22,7 @@ IRADE의 외부 HTTPS/WSS 진입점과 서버 간 메시징 인프라를 관리�
 | `scripts/nginx-docker.sh` | 개발·운영 실행, 무중단 reload, 설정 검사와 상태 확인 |
 | `.env.example` | 공개 설정 예시 |
 
-자세한 공개 도메인(`proof-notebook.p-e.kr`) Let's Encrypt 설정 방법은 [PUBLIC_TLS.md](../backend/docs/PUBLIC_TLS.md)를 참고하세요.
+공개 도메인 `irade.p-e.kr`의 Let's Encrypt 설정은 [PUBLIC_TLS.md](../backend/docs/PUBLIC_TLS.md)를 참고하세요.
 
 FE는 화면과 빌드 결과, BE는 Spring·C++, DB는 저장소와 `agora-net` 네트워크를 담당합니다. Nginx 이미지·실행 설정은 Wall에서 관리합니다.
 
@@ -42,16 +42,16 @@ Nginx 인증서는 실제 접속 도메인을 SAN에 포함해야 합니다. 기
 ```bash
 python3 scripts/setup.py --tls-dir /path/to/certificates --backend-dir ../backend
 # 공개 Let's Encrypt 인증서를 분리 적용하는 경우:
-python3 scripts/setup.py --tls-dir /path/to/certificates --public-tls-dir ~/.local/share/irade/letsencrypt/proof-notebook.p-e.kr --public-origin https://proof-notebook.p-e.kr --backend-dir ../backend
+python3 scripts/setup.py --tls-dir /path/to/certificates --public-tls-dir ~/.local/share/irade/letsencrypt/irade.p-e.kr --public-origin https://irade.p-e.kr --backend-dir ../backend
 ```
 
-`.env`를 생성하며 인증서·개인 키·실제 환경 파일은 Git에서 제외합니다. 외부 도메인을 사용할 경우 `--public-origin https://proof-notebook.p-e.kr`을 지정하고 `backend` 설정도 맞춥니다.
+`.env`를 생성하며 인증서·개인 키·실제 환경 파일은 Git에서 제외합니다. 공개 주소는 `--public-origin https://irade.p-e.kr`로 설정하고 `backend`의 CORS·ORCID 설정도 맞춥니다.
 
 | 설정 | 기본값 | 설명 |
 | --- | --- | --- |
 | `NGINX_TLS_CERT_DIR` | 직접 지정 | 내부 CA(`root-ca.pem`) 및 서비스 TLS 번들 디렉터리 |
 | `NGINX_PUBLIC_TLS_CERT_DIR` | 비어 있으면 내부 인증서 사용 | 공개 게이트웨이용 Let's Encrypt `fullchain.pem`/`privkey.pem` 디렉터리 |
-| `NGINX_PUBLIC_HOSTNAME` | `proof-notebook.p-e.kr` | 공개 게이트웨이 TLS/헬스체크 대상 도메인 |
+| `NGINX_PUBLIC_HOSTNAME` | `irade.p-e.kr` | 공개 게이트웨이 TLS/헬스체크 대상 도메인 |
 | `NGINX_EDGE_TRUST` | `internal` (`system`은 공개 CA) | 게이트웨이 자체 검증 신뢰 모드 |
 | `NGINX_HTTPS_PORT` | `8453` | loopback에 게시하는 HTTPS 포트 |
 | `NGINX_BACKEND_IP` | `10.29.0.250` | `irade-services`의 Nginx 고정 IP |
@@ -65,16 +65,16 @@ Wall의 고정 IP와 BE의 `CPP_TRUSTED_PROXY_IPS`를 맞추고 Wall 서비스 �
 
 ```bash
 ./scripts/storage-broker-docker.sh up
-cd ../project-agora-BE
+cd ../backend
 ./scripts/backend-docker.sh up
-cd ../project-agora-Wall
+cd ../wall
 ./scripts/broker-docker.sh up
 ./scripts/nginx-docker.sh development
-cd ../project-agora-FE
+cd ../web
 docker compose -f compose.dev.yaml up -d --build
 ```
 
-접속 주소는 **https://proof-notebook.p-e.kr** (로컬 개발 기본 **https://localhost:8453**)입니다. 외부 접속과 내부 upstream은 HTTPS/WSS만 사용하고 CA 및 호스트명을 검증합니다. HTTP 포트는 평문 서비스에 사용하지 않으며, standalone Let's Encrypt 오버라이드(`docker-compose.nginx.letsencrypt.yml`)에서도 TCP/80은 ACME 챌린지와 301 HTTPS 리다이렉트 전용입니다.
+접속 주소는 **https://irade.p-e.kr** (로컬 개발 기본 **https://localhost:8453**)입니다. 외부 접속과 내부 upstream은 HTTPS/WSS만 사용하고 CA 및 호스트명을 검증합니다. TCP/80은 ACME HTTP-01 검증과 HTTPS 리다이렉트에만 사용합니다.
 
 | 요청 | 목적지 |
 | --- | --- |
@@ -91,10 +91,10 @@ C++ REST와 브로커의 4443 포트는 외부에 공개하지 않습니다. 외
 ## 운영 빌드
 
 ```bash
-cd ../project-agora-FE
+cd ../web
 docker compose build frontend-build
 docker compose run --rm frontend-build
-cd ../project-agora-Wall
+cd ../wall
 ./scripts/nginx-docker.sh production
 ```
 
@@ -157,7 +157,7 @@ Phoenix의 WebSocket `connect` 단계에서 JOSE로 HS256 서명·만료·nbf/ia
 
 Spring·C++의 MS SQL·Elasticsearch·Redis/Sentinel 연결은 Wall의 TCP 저장소 브로커를 경유합니다. 애플리케이션과 저장소 네트워크를 분리하고 기존 TLS 스트림 및 인증서 검증을 유지합니다. [설정·연결 경로·전환·검증](STORAGE_BROKER.md)을 참고하세요.
 
-내부 Nginx `/internal/search/embedding`은 Spring의 검색어를 BE 자체 호스팅 E5 worker로 전달합니다. 외부 `/internal` 차단 및 내부 토큰 검증을 유지하고 TLS 1.3·Spring 인증서 이름을 검증합니다. 문서 projection은 기존 storage-broker 경유 ES 연결을 사용합니다. [검색 아키텍처](../project-agora-DB/elasticsearch/SEARCH.md).
+내부 Nginx `/internal/search/embedding`은 Spring의 검색어를 BE 자체 호스팅 E5 worker로 전달합니다. 외부 `/internal` 차단 및 내부 토큰 검증을 유지하고 TLS 1.3·Spring 인증서 이름을 검증합니다. 문서 projection은 기존 storage-broker 경유 ES 연결을 사용합니다. [검색 아키텍처](../db/elasticsearch/SEARCH.md).
 
 ## 외부 리버스 프록시 연결
 

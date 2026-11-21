@@ -51,7 +51,7 @@ public class OrcidController {
                 String raw=OrcidService.random();handoffs.put(OrcidService.hash(raw),new Handoff(completed,clock.instant().plusSeconds(60),request.getRemoteAddr()));cookie(response,HANDOFF,raw,60);outcome="success";
             }
         }catch(RuntimeException rejected){/* Do not log codes, secrets, provider response bodies or tokens. */}
-        String location=config.origin()+"/irade/login?orcid="+outcome+(workspace==null?"":"&workspace="+workspace);
+        String location=config.origin()+"/login?orcid="+outcome+(workspace==null?"":"&workspace="+workspace);
         return ResponseEntity.status(303).location(URI.create(location)).build();
     }
     @PostMapping("/session") public OrcidService.Completed session(@CookieValue(name=HANDOFF,required=false) String raw,HttpServletRequest request,HttpServletResponse response){

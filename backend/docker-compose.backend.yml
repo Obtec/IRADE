@@ -2,7 +2,7 @@ name: irade-backend
 
 services:
   service-tls-init:
-    image: eclipse-temurin:27-jdk
+    image: amazoncorretto:27.0.1-al2023
     user: "0:0"
     restart: "no"
     network_mode: none

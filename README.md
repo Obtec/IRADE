@@ -4,7 +4,7 @@
 
 Visual Studio Code(Code - OSS) 기반의 프론트엔드 IDE와 고성능 상주형 정리 증명 커널(`notebook-kernel`)을 통합하여, 대화형 전술 탐색(Interactive Tactic Exploration), 불변 상태 스냅샷 및 자동 롤백, 실시간 분할 InfoView를 완벽하게 지원합니다.
 
-웹 연구 환경은 **[proof-notebook.p-e.kr](https://proof-notebook.p-e.kr)** (모든 서비스 HTTPS/WSS 전용)에서 사용할 수 있습니다. 대화 기록·Lean 4/Rocq 증명·Python 코드·Markdown/HTML 문서 셀을 workspace 단위로 편집하고 공유합니다. 웹 스튜디오 사용법은 [web/README.md](web/README.md), 공개 Let's Encrypt TLS 설정은 [backend/docs/PUBLIC_TLS.md](backend/docs/PUBLIC_TLS.md)를 참고하세요.
+웹 연구 환경은 **[irade.p-e.kr](https://irade.p-e.kr/)**에서 사용할 수 있습니다. 대화 기록·Lean 4/Rocq 증명·Python 코드·Markdown/HTML 문서 셀을 workspace 단위로 편집하고 공유합니다. 웹 스튜디오 사용법과 현재 배포 주소는 [web/README.md](web/README.md), 운영 배포 절차는 [web/DEPLOYMENT.md](web/DEPLOYMENT.md)를 참고하세요.
 
 ---
 
@@ -25,7 +25,7 @@ IRADE/
 │   │   ├── repl.py              # REPL 상주 프로세스 및 JSON stdio 프로토콜
 │   │   ├── session.py           # 불변 환경(env) 스냅샷 그래프 및 자동 백트래킹
 │   │   ├── infoview.py          # InfoTree 파싱 및 에디터 커서 연동 InfoView
-│   │   └── web.py               # Proof Studio 웹 서버 & Agora 브리지
+│   │   └── web.py               # Proof Studio 웹 서버 & Workspace 연결부
 │   ├── src/rocq_kernel/         # Rocq (Coq) Jupyter 커널
 │   │   ├── driver.py            # coqidetop XML stdio 프로세스 관리자
 │   │   ├── xml_protocol.py      # Coq/Rocq XML 호출 및 응답 파서
@@ -36,7 +36,6 @@ IRADE/
 │   ├── notebooks/               # 데모 인터랙티브 노트북 (.ipynb)
 │   └── pyproject.toml           # Python 패키지 사양 및 종속성
 │
-├── agora-workspace/             # 셀 기반 협업 연구 workspace, Monaco 웹 UI와 Agora 동기화
 └── .gitignore                   # 모노레포 공통 Git 무시 규칙
 ```
 
@@ -121,10 +120,6 @@ pnpm run watch
 ---
 
 ## 🧪 테스트 실행 (Running Tests)
-
-### Agora 작업 공간 공동 편집
-
-[`agora-workspace`](agora-workspace/README.md)는 기존 Agora 캔버스의 VM `/workspace`를 VS Code 웹 파일 탐색기에 연결합니다. 파일·폴더 관리, Automerge 동시 편집 병합, Wall 실시간 공유와 재접속 처리를 포함합니다. 백엔드·Wall·VM 워커 적용, HTTPS 웹 IDE 실행과 검증 방법은 [설정 안내](agora-workspace/README.md)를 참고하세요.
 
 ### 커널 단위 및 E2E 테스트
 ```bash

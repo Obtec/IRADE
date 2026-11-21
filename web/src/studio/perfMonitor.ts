@@ -533,9 +533,7 @@ function readBrowserHeapMb(): { usedMb: number | null; totalMb: number | null } 
 }
 
 function resolveMetricsEndpoint(): string {
-	const usesIradePrefix = location.pathname.startsWith('/irade')
-		|| Boolean(document.querySelector('script[src*="/irade-assets/"]'));
-	return usesIradePrefix ? '/irade/api/metrics' : '/api/metrics';
+	return '/api/metrics';
 }
 
 /**
@@ -882,8 +880,8 @@ export class PerfMonitorController {
 				signal: controller.signal,
 			});
 			if (!res.ok) {
-				if (this.serverEndpoint !== '/irade/api/metrics') {
-					this.serverEndpoint = '/irade/api/metrics';
+				if (this.serverEndpoint !== '/api/metrics') {
+					this.serverEndpoint = '/api/metrics';
 				}
 				return;
 			}

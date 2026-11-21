@@ -1,8 +1,8 @@
-# Project Agora BE
+# IRADE Backend
 
-Project Agora의 애플리케이션 및 실시간 협업 서버입니다. Spring Boot는 인증, 캔버스 메타데이터, 서버 할당을 담당하고 C++ 서버는 Phoenix 브로커와 지속 WSS 소켓으로 통신하며 캔버스 권한 데이터 조회·쿼리·저장을 처리합니다. 브라우저 접속·피어·호스트·브로드캐스트는 Wall의 Phoenix가 담당합니다.
+IRADE의 인증·workspace API와 실시간 협업 백엔드입니다. Spring Boot는 인증, 캔버스 메타데이터, 서버 할당을 담당하고 C++ 서버는 Phoenix 브로커와 지속 WSS 소켓으로 통신하며 캔버스 권한 데이터 조회·쿼리·저장을 처리합니다. 브라우저 접속·피어·호스트·브로드캐스트는 Wall의 Phoenix가 담당합니다.
 
-저장소 인프라는 [Project Agora DB](../project-agora-DB)에서 실행합니다.
+데이터베이스, Redis, Elasticsearch 인프라는 [db](../db) 구성에서 실행합니다.
 
 ## 구성
 
@@ -26,7 +26,7 @@ flowchart LR
 | --- | --- | --- |
 | `spring/` | REST API, JWT, 사용자·캔버스 관리, 서버 할당 | `127.0.0.1:8080` |
 | `cpp/` | C++ REST 제어 API, uWebSockets 실시간 이벤트 | 기본 `HOST=0.0.0.0`, REST `8000`, WS `8002`; 아래 운영 예시는 loopback 바인드 |
-| `../project-agora-Wall/` | HTTPS/WSS 역방향 프록시 | `:443` |
+| `../wall/` | HTTPS/WSS 역방향 프록시 | `:443` |
 | MS SQL Server AG listener | 계정, 세션, 캔버스 배정, 서버 메타데이터 | 로컬 `127.0.0.1:1433`; 운영에서는 listener DNS/VIP |
 | Redis Stack HA | 활성 캔버스 RedisJSON 문서와 RediSearch 색인 | 필수 Sentinel seed로 현재 primary 탐색 |
 | Elasticsearch | 캔버스 문서 영구 저장소 | `127.0.0.1:9200` |
@@ -39,7 +39,7 @@ flowchart LR
 4. Phoenix는 브라우저 요청을 캔버스별로 순서대로 C++에 전달합니다. C++는 Service → Service Memory → Memory 계층으로 처리하고 `route`, 간단한 `response`, 권한별 `broadcasts`를 반환합니다. Phoenix가 응답과 방송을 전달합니다.
 5. C++는 브라우저 연결이나 SQL `user_sessions`를 관리하지 않습니다. Phoenix lease와 최근 쿼리로 캔버스 사용 여부를 판단하며 유휴 캔버스는 Elasticsearch 스냅샷 후 정리합니다.
 
-프런트엔드의 호스트 승인 및 WebRTC 데이터 채널 동작은 유지합니다. HTTPS 제어 API는 상태·부하 조회 등에 남아 있으며 CRUD는 HTTP로 전달하지 않습니다. 자세한 내부 계약은 [Wall 브로커 프로토콜](../project-agora-Wall/BROKER_PROTOCOL.md), 실행은 [Wall README](../project-agora-Wall/README.md)를 참고하세요.
+프런트엔드의 호스트 승인 및 WebRTC 데이터 채널 동작은 유지합니다. HTTPS 제어 API는 상태·부하 조회 등에 남아 있으며 CRUD는 HTTP로 전달하지 않습니다. 자세한 내부 계약은 [실시간 브로커 프로토콜](../wall/BROKER_PROTOCOL.md), 실행은 [wall/README.md](../wall/README.md)를 참고하세요.
 
 ## 사전 요구 사항
 
@@ -47,7 +47,7 @@ flowchart LR
 - CMake 3.16 이상, C++17 컴파일러, `pkg-config`
 - `cpp-httplib`, `nlohmann-json3`, OpenSSL, FreeTDS (`sybdb`), zlib 개발 패키지
 - Docker 및 Docker Compose v2
-- Project Agora DB의 MS SQL Server, Redis Stack, Elasticsearch
+- 이 배포의 MS SQL Server, Redis Stack, Elasticsearch
 - TLS 인증서와 Nginx (외부 WSS 제공 시)
 
 제공되는 APT 기반 설치 스크립트로 위 종속성들을 한 번에 설치할 수 있습니다:
@@ -65,7 +65,7 @@ JDK_SHA256=<official-sha256> ./install_dependencies.sh
 [TLS 초기 설정 안내](TLS_SETUP.md)의 파일 구조대로 인증서를 직접 준비합니다. BE 저장소에서 다음 명령으로 DB·BE `.env` 생성, 난수 비밀번호·토큰 준비와 DB 연결 동기화를 수행합니다. 기존 비밀번호는 보존하고 인증서는 생성하지 않습니다.
 
 ```bash
-python3 scripts/setup-docker.py --db-dir ../project-agora-DB --tls-dir /path/to/certificates
+python3 scripts/setup-docker.py --db-dir ../db --tls-dir /path/to/certificates
 ```
 
 세 프로젝트를 함께 준비하려면 FE의 `scripts/setup-projects.py`를 사용합니다. 기본값은 [.env.example](.env.example)을 참고하세요. 실행 설정과 비밀값은 `.env`에 보관하며 Git에 넣지 않습니다.
@@ -109,7 +109,7 @@ Elasticsearch HTTPS를 쓸 때 `ES_SCHEME=https`, `ES_CA_CERT`를 Elasticsearch 
 로컬 단일 Docker 엔진에서 DB와 백엔드를 함께 실행할 때는 아래 스크립트가 MSSQL·Elasticsearch를 올리고 health를 기다린 다음 기본 Redis Sentinel HA를 준비합니다. 기존 standalone 컨테이너나 데이터 볼륨이 남아 있으면 데이터를 자동으로 버리지 않고 RDB 이관 안내와 함께 멈춥니다. 레거시 데이터를 HA로 옮긴 뒤 다시 실행하면 retired 컨테이너를 제거하고 Redis HA ACL·색인·단일 `redis_server` 등록을 적용합니다. 이어 DB 계정과 Sentinel 주소를 백엔드 `.env`에 동기화한 뒤 백엔드를 시작합니다. `.env`는 소유자 전용 권한(`0600`)으로 다시 씁니다. 스크립트는 SQL·Elasticsearch 데이터 볼륨이 있는지도 확인하며 누락된 볼륨을 빈 데이터로 새로 만들지 않습니다. 최초 실행 전 SQL 스키마와 Elasticsearch 계정은 초기화되어 있어야 합니다.
 
 ```bash
-cd /path/to/project-agora-BE
+cd /path/to/IRADE/backend
 ./scripts/start-docker-stack.sh
 ```
 
@@ -120,15 +120,15 @@ cd /path/to/project-agora-BE
 이 백엔드 Compose는 `agora-redis-primary`와 세 Sentinel을 검사하고 `agora-redis-ha` 네트워크의 Sentinel 주소를 사용합니다. DB 저장소의 루트 Compose는 primary·replica·Sentinel HA 구성만 시작합니다. 예전 standalone 컨테이너를 제거해 호스트 포트 `6379`나 Redis Insight 포트 `8001` 충돌 경로도 구성에서 없앴습니다.
 
 ```bash
-cd /path/to/project-agora-DB
-# One-time transition when upgrading from the previous project-agora-db-ha stack
+cd /path/to/IRADE/db
+# One-time transition when upgrading from the previous previous-db-ha stack
 ./ops/migrate-local-redis-ha.sh
 docker compose up -d
 docker compose ps
 ```
 
 ```bash
-cd /path/to/project-agora-BE
+cd /path/to/IRADE/backend
 ./scripts/backend-docker.sh config
 ./scripts/backend-docker.sh build  # 선택 사항: up 명령이 이미지도 빌드합니다.
 ./scripts/backend-docker.sh up
@@ -156,21 +156,21 @@ cd /path/to/project-agora-BE
 먼저 DB 저장소에서 인프라를 준비합니다.
 
 ```bash
-cd /path/to/project-agora-DB
+cd /path/to/IRADE/db
 docker compose up -d
 ./mssql/init-mssql.sh
 ./redis/init-redis.sh
 ./elasticsearch/init-elasticsearch.sh
 ```
 
-이 Docker Compose는 DB·Redis·Elasticsearch 인프라를 시작합니다. Spring과 C++ 백엔드는 이 저장소에서 별도 프로세스로 실행합니다. DB가 이미 초기화된 뒤 단순히 백엔드를 다시 시작할 때는 DB 저장소에서 `docker compose up -d`만 실행하면 됩니다. 초기화 스크립트 사용 시점과 상태 확인은 [DB 저장소 안내](../project-agora-DB/README.md)를 따르세요.
+이 Docker Compose는 DB·Redis·Elasticsearch 인프라를 시작합니다. Spring과 C++ 백엔드는 이 저장소에서 별도 프로세스로 실행합니다. DB가 이미 초기화된 뒤 단순히 백엔드를 다시 시작할 때는 DB 저장소에서 `docker compose up -d`만 실행하면 됩니다. 초기화 스크립트 사용 시점과 상태 확인은 [DB 저장소 안내](../db/README.md)를 따르세요.
 
 로컬 MSSQL 컨테이너는 자체 서명 인증서를 사용하므로, 로컬 개발 `.env`에만 `DB_TRUST_SERVER_CERTIFICATE=true`를 설정합니다. 운영 DB에서는 CA 검증이 되는 인증서를 구성하고 이 값을 설정하지 마세요.
 
 Spring과 C++ 서버를 빌드합니다.
 
 ```bash
-cd /path/to/project-agora-BE
+cd /path/to/IRADE/backend
 set -a
 source ./.env
 set +a
@@ -183,7 +183,7 @@ cmake --build cpp/build -j2
 Spring 서버를 실행합니다.
 
 ```bash
-cd /path/to/project-agora-BE
+cd /path/to/IRADE/backend
 bash spring/run-local.sh
 ```
 
@@ -198,7 +198,7 @@ bash spring/run-local.sh
 다른 터미널에서 C++ 서버를 실행합니다.
 
 ```bash
-cd /path/to/project-agora-BE
+cd /path/to/IRADE/backend
 set -a
 source ./.env
 set +a
@@ -238,14 +238,14 @@ systemd는 백엔드를 터미널과 분리해 실행하고 재부팅 후 자동
 ```ini
 # /etc/systemd/system/agora-spring.service
 [Unit]
-Description=Project Agora Spring API
+Description=IRADE Spring API
 After=network-online.target docker.service
 
 [Service]
 User=agora
-WorkingDirectory=/path/to/project-agora-BE
-EnvironmentFile=/path/to/project-agora-BE/.env
-ExecStart=/usr/bin/java -jar /path/to/project-agora-BE/spring/build/libs/frelog-0.0.1-SNAPSHOT.jar
+WorkingDirectory=/path/to/IRADE/backend
+EnvironmentFile=/path/to/IRADE/backend/.env
+ExecStart=/usr/bin/java -jar /path/to/IRADE/backend/spring/build/libs/frelog-0.0.1-SNAPSHOT.jar
 Restart=on-failure
 
 [Install]
@@ -255,15 +255,15 @@ WantedBy=multi-user.target
 ```ini
 # /etc/systemd/system/agora-cpp.service
 [Unit]
-Description=Project Agora C++ Realtime Server
+Description=IRADE C++ Realtime Server
 After=network-online.target docker.service agora-spring.service
 Requires=agora-spring.service
 
 [Service]
 User=agora
-WorkingDirectory=/path/to/project-agora-BE/cpp
-EnvironmentFile=/path/to/project-agora-BE/.env
-ExecStart=/path/to/project-agora-BE/cpp/build/agora_cpp_server 127.0.0.1 127.0.0.1 8000 8002
+WorkingDirectory=/path/to/IRADE/backend/cpp
+EnvironmentFile=/path/to/IRADE/backend/.env
+ExecStart=/path/to/IRADE/backend/cpp/build/agora_cpp_server 127.0.0.1 127.0.0.1 8000 8002
 Restart=on-failure
 
 [Install]
@@ -298,11 +298,11 @@ docker exec agora-cpp curl -fsS --cacert /run/tls/ca.pem https://localhost:8000/
 
 ## Nginx와 WSS
 
-Nginx 설정과 실행 파일은 [project-agora-Wall](../project-agora-Wall/README.md)로 이전했습니다. HTTPS/WSS 라우팅, TLS 인증서 마운트, FE 공유 볼륨과 Nginx 개발·운영 실행은 Wall에서 관리합니다.
+Nginx 설정과 실행 파일은 [wall](../wall/README.md)로 이전했습니다. HTTPS/WSS 라우팅, TLS 인증서 마운트, FE 공유 볼륨과 Nginx 개발·운영 실행은 Wall에서 관리합니다.
 
 ```bash
 ./scripts/backend-docker.sh up
-cd ../project-agora-Wall
+cd ../wall
 python3 scripts/setup.py --tls-dir /path/to/certificates
 ./scripts/nginx-docker.sh development
 ```
@@ -375,7 +375,7 @@ C++ 단위 테스트는 캔버스 연결 수명주기, persistence queue, 비밀
 DB·RedisJSON·Elasticsearch CRUD 및 권한 테스트는 DB 저장소에서 실행합니다.
 
 ```bash
-cd /path/to/project-agora-DB
+cd /path/to/IRADE/db
 python3 tests/test_storages.py
 ```
 
@@ -384,7 +384,7 @@ python3 tests/test_storages.py
 ```text
 spring/       Spring Boot API와 정적 테스트 페이지
 cpp/          C++ REST·WebSocket 서버
-../project-agora-Wall/nginx/  TLS/WSS 프록시
+../wall/nginx/  TLS/WSS 프록시
 ```
 
 ## 라이선스
@@ -403,7 +403,7 @@ C++ 실행 파일을 배포할 때는 실행 파일만 복사하지 말고 `cmak
 ```bash
 python3 scripts/docker-preflight.py --build
 python3 scripts/checks/runtime_checks.py
-(cd ../project-agora-Wall && ./scripts/nginx-docker.sh config)
+(cd ../wall && ./scripts/nginx-docker.sh config)
 ```
 
 사전 점검은 비밀값을 출력하지 않습니다. 실제 컨테이너 빌드·`nginx -t`·헬스 체크에는 Docker 소켓 접근이 필요합니다.
@@ -414,7 +414,7 @@ python3 scripts/checks/runtime_checks.py
 
 All browser and Docker service HTTP endpoints use TLS. The gateway has no port 80 or 4173 mapping; Spring 8080, C++ 8000/8002 and Vite 5173 are not published on the host. Nginx verifies each upstream's CA and service hostname. Spring verifies the C++ HTTPS server using SERVICE_TLS_CA. Redis Insight serves HTTPS on its existing local port 8001. Redis/Sentinel and Elasticsearch retain their existing TLS transport. MSSQL enforces TLS server-side; Spring and C++ verify its certificate using the SQL issuing CA.
 
-Supply certificates manually following [TLS_SETUP.md](TLS_SETUP.md), then run `python3 scripts/setup-docker.py --db-dir ../project-agora-DB --tls-dir /path/to/certificates`. Setup never generates or replaces certificates. DB Compose initializes the SQL and Redis Insight TLS volumes; BE initializes only Spring, C++ and frontend TLS volumes. Each service receives its own key and public CA, never the issuing private key.
+Supply certificates manually following [TLS_SETUP.md](TLS_SETUP.md), then run `python3 scripts/setup-docker.py --db-dir ../db --tls-dir /path/to/certificates`. Setup never generates or replaces certificates. DB Compose initializes the SQL and Redis Insight TLS volumes; BE initializes only Spring, C++ and frontend TLS volumes. Each service receives its own key and public CA, never the issuing private key.
 
 Use `docker exec agora-spring curl --cacert /run/tls/ca.pem https://localhost:8080/api/auth/health` and `docker exec agora-cpp curl --cacert /run/tls/ca.pem https://localhost:8000/health` for direct internal health checks. Use https://localhost:8443/api/auth/health for the gateway health endpoint. MSSQL client certificate verification is enabled (DB_TRUST_SERVER_CERTIFICATE=false). FreeTDS 1.3 uses TDS 7.4 with required encryption plus explicit CA/hostname verification.
 
@@ -428,15 +428,15 @@ C++의 Service·API·Service Memory·Memory 계층과 기능 추가 방식은 [c
 
 ## Wall을 통한 C++ 제어 API
 
-Spring은 `WALL_CPP_API_ORIGIN=https://agora-nginx:8444`의 `/internal/cpp/servers/{serverId}/api/canvas/count`로 서버 부하를 조회합니다. C++ 주소를 직접 호출하거나 장애 시 직접 연결로 우회하지 않습니다. ID별 실제 주소·TLS 인증서 이름은 [Wall 라우팅 설정](../project-agora-Wall/nginx/cpp-routes.conf)에서 관리합니다. 실제 DB 등록 ID를 map에 추가해야 서버 할당이 가능합니다. [실행·설정 방법](../project-agora-Wall/README.md)을 참고하세요.
+Spring은 `WALL_CPP_API_ORIGIN=https://agora-nginx:8444`의 `/internal/cpp/servers/{serverId}/api/canvas/count`로 서버 부하를 조회합니다. C++ 주소를 직접 호출하거나 장애 시 직접 연결로 우회하지 않습니다. ID별 실제 주소·TLS 인증서 이름은 [Wall 라우팅 설정](../wall/nginx/irade.conf.example)에서 관리합니다. 실제 DB 등록 ID를 map에 추가해야 서버 할당이 가능합니다. [실행·설정 방법](../wall/README.md)을 참고하세요.
 
-사용자 JWT 키는 Spring과 Wall 브로커에만 전달합니다. C++의 JWT 검증·capability 발급 코드와 Docker JWT_SECRET 설정은 제거했습니다. C++는 내부 브로커 인증 토큰과 검증된 identity를 사용합니다. [브로커 인증·캔버스 격리](../project-agora-Wall/README.md)를 참고하세요.
+사용자 JWT 키는 Spring과 Wall 브로커에만 전달합니다. C++의 JWT 검증·capability 발급 코드와 Docker JWT_SECRET 설정은 제거했습니다. C++는 내부 브로커 인증 토큰과 검증된 identity를 사용합니다. [브로커 인증·캔버스 격리](../wall/README.md)를 참고하세요.
 
 ## 저장소 브로커
 
-기본 Docker 구성에서 Spring·C++는 저장소와 직접 연결하지 않습니다. Wall 저장소 브로커를 먼저 시작해야 합니다. SQL/ES 호스트명은 브로커 별칭이며 Redis/Sentinel은 `REDIS_BROKER_ROUTES`의 허용 목록으로 접속 주소만 바꾸고 원래 TLS 검증 대상을 유지합니다. [Wall 구성 및 전환 안내](../project-agora-Wall/STORAGE_BROKER.md)를 참고하세요.
+기본 Docker 구성에서 Spring·C++는 저장소와 직접 연결하지 않습니다. Wall 저장소 브로커를 먼저 시작해야 합니다. SQL/ES 호스트명은 브로커 별칭이며 Redis/Sentinel은 `REDIS_BROKER_ROUTES`의 허용 목록으로 접속 주소만 바꾸고 원래 TLS 검증 대상을 유지합니다. [Wall 구성 및 전환 안내](../wall/STORAGE_BROKER.md)를 참고하세요.
 
-캔버스 이름 검색은 Nori 한국어·동의어·오타·띄어쓰기 분석과 자체 호스팅 E5 k-NN을 결합합니다. E5 worker는 `docker-compose.search.yml`로 실행하며 [검색 구성 및 운영](../project-agora-DB/elasticsearch/SEARCH.md)에 모델·TLS·동기화·설정을 설명했습니다. Orchestra의 개발/배포 스크립트는 이 worker를 포함합니다.
+캔버스 이름 검색은 Nori 한국어·동의어·오타·띄어쓰기 분석과 자체 호스팅 E5 k-NN을 결합합니다. E5 worker는 `docker-compose.search.yml`로 실행하며 [검색 구성 및 운영](../db/elasticsearch/SEARCH.md)에 모델·TLS·동기화·설정을 설명했습니다. Orchestra의 개발/배포 스크립트는 이 worker를 포함합니다.
 
 ## 캔버스 삭제와 VM 정리
 
@@ -453,7 +453,7 @@ Spring은 `WALL_CPP_API_ORIGIN=https://agora-nginx:8444`의 `/internal/cpp/serve
 실제로 없는지 다시 확인합니다. 삭제 요청 자체는 기존 `/api/canvases/{id}`를 사용합니다.
 
 기존 DB를 갱신할 때는 Spring 재시작 전에 DB 저장소의 관리자 전용
-`project-agora-DB/mssql/migrations/20261031_runtime_cleanup.sql`을 실행해야 합니다.
+`db/mssql/migrations/20261031_runtime_cleanup.sql`을 실행해야 합니다.
 새 DB 초기화 스크립트에도 테이블 생성이 포함되어 있습니다. Spring 런타임 계정에는
 DDL 권한을 추가하지 않습니다. 시작 시 큐 테이블의 스키마를 검증합니다.
 

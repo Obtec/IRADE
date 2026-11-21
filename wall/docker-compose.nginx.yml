@@ -51,10 +51,11 @@ services:
       test:
         - "CMD-SHELL"
         - >-
-          host="$${NGINX_PUBLIC_HOSTNAME:-localhost}";
           if [ "$${NGINX_EDGE_TRUST:-internal}" = "system" ]; then
+            host="$${NGINX_PUBLIC_HOSTNAME:-localhost}";
             curl --fail --silent --show-error --resolve "$$host:443:127.0.0.1" "https://$$host/nginx-health";
           else
+            host=irade-nginx;
             curl --fail --silent --show-error --cacert /etc/nginx/ssl/irade/ca.pem --resolve "$$host:443:127.0.0.1" "https://$$host/nginx-health";
           fi
       interval: 10s

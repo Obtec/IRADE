@@ -1,11 +1,11 @@
 # IRADE ORCID authentication
 
-IRADE login page: `https://proof-notebook.p-e.kr/irade/login`.
+IRADE login page: `https://irade.p-e.kr/login`.
 
-Register an ORCID Public API client with application URL `https://proof-notebook.p-e.kr/irade/` and the exact **Redirect URI**:
+Register an ORCID Public API client with application URL `https://irade.p-e.kr/` and the exact **Redirect URI**:
 
 ```text
-https://proof-notebook.p-e.kr/api/irade/auth/orcid/callback
+https://irade.p-e.kr/api/irade/auth/orcid/callback
 ```
 
 ## Private credentials
@@ -17,7 +17,7 @@ ORCID_OAUTH_ENABLED=false
 ORCID_CLIENT_ID=
 ORCID_CLIENT_SECRET=
 ORCID_ISSUER=https://orcid.org
-ORCID_REDIRECT_URI=https://proof-notebook.p-e.kr/api/irade/auth/orcid/callback
+ORCID_REDIRECT_URI=https://irade.p-e.kr/api/irade/auth/orcid/callback
 ```
 
 `ORCID_ENV_FILE` in the backend `.env` selects that file. Compose `env_file` uses `format: raw`, preserving `$`, `#` and other secret characters without interpolation. The Spring `environment` block must not override those values. Docker Compose 2.30+ is required for raw env files. Never print `docker compose config` or container environment dumps: use `config --quiet`.
@@ -33,9 +33,9 @@ The helper validates without executing the file, atomically enables OAuth while 
 
 ## Database and identity
 
-Apply `project-agora-DB/mssql/migrations/2026-11-13-irade-orcid.sql` followed by `2026-11-13-orcid-account-constraints.sql` with the administrator migration procedure before deploying this Spring version. The second migration updates the legacy authentication and email CHECK constraints to accept verified ORCID-only accounts; adding columns alone is insufficient. The same additive migration is included in initial database setup. Back up and verify the database first.
+Apply `db/mssql/migrations/2026-11-13-irade-orcid.sql` followed by `2026-11-13-orcid-account-constraints.sql` with the administrator migration procedure before deploying this Spring version. The second migration updates the legacy authentication and email CHECK constraints to accept verified ORCID-only accounts; adding columns alone is insufficient. The same additive migration is included in initial database setup. Back up and verify the database first.
 
-`users.orcid` and `users.orcid_issuer` have a filtered composite unique index. New researchers have no invented email or local password. Their ORCID identity maps to a normal Agora `user_id`, nickname/tag, role and active status. Existing Agora accounts must authenticate and explicitly start an ORCID linking flow within 10 minutes of that authentication. Matching names/emails never link accounts, and an ORCID already belonging to another account cannot be reassigned. Account erasure removes both identity fields and invalidates old tokens.
+`users.orcid` and `users.orcid_issuer` have a filtered composite unique index. New researchers have no invented email or local password. Their ORCID identity maps to a standard application user ID, nickname/tag, role and active status. Existing accounts must authenticate and explicitly start an ORCID linking flow within 10 minutes of that authentication. Matching names/emails never link accounts, and an ORCID already belonging to another account cannot be reassigned. Account erasure removes both identity fields and invalidates old tokens.
 
 ORCID authentication uses the official server's authorization-code flow and `/authenticate` scope. Spring exchanges the code on the server and validates the returned identifier/check digit and scope. ORCID access tokens are not used for other profile operations and are not persisted or returned to the browser. Client secrets stay on the server.
 
@@ -54,7 +54,7 @@ ORCID authentication uses the official server's authorization-code flow and `/au
 | `GET /api/irade/workspaces/{id}` | Read an accessible workspace |
 | `POST /api/irade/workspaces/{id}/access` | Existing canvas password/access checks and authenticated C++/Wall channel grant |
 
-The browser login session is separate from the Agora email login UI. Its application JWT is kept in the current tab's `sessionStorage`. Existing-account password/MFA confirmation is used only for linking. MFA enrollment on an ORCID account is enforced before issuing a usable application token.
+The browser login session is separate from the legacy account-login UI. Its application JWT is kept in the current tab's `sessionStorage`. Existing-account password/MFA confirmation is used only for linking. MFA enrollment on an ORCID account is enforced before issuing a usable application token.
 
 OAuth state is stored as hashes in `auth_orcid_attempts`, bound to a separate random browser cookie, expires after 10 minutes and is consumed before the token exchange. A callback replay therefore fails even after an upstream failure. A cookie-bound handoff expires after 60 seconds, is bound to the request IP and can be consumed once from the configured origin. Handoffs are in Spring memory; a restart or multiple replicas without sticky routing requires restarting login. Neither JWTs nor provider access tokens appear in redirects. Edge and inner nginx omit callback query strings from access logs and use `Referrer-Policy: no-referrer`.
 
@@ -73,11 +73,11 @@ ORCID client/identity/integration tests cover code exchange serialization, missi
 
 References: [ORCID authentication](https://info.orcid.org/documentation/integration-and-api-faq/), [Public API client registration](https://info.orcid.org/ufaqs/how-do-i-register-a-public-api-client/), [sign-in guidelines](https://info.orcid.org/documentation/integration-guide/orcid-oauth-sign-in-guidelines/).
 
-## Project Agora login
+## Existing account login
 
-The Agora `/login` page also offers ORCID when `/api/auth/providers` reports `orcid:true`. It starts the same authorization flow with `app=agora` and uses the existing registered ORCID callback. The callback returns to `/login?orcid=success`, `/login?orcid=cancelled` or `/login?orcid=failed` on the configured public origin. Default `app=irade` retains IRADE's existing callback behavior.
+The legacy `/login` page also offers ORCID when `/api/auth/providers` reports `orcid:true`. It starts the same authorization flow with `app=agora` and uses the existing registered ORCID callback. The callback returns to `/login?orcid=success`, `/login?orcid=cancelled` or `/login?orcid=failed` on the configured public origin. Default `app=irade` retains IRADE's existing callback behavior.
 
-The return application is encoded in the random OAuth state before the complete state is hashed into the attempt record. Changing or removing the application prefix invalidates that record lookup and cannot issue a login handoff. Only the fixed Agora and IRADE paths are used; arbitrary return URLs are rejected. No schema change or new OAuth credentials are needed. Both frontends consume the same one-use session response, including MFA challenges, and share the same SQL identity and canvas permissions.
+The return application is encoded in the random OAuth state before the complete state is hashed into the attempt record. Changing or removing the application prefix invalidates that record lookup and cannot issue a login handoff. Only the registered application return paths are used; arbitrary return URLs are rejected. No schema change or new OAuth credentials are needed. Both frontends consume the same one-use session response, including MFA challenges, and share the same SQL identity and canvas permissions.
 
 ## Registration constraint regression
 

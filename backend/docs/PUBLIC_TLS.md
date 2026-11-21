@@ -1,117 +1,50 @@
-# IRADE Public Let's Encrypt TLS Guide (`proof-notebook.p-e.kr`)
+# IRADE 공개 TLS
 
-IRADE enforces **HTTPS / WSS only** across all components:
+공개 주소는 `https://irade.p-e.kr`입니다. 인증서는 호스트 Nginx에서 종단하고, Nginx는 내부 CA와 이름 검증을 통해 IRADE 서비스 게이트웨이로 프록시합니다.
 
-- **Public Gateway / Host Edge**: `https://proof-notebook.p-e.kr` (Let's Encrypt ECDSA certificate managed by Certbot)
-- **Wall Gateway (`irade-nginx`)**: Terminates public TLS (`NGINX_PUBLIC_TLS_CERT_DIR`) and validates internal service upstreams (`irade-spring`, `irade-cpp`, `irade-web`, `irade-agent`, `irade-broker`) using the private IRADE CA (`NGINX_TLS_CERT_DIR/root-ca.pem`)
-- **Web Studio (`web/scripts/serve-https.mjs`)**: HTTPS-only (`node:https`, TLSv1.3); `serve.mjs` delegates strictly to `serve-https.mjs`
-- **Proof Kernel Studio (`notebook-kernel`)**: HTTPS-only (`lean4-kernel serve`, TLSv1.2+ with `--tls-dir`, `--cert`/`--key`, or `--self-signed`)
+## 인증서 발급
 
-Public Let's Encrypt certificates are kept strictly separated from the internal IRADE CA and storage certificates. Host templates in `wall/deploy/` use separate files so existing host services remain untouched.
-
----
-
-## 1. Prerequisites & DNS Setup
-
-1. Ensure the DNS `A` record for `proof-notebook.p-e.kr` resolves to this host's public IP (`118.34.144.201`):
-   ```bash
-   dig +short A proof-notebook.p-e.kr
-   ```
-2. Verify existing Certbot & OpenSSL installation:
-   ```bash
-   /home/steam/Github/IRADE/wall/scripts/public-tls.sh status proof-notebook.p-e.kr
-   ```
-
----
-
-## 2. Issuing the Let's Encrypt Certificate
-
-Use `wall/scripts/public-tls.sh issue` depending on whether host TCP/80 is reachable:
-
-### Option A: DNS-01 Challenge (Works When Host TCP/80 Is Closed)
+도메인의 A 레코드가 외부에서 접근 가능한 호스트를 가리켜야 합니다. 현재 환경은 TCP/80·443이 외부에서 도달하지 않아 DNS-01 검증을 사용합니다.
 
 ```bash
-sudo /home/steam/Github/IRADE/wall/scripts/public-tls.sh issue proof-notebook.p-e.kr --challenge dns
+certbot certonly --manual --preferred-challenges dns --key-type ecdsa \
+  --cert-name irade.p-e.kr -d irade.p-e.kr --agree-tos \
+  --register-unsafely-without-email --no-eff-email \
+  --config-dir "$HOME/.config/irade/certbot" \
+  --work-dir "$HOME/.local/state/irade/certbot-work" \
+  --logs-dir "$HOME/.local/state/irade/certbot-log"
 ```
 
-Follow Certbot's prompt to add the `_acme-challenge.proof-notebook.p-e.kr` TXT record in your DNS provider, verify propagation (`dig +short TXT _acme-challenge.proof-notebook.p-e.kr`), and press Enter to complete issuance.
+Certbot이 출력하는 TXT 값을 DNS에 추가합니다.
 
-### Option B: HTTP-01 Webroot Challenge (When Host TCP/80 Is Open)
+```text
+_acme-challenge.irade.p-e.kr  TXT  <Certbot이 출력한 값>
+```
 
-Uncomment the port 80 ACME + 301 redirect `server {}` block in [wall/deploy/nginx/proof-notebook.p-e.kr.conf](../../wall/deploy/nginx/proof-notebook.p-e.kr.conf) (or start Docker with `wall/docker-compose.nginx.letsencrypt.yml`), create `/var/www/letsencrypt`, reload Nginx, and run:
+DNS 전파를 확인하고 Certbot 프롬프트를 이어갑니다. TXT 값은 검증 후 제거할 수 있습니다. 발급 인증서를 Nginx용 사용자 경로에 복사합니다.
 
 ```bash
-sudo mkdir -p /var/www/letsencrypt
-sudo /home/steam/Github/IRADE/wall/scripts/public-tls.sh issue proof-notebook.p-e.kr \
-  --challenge webroot --webroot /var/www/letsencrypt
+./wall/scripts/public-tls.sh sync irade.p-e.kr \
+  --source-dir "$HOME/.config/irade/certbot/live/irade.p-e.kr" --no-reload
 ```
 
----
+수동 DNS 방식은 자동 갱신되지 않습니다. 만료 전에 [갱신 스크립트](../../web/deploy/renew-irade-certificate.sh)를 실행해 TXT 검증을 다시 완료하세요. DNS 제공자의 API가 준비되면 DNS 플러그인으로 자동 갱신을 구성할 수 있습니다.
 
-## 3. Installing Host Nginx Virtual Host & Automated Renewal
+## Nginx 적용
 
-Install the isolated host templates cleanly (no existing site files are modified):
+[도메인 가상 호스트](../../web/deploy/irade.p-e.kr.conf)는 호스트 Nginx에 설치합니다. 외부 HTTPS 진입은 기존 proxy-protocol 리스너 `127.0.0.1:9443`으로 전달되어야 합니다. 이 설정은 사용자 인증서 경로, 내부 CA 검증, 실행 API 시간 제한, WebSocket 업그레이드, HTTP→HTTPS 리다이렉트를 포함합니다.
 
 ```bash
-# 1. Host Nginx virtual host for proof-notebook.p-e.kr
-sudo cp /home/steam/Github/IRADE/wall/deploy/nginx/proof-notebook.p-e.kr.conf \
-  /etc/nginx/sites-available/proof-notebook.p-e.kr.conf
-sudo ln -sf /etc/nginx/sites-available/proof-notebook.p-e.kr.conf \
-  /etc/nginx/sites-enabled/proof-notebook.p-e.kr.conf
-sudo nginx -t && sudo systemctl reload nginx
-
-# 2. Certbot deploy hook (verifies SAN/pubkey, syncs to ~/.local/share/irade/letsencrypt, reloads irade-nginx)
-sudo install -m 0755 /home/steam/Github/IRADE/wall/deploy/certbot/irade-letsencrypt-deploy-hook.sh \
-  /etc/letsencrypt/renewal-hooks/deploy/91-irade-sync.sh
-
-# 3. Twice-daily Certbot renewal systemd timer
-sudo cp /home/steam/Github/IRADE/wall/deploy/certbot/irade-certbot.service \
-  /etc/systemd/system/irade-certbot.service
-sudo cp /home/steam/Github/IRADE/wall/deploy/certbot/irade-certbot.timer \
-  /etc/systemd/system/irade-certbot.timer
-sudo systemctl daemon-reload
-sudo systemctl enable --now irade-certbot.timer
+sudo install -m 0644 web/deploy/irade.p-e.kr.conf /etc/nginx/sites-available/irade.p-e.kr.conf
+sudo ln -sfn /etc/nginx/sites-available/irade.p-e.kr.conf /etc/nginx/sites-enabled/irade.p-e.kr.conf
+sudo nginx -t
+sudo systemctl reload nginx
 ```
 
-Run an immediate sync and dry-run renewal test:
+호스트 포트 80을 열 수 있으면 `/.well-known/acme-challenge/` 경로에서 HTTP-01 파일을 제공합니다. 현재 공개 경로가 닫혀 있을 때는 DNS-01을 사용합니다. 공개 Let's Encrypt 인증서는 내부 서비스 CA나 데이터베이스 인증서와 분리해 보관합니다.
 
-```bash
-sudo RENEWED_LINEAGE=/etc/letsencrypt/live/proof-notebook.p-e.kr \
-  /etc/letsencrypt/renewal-hooks/deploy/91-irade-sync.sh
-sudo /home/steam/Github/IRADE/wall/scripts/public-tls.sh verify-renewal proof-notebook.p-e.kr
-```
+## 서비스 라우팅
 
----
+호스트 Nginx는 웹 요청을 내부 HTTPS 게이트웨이로 전달합니다. Wall Nginx는 `/api/`를 Spring으로, `/wss/`를 실시간 브로커로, 웹 페이지·정적 파일과 `/api/execute`, `/api/metrics`를 IRADE Web으로 전달합니다. 내부 라우팅은 [irade.conf.example](../../wall/nginx/irade.conf.example)에 있습니다.
 
-## 4. Configuring IRADE Docker & Gateway with Public + Internal TLS
-
-Point both `backend` and `wall` at the synced Let's Encrypt certificate directory while preserving internal `tls-dev` mTLS/CA validation:
-
-```bash
-PUBLIC_TLS_DIR="$HOME/.local/share/irade/letsencrypt/proof-notebook.p-e.kr"
-INTERNAL_TLS_DIR="$HOME/.local/share/irade/tls-dev"
-
-python3 /home/steam/Github/IRADE/backend/scripts/setup-docker.py \
-  --db-dir /home/steam/Github/IRADE/db \
-  --tls-dir "$INTERNAL_TLS_DIR" \
-  --public-tls-dir "$PUBLIC_TLS_DIR" \
-  --public-origin https://proof-notebook.p-e.kr
-
-python3 /home/steam/Github/IRADE/wall/scripts/setup.py \
-  --tls-dir "$INTERNAL_TLS_DIR" \
-  --public-tls-dir "$PUBLIC_TLS_DIR" \
-  --public-origin https://proof-notebook.p-e.kr \
-  --backend-dir /home/steam/Github/IRADE/backend
-
-cd /home/steam/Github/IRADE/wall
-./scripts/nginx-docker.sh production
-```
-
-This sets:
-
-- `NGINX_PUBLIC_TLS_CERT_DIR=$HOME/.local/share/irade/letsencrypt/proof-notebook.p-e.kr`
-- `NGINX_PUBLIC_HOSTNAME=proof-notebook.p-e.kr`
-- `NGINX_EDGE_TRUST=system` (verified against `/etc/ssl/certs/ca-certificates.crt` in both host Nginx `proxy_ssl_verify` and `irade-nginx` Docker healthcheck)
-- `PASSKEY_RP_ID=proof-notebook.p-e.kr`, `PASSKEY_ORIGIN=https://proof-notebook.p-e.kr`, OAuth redirect URIs, and `BROKER_ALLOWED_ORIGINS`
-
-For local development before a public certificate is issued, omit `--public-tls-dir` and keep `--public-origin https://localhost:8453` (`NGINX_EDGE_TRUST=internal`).
+새 도메인에 적용한 뒤 `/`, `/assets/manifest.webmanifest`, `/api/irade/auth/orcid/status`, WebSocket 연결을 확인합니다. ORCID 앱에는 application URL `https://irade.p-e.kr/`와 Redirect URI `https://irade.p-e.kr/api/irade/auth/orcid/callback`을 등록해야 합니다.

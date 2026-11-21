@@ -25,7 +25,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.util.*;
 import java.time.LocalDateTime;
 
-@SpringBootTest(properties={"app.security.cors.allowed-origins=https://frelog.p-e.kr","app.irade.orcid.enabled=true","app.irade.orcid.client-id=APP-TEST","app.irade.orcid.client-secret=never-expose-test-secret","app.irade.orcid.redirect-uri=https://frelog.p-e.kr/api/irade/auth/orcid/callback"})
+@SpringBootTest(properties={"app.security.cors.allowed-origins=https://irade.p-e.kr","app.irade.orcid.enabled=true","app.irade.orcid.client-id=APP-TEST","app.irade.orcid.client-secret=never-expose-test-secret","app.irade.orcid.redirect-uri=https://irade.p-e.kr/api/irade/auth/orcid/callback"})
 class OrcidIntegrationTest {
     @MockitoBean OrcidClient provider;
     @MockitoBean CppServerClient cpp;
@@ -43,13 +43,13 @@ class OrcidIntegrationTest {
     @Autowired JwtTokenProvider tokens;
     @Autowired tools.jackson.databind.ObjectMapper json;
     MockMvc mvc;
-    static final String ORIGIN="https://frelog.p-e.kr",ID="0000-0002-1825-0097";
+    static final String ORIGIN="https://irade.p-e.kr",ID="0000-0002-1825-0097";
     @BeforeEach void setup(){sessions.deleteAll();attempts.deleteAll();users.deleteAll();mvc=MockMvcBuilders.webAppContextSetup(context).apply(springSecurity()).build();when(provider.exchange("valid-code")).thenReturn(new OrcidIdentity(ID,"Test Researcher","https://orcid.org"));}
     record Flow(String state,Cookie browser){}
     Flow begin() throws Exception {
         var result=mvc.perform(get("/api/irade/auth/orcid/start").secure(true).param("workspace","42").header("Host","attacker.invalid")).andExpect(status().isFound()).andReturn();
         String location=result.getResponse().getHeader("Location");
-        assertThat(location).startsWith("https://orcid.org/oauth/authorize?").contains("scope=/authenticate","frelog.p-e.kr").doesNotContain("never-expose-test-secret","attacker.invalid");
+        assertThat(location).startsWith("https://orcid.org/oauth/authorize?").contains("scope=/authenticate","irade.p-e.kr").doesNotContain("never-expose-test-secret","attacker.invalid");
         var query=org.springframework.web.util.UriComponentsBuilder.fromUriString(location).build().getQueryParams();
         var cookie=result.getResponse().getCookie("__Secure-IRADE_ORCID_FLOW");
         assertThat(cookie).isNotNull();assertThat(cookie.isHttpOnly()).isTrue();assertThat(cookie.getSecure()).isTrue();assertThat(cookie.getPath()).isEqualTo("/api/irade/auth");
@@ -59,7 +59,7 @@ class OrcidIntegrationTest {
     }
     Cookie callback(Flow flow) throws Exception {
         var result=mvc.perform(get("/api/irade/auth/orcid/callback").secure(true).cookie(flow.browser).param("state",flow.state).param("code","valid-code").header("Host","attacker.invalid"))
-                .andExpect(status().isSeeOther()).andExpect(redirectedUrl(ORIGIN+"/irade/login?orcid=success&workspace=42")).andReturn();
+                .andExpect(status().isSeeOther()).andExpect(redirectedUrl(ORIGIN+"/login?orcid=success&workspace=42")).andReturn();
         assertThat(attempts.findById(OrcidService.hash(flow.state)).orElseThrow().consumed).isTrue();
         return Arrays.stream(result.getResponse().getCookies()).filter(c->c.getName().equals("__Secure-IRADE_ORCID_LOGIN")&&c.getMaxAge()>0).findFirst().orElseThrow();
     }
@@ -88,16 +88,16 @@ class OrcidIntegrationTest {
     }
     @Test void wrongBrowserStateExpiryAndCallbackReplayNeverReachProvider() throws Exception {
         var flow=begin();
-        mvc.perform(get("/api/irade/auth/orcid/callback").cookie(new Cookie(flow.browser.getName(),"A".repeat(43))).param("state",flow.state).param("code","valid-code")).andExpect(redirectedUrl(ORIGIN+"/irade/login?orcid=failed"));
+        mvc.perform(get("/api/irade/auth/orcid/callback").cookie(new Cookie(flow.browser.getName(),"A".repeat(43))).param("state",flow.state).param("code","valid-code")).andExpect(redirectedUrl(ORIGIN+"/login?orcid=failed"));
         verifyNoInteractions(provider);callback(flow);clearInvocations(provider);
-        mvc.perform(get("/api/irade/auth/orcid/callback").cookie(flow.browser).param("state",flow.state).param("code","valid-code")).andExpect(redirectedUrl(ORIGIN+"/irade/login?orcid=failed"));verifyNoInteractions(provider);
+        mvc.perform(get("/api/irade/auth/orcid/callback").cookie(flow.browser).param("state",flow.state).param("code","valid-code")).andExpect(redirectedUrl(ORIGIN+"/login?orcid=failed"));verifyNoInteractions(provider);
         var expired=begin();var row=attempts.findById(OrcidService.hash(expired.state)).orElseThrow();row.expiresAt=LocalDateTime.now(java.time.ZoneOffset.UTC).minusMinutes(1);attempts.save(row);
-        mvc.perform(get("/api/irade/auth/orcid/callback").cookie(expired.browser).param("state",expired.state).param("code","valid-code")).andExpect(redirectedUrl(ORIGIN+"/irade/login?orcid=failed"));verifyNoInteractions(provider);
+        mvc.perform(get("/api/irade/auth/orcid/callback").cookie(expired.browser).param("state",expired.state).param("code","valid-code")).andExpect(redirectedUrl(ORIGIN+"/login?orcid=failed"));verifyNoInteractions(provider);
     }
     @Test void suspendedAccountAndRemovedIdentityRejectOldTokens() throws Exception {
         var token=login();var user=users.findAll().getFirst();user.setStatus(UserStatus.SUSPENDED);users.saveAndFlush(user);
         mvc.perform(get("/api/irade/auth/me").header("Authorization","Bearer "+token)).andExpect(status().isUnauthorized());
-        var flow=begin();mvc.perform(get("/api/irade/auth/orcid/callback").cookie(flow.browser).param("state",flow.state).param("code","valid-code")).andExpect(redirectedUrl(ORIGIN+"/irade/login?orcid=failed&workspace=42"));
+        var flow=begin();mvc.perform(get("/api/irade/auth/orcid/callback").cookie(flow.browser).param("state",flow.state).param("code","valid-code")).andExpect(redirectedUrl(ORIGIN+"/login?orcid=failed&workspace=42"));
         user.setStatus(UserStatus.ACTIVE);user.setOrcid(null);user.setOrcidIssuer(null);users.saveAndFlush(user);
         mvc.perform(get("/api/irade/auth/me").header("Authorization","Bearer "+token)).andExpect(status().isUnauthorized());
     }
@@ -136,7 +136,7 @@ class OrcidIntegrationTest {
         String state=org.springframework.web.util.UriComponentsBuilder.fromUriString(start.getResponse().getHeader("Location")).build().getQueryParams().getFirst("state");
         assertThat(state).doesNotStartWith("agora.");
         var browser=start.getResponse().getCookie("__Secure-IRADE_ORCID_FLOW");
-        mvc.perform(get("/api/irade/auth/orcid/callback").cookie(browser).param("state","agora."+state).param("code","valid-code")).andExpect(redirectedUrl(ORIGIN+"/irade/login?orcid=failed"));
+        mvc.perform(get("/api/irade/auth/orcid/callback").cookie(browser).param("state","agora."+state).param("code","valid-code")).andExpect(redirectedUrl(ORIGIN+"/login?orcid=failed"));
         verifyNoInteractions(provider);
     }
 

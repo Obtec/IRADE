@@ -13,7 +13,7 @@ function playwrightLaunchOptions() {
 }
 
 const origin = 'https://localhost:9449';
-const app = await createEditorApp({ basePath: '/irade/' });
+const app = await createEditorApp({ basePath: '/' });
 const cleanup = await fixture({ studio: app.callback() });
 const browser = await chromium.launch(playwrightLaunchOptions());
 

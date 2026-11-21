@@ -1,5 +1,5 @@
 /**
- * Premium Agora Testbed Logic
+ * IRADE service testbed logic
  * Simplified flow: Login -> Auto Register Servers -> Select Canvas -> Access & Broadcast
  */
 
