@@ -115,6 +115,21 @@ export async function fixture({ studio } = {}) {
 		response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
 		response.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
 		if (request.method === 'OPTIONS') { response.writeHead(204).end(); return; }
+		// Stateless cookie session (mirrors Spring SessionCookies): the cookie carries the same JWT as a Bearer header.
+		if (!request.headers.authorization) {
+			const session = /(?:^|;\s*)IRADE_SESSION=([^;]+)/.exec(request.headers.cookie || '');
+			if (session) { request.headers.authorization = `Bearer ${decodeURIComponent(session[1])}`; }
+		}
+		if (studio && request.url === '/api/irade/auth/session-cookie' && request.method === 'POST') {
+			const jwt = (request.headers.authorization || '').replace(/^Bearer /, '');
+			if (!jwt.startsWith('fixture-')) { response.writeHead(401).end(); return; }
+			response.setHeader('Set-Cookie', [`IRADE_SESSION=${jwt}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=86400`, 'IRADE_SESSION_HINT=1; Secure; SameSite=Strict; Path=/; Max-Age=86400']);
+			response.writeHead(204).end(); return;
+		}
+		if (studio && request.url === '/api/irade/auth/logout' && request.method === 'POST') {
+			response.setHeader('Set-Cookie', ['IRADE_SESSION=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0', 'IRADE_SESSION_HINT=; Secure; SameSite=Strict; Path=/; Max-Age=0']);
+			response.writeHead(204).end(); return;
+		}
 
 		if (studio && request.url === '/api/irade/auth/orcid/status') {
 			response.setHeader('Content-Type', 'application/json');

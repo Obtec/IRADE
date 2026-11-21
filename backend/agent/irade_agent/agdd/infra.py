@@ -168,7 +168,10 @@ def cheap_model(task_kind: str = "classify", workspace_id=None, run_id=None, nod
                            "x-agdd-run": str(run_id or ""), "x-agdd-node": node or ""},
         )
         return parse_json(r.choices[0].message.content or "")
-    return call
+    if task_kind == "watchdog":  # verdict depends on loop history carried outside the prompt key
+        return call
+    from .semantic_cache import exact_cache
+    return exact_cache(workspace_id or "-", task_kind, f"gateway:{model}", call)
 
 
 def parse_json(text: str) -> dict:

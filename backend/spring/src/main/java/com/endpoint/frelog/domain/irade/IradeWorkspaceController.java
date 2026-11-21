@@ -53,6 +53,20 @@ public class IradeWorkspaceController {
         orcid.require(current);return canvases.searchSpaces(DocumentScope.WORKSPACE,q,current).stream().map(Workspace::from).toList();
     }
 
+    private static final java.util.regex.Pattern AGDD_WS = java.util.regex.Pattern.compile("^/agdd/api/workspaces/irade-([1-9][0-9]{0,9})(?:[/?].*)?$");
+
+    /** nginx auth_request target for /agdd/api: maps the IRADE user to the AGDD user UUID and, for
+     *  /agdd/api/workspaces/irade-{id}/..., verifies Studio workspace access and returns the AGDD role. */
+    @GetMapping("/agdd-identity")
+    public org.springframework.http.ResponseEntity<Void> agddIdentity(@RequestHeader(value="X-Original-URI",defaultValue="") String uri,@AuthenticationPrincipal CustomUserDetails current){
+        var user=orcid.require(current);
+        var res=org.springframework.http.ResponseEntity.noContent().header("Cache-Control","no-store")
+                .header("X-Agdd-User",String.format("00000000-0000-4000-8000-%012d",user.getUserId()));
+        var m=AGDD_WS.matcher(uri);
+        if(m.matches()){Integer id=Integer.valueOf(m.group(1));res.header("X-Agdd-Irade-Ws",String.valueOf(id)).header("X-Agdd-Role",canvases.agddRole(id,current));}
+        return res.build();
+    }
+
     @GetMapping("/{id}") public Workspace get(@PathVariable @Positive Integer id,@AuthenticationPrincipal CustomUserDetails current){
         orcid.require(current);return Workspace.from(canvases.getSummary(DocumentScope.WORKSPACE,id,current));
     }

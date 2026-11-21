@@ -363,7 +363,8 @@ export class AgoraClient {
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const response = await this.transport.fetch(`${this.config.origin}${endpoint}`, {
 				method: 'POST',
-				headers: { Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' },
+				headers: { ...(jwt && jwt !== 'cookie-session' ? { Authorization: `Bearer ${jwt}` } : {}), 'Content-Type': 'application/json' },
+				credentials: 'same-origin',
 				...(body ? { body: JSON.stringify(body) } : {}),
 			});
 			const payload = await response.json().catch(() => ({})) as Record<string, unknown>;

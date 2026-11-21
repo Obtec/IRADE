@@ -290,6 +290,17 @@ public class CanvasService {
     }
 
     @Transactional
+    /** AGDD gateway role for a workspace: OWNER (admin), EDITOR (member), VIEWER (visible only); throws if not visible. */
+    public String agddRole(Integer id, CustomUserDetails currentUser) {
+        SpaceInfo info = getSpaceInfoWithLockOrThrow(DocumentScope.WORKSPACE, id);
+        boolean cached = Boolean.TRUE.equals(info.getIsCached());
+        CanvasDocument doc = cached ? readCachedDocument(DocumentScope.WORKSPACE, info, null) : getDocumentOrThrow(DocumentScope.WORKSPACE, id);
+        if (currentUser == null || currentUser.getUserId() == null) throw new CustomException(ErrorCode.UNAUTHORIZED);
+        if (!CanvasVisibility.allows(doc, currentUser)) throw new CustomException(ErrorCode.ACCESS_DENIED);
+        if (CanvasGroupPermissions.admin(doc, currentUser.getUserId())) return "OWNER";
+        return doc.getPeople() != null && doc.getPeople().contains(currentUser.getUserId()) ? "EDITOR" : "VIEWER";
+    }
+
     public CanvasUpdateDtos.SettingsResponse getSettings(DocumentScope scope, Integer id, CustomUserDetails currentUser) {
         DocumentScope resolved = scope == null ? DocumentScope.WORKSPACE : scope;
         SpaceInfo info = getSpaceInfoWithLockOrThrow(resolved, id);

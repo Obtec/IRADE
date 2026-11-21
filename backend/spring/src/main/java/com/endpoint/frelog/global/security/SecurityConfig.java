@@ -90,6 +90,7 @@ public class SecurityConfig {
                                 "/api/irade/auth/orcid/start",
                                 "/api/irade/auth/orcid/callback",
                                 "/api/irade/auth/session",
+                                "/api/irade/auth/logout",
                                 "/internal/canvas/socket",
                                 "/api/terminal/ws",
                                 "/api/auth/qr/start",

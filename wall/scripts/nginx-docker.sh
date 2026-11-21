@@ -10,7 +10,8 @@ case "$command_name" in
     python3 "$PROJECT_DIR/scripts/preflight.py"
     docker info >/dev/null 2>&1 || { echo 'Docker engine is unavailable or access is denied' >&2; exit 1; }
     compose config --quiet
-    compose up -d --wait --wait-timeout 60
+    # Recreate so the mounted template is re-rendered (envsubst runs only at container start).
+    compose up -d --force-recreate --wait --wait-timeout 60
     compose exec -T nginx nginx -t
     ;;
   reload)

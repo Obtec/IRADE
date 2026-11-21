@@ -4,7 +4,8 @@ IRADE Web Studio의 공개 주소는 **https://irade.p-e.kr/**입니다. Nginx�
 
 | 경로 | 내부 서비스 |
 | --- | --- |
-| `/`, `/studio`, `/login`, `/assets/`, `/preview` | IRADE Web (`irade-web:8090`) |
+| `/`, `/agdd/notebook`, `/login`, `/assets/`, `/preview` | IRADE Web (`irade-web:8090`) — 기존 `/studio`는 `/agdd/?tab=ide&pane=studio`로 308 리다이렉트 |
+| `/agdd/`, `/agdd/api/` | AGDD 콘솔 (`irade-agdd-api:8091`, IRADE 로그인 쿠키로 인증) |
 | `/api/execute`, `/api/metrics` | IRADE Web 실행·상태 API |
 | `/api/`, `/api/irade/` | Spring API (`irade-spring:8080`) |
 | `/wss/` | 실시간 브로커 (`irade-broker:4443`) |

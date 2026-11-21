@@ -90,6 +90,35 @@ class RuntimeClient:
                           "operation": operation, "data": data, "cols": cols, "rows": rows, "offset": offset},
                          timeout=240 if operation == "open" else 30)
 
+    def attach_terminal(self, canvas_id: int, owner: int, name: str, cols: int = 120, rows: int = 32,
+                        offset: int = 0, timeout: float = 30.0) -> socket.socket:
+        """Open a persistent streaming connection (`terminal_attach`) to the Agora runtime manager."""
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", name):
+            raise ValueError("invalid terminal name")
+        cols = max(2, min(300, int(cols)))
+        rows = max(2, min(150, int(rows)))
+        offset = max(0, int(offset))
+        req = {
+            "canvasId": canvas_id,
+            "action": "terminal_attach",
+            "owner": owner,
+            "terminal": name,
+            "operation": "open",
+            "data": "",
+            "cols": cols,
+            "rows": rows,
+            "offset": offset,
+        }
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        try:
+            s.connect(self.path)
+            s.sendall(json.dumps(req, ensure_ascii=True).encode() + b"\n")
+            return s
+        except OSError as e:
+            s.close()
+            raise RuntimeError_(f"runtime manager unavailable: {e}") from e
+
 
 def _locked(fn):
     def wrapper(self, *a, **kw):
@@ -140,6 +169,7 @@ class VmShell:
     def _read_until(self, marker: str | None, timeout: float) -> str:
         buf = b""
         end = time.monotonic() + timeout
+        delay = 0.03  # adaptive polling: quick commands return in tens of ms, long ones back off to POLL_INTERVAL
         while time.monotonic() < end:
             r = self._term("poll")
             if r.get("expired"):
@@ -150,7 +180,10 @@ class VmShell:
             self.offset = r.get("offset", self.offset)
             if marker and marker.encode() in buf:
                 return buf.decode(errors="replace")
-            time.sleep(POLL_INTERVAL)
+            if r.get("data"):
+                delay = 0.03
+            time.sleep(delay)
+            delay = min(POLL_INTERVAL, delay * 1.6)
         if marker:
             raise TimeoutError(marker)
         return buf.decode(errors="replace")
@@ -195,7 +228,7 @@ class VmShell:
         done = f"__AGDD_DONE_{tag}_"
         begin = f"__AGDD_BEGIN_{tag}__"
         script = f"( {command} ) > {out_file} 2>&1 < /dev/null; echo \"{done}$?__\"\n" if capture else \
-            f"echo {begin}; ( {command} ) 2>/dev/null < /dev/null; echo; echo \"{done}$?__\"\n"
+            f"echo {begin}; ( {command} ) 2>/dev/null < /dev/null; _rc=$?; echo; echo \"{done}${{_rc}}__\"\n"
         self._send(script)
         buf = ""
         end = time.monotonic() + timeout
@@ -223,6 +256,16 @@ class VmShell:
         if check and code != 0:
             raise RuntimeError_(f"command failed ({code}): {text[-800:]}")
         return CommandResult(code, text)
+
+    def run_inline(self, command: str, timeout: float = 120) -> CommandResult:
+        """One round trip: output is streamed through the PTY (base64, so no control characters). Use for
+        small results (< ~150 KiB); larger output should use run()."""
+        r = self.run(f"set -o pipefail; ( {command} ) 2>&1 | base64 -w0", timeout=timeout, capture=False)
+        try:
+            text = base64.b64decode("".join(r.output.split())).decode(errors="replace")
+        except ValueError:
+            text = r.output
+        return CommandResult(r.exit_code, text, r.timed_out)
 
     def close(self):
         if self.opened:

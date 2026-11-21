@@ -36,3 +36,16 @@ UPDATE workspace_budgets
    AND spent_usd + %(cost)s <= limit_usd
 RETURNING spent_usd, limit_usd;
 """
+
+
+class BudgetHalt(Exception):
+    """Workspace budget exhausted (>= 100 %): stop the pipeline and hand over to a human (HITL)."""
+
+
+def cli_gate(limit_usd, spent_usd) -> str:
+    """CLI engine gate (DOC §6.1 #7). Plan-billed CLIs report cost only after the call, so the gate looks at
+    what is already spent: >= 80 % -> FALLBACK (cheap model), >= 100 % -> BudgetHalt."""
+    limit, spent = Decimal(str(limit_usd)), Decimal(str(spent_usd))
+    if limit <= 0 or spent / limit >= STOP_RATIO:
+        raise BudgetHalt(f"budget exhausted ({spent} / {limit} USD)")
+    return "FALLBACK" if spent / limit >= FALLBACK_RATIO else "ALLOW"

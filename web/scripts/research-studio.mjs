@@ -319,9 +319,16 @@ export async function applyResearchStudio(app, { studioPath } = {}) {
     }
 
     const login = ['/login', '/login/'].includes(context.path);
-    const studioRoute = ['/studio', '/studio/', '/workspace', '/workspace/'].includes(context.path);
-    const hasStudioQuery = 'workspace' in context.query || 'workspaces' in context.query || 'demo' in context.query;
+    const studioRoute = ['/agdd/notebook', '/agdd/notebook/'].includes(context.path);
     const homeRoute = ['/', '/home', '/home/'].includes(context.path);
+    // The standalone /studio route is gone: the notebook Studio now lives in the AGDD console's IDE tab.
+    const legacyStudio = ['/studio', '/studio/', '/workspace', '/workspace/'].includes(context.path)
+      || (homeRoute && ('workspace' in context.query || 'workspaces' in context.query || 'demo' in context.query));
+    if (legacyStudio && ['GET', 'HEAD'].includes(context.method)) {
+      const id = /^[1-9][0-9]{0,9}$/.test(String(context.query.workspace || '')) ? String(context.query.workspace) : '';
+      const target = 'demo' in context.query ? '/agdd/notebook?demo=1' : `/agdd/?tab=ide&pane=studio${id ? `&workspace=${id}` : ''}`;
+      context.status = 308; context.redirect(target); return;
+    }
     const page = login || studioRoute || homeRoute;
     const asset = context.path.startsWith('/assets/studio/') ? files.get(context.path.slice('/assets/studio/'.length)) : undefined;
     if ((!page && !asset) || !['GET', 'HEAD'].includes(context.method)) { return next(); }
@@ -330,10 +337,10 @@ export async function applyResearchStudio(app, { studioPath } = {}) {
     context.set('Cache-Control', 'no-cache');
     if (page) {
       context.type = 'text/html';
-      context.set('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self' wss:; worker-src 'self' blob:; frame-src 'self' about:; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'");
+      context.set('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self' wss:; worker-src 'self' blob:; frame-src 'self' about:; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'");
       if (login) {
         context.body = files.get('login.html').content.toString();
-      } else if (studioRoute || hasStudioQuery) {
+      } else if (studioRoute) {
         context.body = studioHtml;
       } else {
         context.body = homeHtml;

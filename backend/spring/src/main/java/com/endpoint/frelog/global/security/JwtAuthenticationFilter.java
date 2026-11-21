@@ -117,6 +117,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         if (StringUtils.hasText(bearerToken) && bearerToken.startsWith("Bearer ")) {
             return bearerToken.substring(7);
         }
-        return null;
+        // Stateless 24 h browser session: the same signed JWT in an HttpOnly cookie (see SessionCookies).
+        return SessionCookies.read(request);
     }
 }

@@ -1,3 +1,4 @@
+import { bearer } from './authToken.ts';
 export type ProverEngine = 'LEAN4' | 'ROCQ';
 
 export interface TheoremRow {
@@ -348,7 +349,7 @@ export function extractClientProofRelations(proverEngine: ProverEngine, sourceCo
 function authHeaders(token?: string, json = false): Record<string, string> {
   const headers: Record<string, string> = {};
   if (json) headers['Content-Type'] = 'application/json';
-  if (token) headers.Authorization = `Bearer ${token}`;
+  Object.assign(headers, bearer(token));
   return headers;
 }
 

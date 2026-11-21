@@ -61,7 +61,20 @@ public class OrcidController {
         if(handoff==null||!handoff.expires().isAfter(clock.instant())||!Objects.equals(handoff.ip(),request.getRemoteAddr()))throw new CustomException(ErrorCode.INVALID_CREDENTIALS);
         return handoff.value();
     }
-    /** nginx auth_request target for /agdd/api: maps the IRADE user to the AGDD gateway user UUID. */
-    @GetMapping("/agdd-identity") public org.springframework.http.ResponseEntity<Void> agddIdentity(@AuthenticationPrincipal CustomUserDetails current){var user=service.require(current);return org.springframework.http.ResponseEntity.noContent().header("X-Agdd-User",String.format("00000000-0000-4000-8000-%012d",user.getUserId())).header("Cache-Control","no-store").build();}
+    /** Turns the just-issued login JWT into the stateless HttpOnly session cookie (lifetime = token expiry). */
+    @PostMapping("/session-cookie") public ResponseEntity<Void> sessionCookie(@RequestHeader(value="Authorization",defaultValue="") String authorization,@AuthenticationPrincipal CustomUserDetails current,HttpServletResponse response){
+        service.require(current);
+        if(!authorization.startsWith("Bearer "))throw new CustomException(ErrorCode.UNAUTHORIZED);
+        String jwt=authorization.substring(7);
+        long seconds=Math.max(0,(tokens.getExpiration(jwt).getTime()-System.currentTimeMillis())/1000);
+        com.endpoint.frelog.global.security.SessionCookies.write(response,jwt,Duration.ofSeconds(seconds));
+        return ResponseEntity.noContent().header("Cache-Control","no-store").build();
+    }
+
+    @PostMapping("/logout") public ResponseEntity<Void> logout(HttpServletResponse response){
+        com.endpoint.frelog.global.security.SessionCookies.clear(response);
+        return ResponseEntity.noContent().build();
+    }
+
     @GetMapping("/me") public Map<String,Object> me(@AuthenticationPrincipal CustomUserDetails current){var user=service.require(current);return Map.of("userId",user.getUserId(),"name",user.getNickname(),"orcid",user.getOrcid(),"issuer",user.getOrcidIssuer(),"profileUrl",user.getOrcidIssuer()+"/"+user.getOrcid());}
 }

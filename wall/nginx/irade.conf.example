@@ -19,6 +19,10 @@ map "$irade_trusted_edge:$http_x_forwarded_port" $irade_public_port {
     default ${NGINX_HTTPS_PORT};
     "~^1:(?<irade_edge_port>[1-9][0-9]{0,4})$" $irade_edge_port;
 }
+map $http_upgrade $irade_connection_upgrade {
+    default upgrade;
+    ""      close;
+}
 
 server {
     server_tokens off;
@@ -187,29 +191,59 @@ server {
         set $agdd_host irade-agdd-api;
         proxy_pass http://$agdd_host:8091/console;
         proxy_set_header Host $host;
+        proxy_set_header Cookie "";
     }
     location = /_agdd_auth {
         internal;
         set $spring_host irade-spring;
-        proxy_pass https://$spring_host:8080/api/irade/auth/agdd-identity;
+        proxy_pass https://$spring_host:8080/api/irade/workspaces/agdd-identity;
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
         proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Original-URI $request_uri;
         proxy_set_header Host $host;
     }
     location ^~ /agdd/api/ {
         auth_request /_agdd_auth;
         auth_request_set $agdd_user $upstream_http_x_agdd_user;
+        auth_request_set $agdd_irade_ws $upstream_http_x_agdd_irade_ws;
+        auth_request_set $agdd_role $upstream_http_x_agdd_role;
         set $agdd_host irade-agdd-api;
         rewrite ^/agdd/api(/.*)$ $1 break;
         proxy_pass http://$agdd_host:8091;
-        proxy_set_header Host $host;
+        proxy_set_header Host $http_host;
         proxy_set_header Authorization "Bearer ${AGDD_API_TOKEN}";
         proxy_set_header X-User-Id $agdd_user;
+        proxy_set_header X-Agdd-Irade-Ws $agdd_irade_ws;
+        proxy_set_header X-Agdd-Role $agdd_role;
+        proxy_set_header Cookie "";  # the IRADE session JWT stays between browser, nginx and Spring
         proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $irade_connection_upgrade;
         proxy_buffering off;
         proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
         client_max_body_size 8m;
+    }
+    # Notebook Studio (served by IRADE Web) embedded in the AGDD console's IDE tab.
+    location ^~ /agdd/notebook {
+        set $web_host irade-web;
+        proxy_ssl_name irade-frontend-dev;
+        proxy_pass https://$web_host:8090;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Port $irade_public_port;
+        proxy_hide_header Strict-Transport-Security;
+        add_header Strict-Transport-Security $irade_hsts always;
+    }
+    location ^~ /agdd/static/ {
+        set $agdd_host irade-agdd-api;
+        rewrite ^/agdd/static/(.*)$ /static/$1 break;
+        proxy_pass http://$agdd_host:8091;
+        proxy_set_header Host $http_host;
+        proxy_set_header Cookie "";
     }
     location ^~ /agdd/ { return 404; }
 

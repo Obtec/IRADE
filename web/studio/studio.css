@@ -4669,3 +4669,40 @@ dialog#modal::backdrop {
   color: var(--text-muted);
   padding: 14px 8px !important;
 }
+
+/* ===== Embedded in the AGDD console (IDE · 노트북 Studio): match the console's design ===== */
+html.agdd-embed[data-theme="light"] {
+  --bg-main: #f7f7f5; --bg-header: #ffffff; --bg-sidebar: #ffffff; --bg-panel: #ffffff; --bg-cell: #ffffff;
+  --bg-elevated: #efeee8; --bg-subtle: rgba(29, 29, 27, 0.04); --bg-hover: #efeee8;
+  --border: #e3e2dc; --border-strong: #d3d2ca;
+  --text-primary: #1d1d1b; --text-main: #2e2e2b; --text-muted: #6b6b66;
+  --accent: #2f5d50; --accent-dim: rgba(47, 93, 80, 0.10); --accent-border: rgba(47, 93, 80, 0.35);
+  --accent-blue: #2f5d50; --accent-blue-soft: rgba(47, 93, 80, 0.10);
+  --danger: #b3261e; --danger-dim: rgba(179, 38, 30, 0.08);
+}
+html.agdd-embed[data-theme="dark"] {
+  --bg-main: #151514; --bg-header: #1e1e1c; --bg-sidebar: #1e1e1c; --bg-panel: #1e1e1c; --bg-cell: #1e1e1c;
+  --bg-elevated: #2a2a27; --bg-subtle: rgba(236, 235, 230, 0.04); --bg-hover: #2a2a27;
+  --border: #33332f; --border-strong: #44443f;
+  --text-primary: #ecebe6; --text-main: #d6d5cf; --text-muted: #9a998f;
+  --accent: #7fc0a9; --accent-dim: rgba(127, 192, 169, 0.13); --accent-border: rgba(127, 192, 169, 0.35);
+  --accent-blue: #7fc0a9; --accent-blue-soft: rgba(127, 192, 169, 0.13);
+  --danger: #f2827a; --danger-dim: rgba(242, 130, 122, 0.10);
+}
+html.agdd-embed {
+  --font-sans: system-ui, -apple-system, "Segoe UI", "Noto Sans KR", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+html.agdd-embed body { background: var(--bg-main); }
+/* Workspace, account and theme are owned by the AGDD console header. */
+html.agdd-embed .wordmark,
+html.agdd-embed .topbar-ws-pill,
+html.agdd-embed #agdd-link,
+html.agdd-embed #agdd-collab-link,
+html.agdd-embed #account,
+html.agdd-embed #theme-toggle { display: none !important; }
+html.agdd-embed .topbar { border-bottom: 1px solid var(--border); box-shadow: none; }
+html.agdd-embed .button, html.agdd-embed .icon-button, html.agdd-embed .command-trigger { border-radius: 6px; }
+html.agdd-embed .nb-cell { border-radius: 8px; }
+html.agdd-embed .status-pill.live, html.agdd-embed .status-pill.local { background: var(--accent); color: var(--bg-main); }
+html.agdd-embed .status-pill.live .status-dot, html.agdd-embed .status-pill.local .status-dot { background: var(--bg-main); }

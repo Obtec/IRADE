@@ -1,3 +1,7 @@
+import { SESSION, bearer, hasSession, endSession, migrateLegacyToken } from './authToken.ts';
+// Inside the AGDD console's IDE tab: adopt the console palette and leave workspace/account chrome to the host.
+const EMBED = new URL(location.href).searchParams.get('embed') === '1' || window.top !== window.self;
+if (EMBED) { document.documentElement.classList.add('agdd-embed'); }
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js';
 import 'monaco-editor/esm/vs/basic-languages/python/python.contribution.js';
 import 'monaco-editor/esm/vs/basic-languages/markdown/markdown.contribution.js';
@@ -38,9 +42,8 @@ import { ResearchWorkspace, cellTypes, cellTitle, type Cell, type CellKind } fro
 const $ = <T extends HTMLElement = HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const escape = (value: string): string => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
 const origin = location.origin;
-const tokenKey = `irade.orcid.token:${origin}`;
 const demoKey = 'irade.research.scratch';
-let token: string | undefined = sessionStorage.getItem(tokenKey) || undefined;
+let token: string | undefined = hasSession() ? SESSION : undefined;
 let workspace: ResearchWorkspace | undefined;
 let workspaceName = '나의 연구 공간';
 let cells: Cell[] = [];
@@ -68,6 +71,10 @@ let lastOutputCellId: string | undefined;
 let loadGeneration = 0;
 let activePresenceCellId: string | undefined;
 let toastTimer: ReturnType<typeof setTimeout>;
+let vmCellSyncTimer: ReturnType<typeof setTimeout> | undefined;
+let syncingFromVm = false;
+const lastVmCellHashes = new Map<string, string>();
+let vmSyncInFlight = false;
 interface ExecutionOutput {
   execOrder?: number;
   running?: boolean;
@@ -170,7 +177,13 @@ function applyTheme(next: 'dark' | 'light'): void {
   dockArcade?.syncUi();
   perfMonitor?.syncUi();
 }
-applyTheme(localStorage.getItem(themeKey) === 'light' ? 'light' : 'dark');
+if (EMBED) {
+  const scheme = matchMedia('(prefers-color-scheme: dark)');
+  applyTheme(scheme.matches ? 'dark' : 'light');
+  scheme.addEventListener('change', event => applyTheme(event.matches ? 'dark' : 'light'));
+} else {
+  applyTheme(localStorage.getItem(themeKey) === 'light' ? 'light' : 'dark');
+}
 function notify(message: string, error = false): void {
   clearTimeout(toastTimer); const toast = $('#toast');
   toast.textContent = message; toast.classList.toggle('error', error); toast.hidden = false;
@@ -237,9 +250,9 @@ modal.addEventListener('close', () => {
 });
 modal.addEventListener('click', event => { if (event.target === modal) { const bounds = modal.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) { modal.close(); } } });
 async function api<T>(path: string, body?: object): Promise<T> {
-  const response = await fetch(origin + path, { method: body ? 'POST' : 'GET', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), redirect: 'error', signal: AbortSignal.timeout(20000) });
+  const response = await fetch(origin + path, { method: body ? 'POST' : 'GET', credentials: 'same-origin', headers: { ...bearer(token), ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), redirect: 'error', signal: AbortSignal.timeout(20000) });
   const result = await response.json();
-  if (!response.ok) { if (response.status === 401) { token = undefined; sessionStorage.removeItem(tokenKey); updateAccount(); } throw new Error(result.message || `요청에 실패했습니다 (${response.status}).`); }
+  if (!response.ok) { if (response.status === 401) { token = undefined; void endSession(); updateAccount(); } throw new Error(result.message || `요청에 실패했습니다 (${response.status}).`); }
   return result as T;
 }
 function updateAccount(): void { $('#account').textContent = token ? 'ORCID · 계정' : 'ORCID 로그인 ↗'; }
@@ -257,8 +270,14 @@ async function refreshSelfProfile(): Promise<void> {
 async function signIn(): Promise<boolean> {
   if (workspace?.pending) { await workspace.flush(); }
   const url = new URL('/login', origin);
+  url.searchParams.set('next', EMBED ? '/agdd/' : '/agdd/notebook');
   const id = workspace?.client.config.canvasId || Number(new URL(location.href).searchParams.get('workspace'));
   if (id) { url.searchParams.set('workspace', String(id)); }
+  // Embedded in the AGDD console: log in at the top level. Navigating the iframe itself would load
+  // the login page (and then the whole console) inside the Studio frame.
+  if (EMBED && window.top && window.top !== window.self) {
+    try { window.top.location.assign(String(url)); return false; } catch { /* cross-origin parent: fall back to the frame */ }
+  }
   location.assign(String(url));
   return false;
 }
@@ -555,12 +574,17 @@ async function connect(id: number, name: string, restoreView = false): Promise<v
     }
   };
   const url = new URL(location.href); url.searchParams.set('workspace', String(id)); history.replaceState(null, '', url);
+  document.querySelector<HTMLAnchorElement>('#agdd-link')?.setAttribute('href', `/agdd/?tab=ide&pane=studio&workspace=${id}`);
+  document.querySelector<HTMLAnchorElement>('#agdd-collab-link')?.setAttribute('href', `/agdd/?tab=collab&workspace=${id}`);
+  if (EMBED) { try { window.parent.postMessage({ type: 'irade:workspace', id }, location.origin); } catch { /* ignore */ } }
   if (token && !selfProfile.uid) { await refreshSelfProfile().catch(() => { }); }
   const savedView = restoreView ? sessionStorage.getItem(`irade.research.view:${id}`) : null;
   if (savedView === 'overview') { overview(); } else { openNotebook(); }
   renderList();
   await current.load();
   if (generation !== loadGeneration) { return; }
+  lastVmCellHashes.clear();
+  void pushCellsToVm(false);
   for (const cell of cells) {
     if (cell.kind === 'agent') { renderAgentChat(cell.id, { scrollToBottom: true }); }
   }
@@ -735,7 +759,7 @@ function ensureModel(cell: Cell): monaco.editor.ITextModel {
       if (editingRemote) { return; }
       try {
         const text = model!.getValue();
-        if (workspace) { workspace.edit(cell.id, text); } else { cell.text = text; cell.title = cellTitle(cell.kind, text); persistScratch(); }
+        if (workspace) { workspace.edit(cell.id, text); scheduleVmCellSync(); } else { cell.text = text; cell.title = cellTitle(cell.kind, text); persistScratch(); }
         updateCellCardMeta(cell.id); renderList();
         if (previewCells.has(cell.id)) { scheduleCellPreview(cell.id); }
       } catch (error) { report(error); }
@@ -991,6 +1015,7 @@ function commitAgentCellText(cellId: string, nextText: string): void {
     workspace.edit(cellId, nextText);
     cells = workspace.cells;
     void workspace.flush().catch(report);
+    scheduleVmCellSync();
   } else {
     cell.text = nextText;
     cell.title = cellTitle(cell.kind, nextText);
@@ -1923,10 +1948,13 @@ function renderNotebook(): void {
 }
 async function moveCellOrder(id: string, direction: -1 | 1): Promise<void> {
   if (workspace) {
-    await workspace.moveCell(id, direction);
-    cells = workspace.cells;
-    renderNotebook();
-    renderList();
+    try {
+      await workspace.moveCell(id, direction);
+      cells = workspace.cells;
+      renderNotebook();
+      renderList();
+      scheduleVmCellSync();
+    } catch (error) { throw error; }
   } else {
     moveLocalCell(id, direction);
   }
@@ -2098,6 +2126,7 @@ async function addCell(kind?: CellKind, afterId?: string): Promise<void> {
     try {
       cell = await workspace.add(kind, starters[kind], afterId ? { afterId } : undefined);
       cells = workspace.cells;
+      scheduleVmCellSync();
     } finally {
       addingCell = false;
       buttons.forEach(button => { button.disabled = !workspace?.client.canWrite; });
@@ -2137,7 +2166,7 @@ async function deleteCell(): Promise<void> {
   $('#confirm-delete').addEventListener('click', event => {
     (event.currentTarget as HTMLButtonElement).disabled = true; void (async () => {
       if (activePresenceCellId === cell.id) { setPresenceFocus(undefined); }
-      if (workspace) { deletingCellId = cell.id; try { await workspace.delete(cell.id); cells = workspace.cells; } finally { deletingCellId = undefined; } } else { cells = cells.filter(item => item.id !== cell.id); persistScratch(); }
+      if (workspace) { deletingCellId = cell.id; try { await workspace.delete(cell.id); cells = workspace.cells; scheduleVmCellSync(); } finally { deletingCellId = undefined; } } else { cells = cells.filter(item => item.id !== cell.id); persistScratch(); }
       const ed = cellEditors.get(cell.id);
       if (ed) { ed.setModel(null); ed.dispose(); cellEditors.delete(cell.id); }
       manualCellHeights.delete(cell.id);
@@ -2267,7 +2296,7 @@ async function action(name: string): Promise<void> {
     modal.close();
     if (workspace?.pending) { await workspace.flush(); }
     const logoutId = workspace?.client.config.canvasId;
-    ++loadGeneration; setPresenceFocus(undefined); workspace?.dispose(); workspace = undefined; token = undefined; sessionStorage.removeItem(tokenKey); sessionStorage.removeItem('irade.research.lastWorkspace'); if (logoutId) { sessionStorage.removeItem(`irade.research.view:${logoutId}`); } selfProfile = { name: '연구자' }; updateAccount(); clearModels(); cells = []; selected = undefined; connected = false; workspaceName = '나의 연구 공간'; demo = false;
+    ++loadGeneration; setPresenceFocus(undefined); workspace?.dispose(); workspace = undefined; token = undefined; void endSession(); sessionStorage.removeItem('irade.research.lastWorkspace'); if (logoutId) { sessionStorage.removeItem(`irade.research.view:${logoutId}`); } selfProfile = { name: '연구자' }; updateAccount(); clearModels(); cells = []; selected = undefined; connected = false; workspaceName = '나의 연구 공간'; demo = false;
     const url = new URL(location.href); url.searchParams.delete('workspace'); url.searchParams.delete('workspaces'); history.replaceState(null, '', url); overview(); agentPanel.onWorkspaceChanged(); $('#workspace-subtitle').textContent = 'workspace를 연결하세요'; $('#status').textContent = '로그아웃됨'; $('#connection-label').textContent = '연결 대기'; $('#permission-label').textContent = ''; notify('로그아웃했습니다.');
   }
   else if (name === 'demo') { modal.close(); await startDemo(); }
@@ -2428,6 +2457,107 @@ document.addEventListener('keydown', event => {
   else if (event.altKey && event.key.toLowerCase() === 'n') { event.preventDefault(); void addCell().catch(report); }
 });
 window.addEventListener('beforeunload', event => { if (workspace?.pending) { event.preventDefault(); event.returnValue = ''; } });
+
+async function applyVmExternalChanges(items: Array<{ id: string; text: string; sha256?: string }>): Promise<void> {
+  if (!workspace || !items.length) { return; }
+  syncingFromVm = true;
+  try {
+    let changed = false;
+    for (const item of items) {
+      const cell = cells.find(c => c.id === item.id);
+      if (!cell || !cell.canWrite || typeof item.text !== 'string') { continue; }
+      if (item.sha256) { lastVmCellHashes.set(item.id, item.sha256); }
+      if (cell.text === item.text) { continue; }
+      workspace.edit(cell.id, item.text);
+      const model = models.get(cell.id);
+      if (model && model.getValue() !== item.text) {
+        editingRemote = true;
+        try { model.setValue(item.text); } finally { editingRemote = false; }
+      }
+      updateCellCardMeta(cell.id);
+      changed = true;
+    }
+    if (changed) {
+      cells = workspace.cells;
+      renderList();
+      if (viewMode === 'notebook') { renderNotebook(); }
+      await workspace.flush().catch(() => { });
+      log('VM/IDE 파일 변경 내용을 셀에 반영했습니다.');
+    }
+  } finally {
+    syncingFromVm = false;
+  }
+}
+
+async function pushCellsToVm(force = true): Promise<void> {
+  if (!workspace || !token || demo || syncingFromVm || vmSyncInFlight) { return; }
+  const id = workspace.client.config.canvasId;
+  if (!Number.isSafeInteger(id) || id <= 0) { return; }
+  vmSyncInFlight = true;
+  try {
+    const resp = await fetch(`${origin}/agdd/api/workspaces/irade-${id}/vm/cells/sync`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cells: workspace.cells.map(c => ({ id: c.id, kind: c.kind, title: c.title, text: c.text, frameOrder: c.frameOrder })),
+        delete_missing: true,
+        force,
+      }),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!resp.ok) { return; }
+    const data = await resp.json() as {
+      manifest?: Record<string, { sha256?: string }>;
+      external_changes?: Array<{ id: string; text: string; sha256?: string }>;
+    };
+    if (data.manifest) {
+      for (const [cid, info] of Object.entries(data.manifest)) {
+        if (info?.sha256) { lastVmCellHashes.set(cid, info.sha256); }
+      }
+    }
+    if (data.external_changes?.length) {
+      await applyVmExternalChanges(data.external_changes);
+    }
+  } catch { /* VM or AGDD API may be offline in standalone Studio tests */ }
+  finally { vmSyncInFlight = false; }
+}
+
+async function pullCellsFromVm(): Promise<void> {
+  if (!workspace || !token || demo || syncingFromVm || vmSyncInFlight) { return; }
+  const id = workspace.client.config.canvasId;
+  if (!Number.isSafeInteger(id) || id <= 0) { return; }
+  try {
+    const resp = await fetch(`${origin}/agdd/api/workspaces/irade-${id}/vm/cells`, {
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!resp.ok) { return; }
+    const data = await resp.json() as { cells?: Array<{ id: string; text: string; sha256?: string }> };
+    const updates = (data.cells || []).filter(item => {
+      const local = cells.find(c => c.id === item.id);
+      return local && local.text !== item.text && item.sha256 !== lastVmCellHashes.get(item.id);
+    });
+    if (updates.length) {
+      await applyVmExternalChanges(updates);
+    }
+  } catch { /* ignore when VM offline */ }
+}
+
+function scheduleVmCellSync(delayMs = 500): void {
+  if (!workspace || !token || demo || syncingFromVm) { return; }
+  clearTimeout(vmCellSyncTimer);
+  vmCellSyncTimer = setTimeout(() => { void pushCellsToVm(true); }, delayMs);
+}
+
+window.addEventListener('message', event => {
+  if (event.origin === origin && event.data?.type === 'irade:vm-cells-updated') {
+    void pullCellsFromVm();
+  }
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') { void pullCellsFromVm(); }
+});
 const groups: { kinds: CellKind[]; title: string; description: string; icon: string; color: string }[] = [
   { kinds: ['agent'], title: '에이전트 대화', description: '질문과 추론, 대화의 맥락을 보관하세요.', icon: '✧', color: 'mint' },
   { kinds: ['lean', 'rocq'], title: 'Lean 4 · Rocq 증명', description: '가설에서 정리까지, 논리를 연결하세요.', icon: '∀', color: 'purple' },
@@ -2659,9 +2789,11 @@ syncWorkbenchChrome();
 const query = new URL(location.href).searchParams;
 let canvasId = Number(query.get('workspace'));
 void (async () => {
+  if (!token && await migrateLegacyToken()) { token = SESSION; updateAccount(); }
   if (token) {
     try { await refreshSelfProfile(); }
-    catch { token = undefined; sessionStorage.removeItem(tokenKey); updateAccount(); }
+    // Await the logout so the stale hint cookie is gone before signIn() reaches /login (else it bounces back).
+    catch { token = undefined; await endSession(); updateAccount(); }
   }
   if (canvasId) {
     if (token) {

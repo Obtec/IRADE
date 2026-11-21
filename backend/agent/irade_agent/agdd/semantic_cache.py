@@ -59,3 +59,42 @@ class SemanticCache:
             self.put(workspace_id, task_type, prompt, sh, out)
             return out
         return call
+
+
+
+def _exact_key(scope, prompt: str, schema) -> str:
+    return "agdd:sc:" + hashlib.sha256("\x1f".join((*map(str, scope), schema_hash(schema), prompt)).encode()).hexdigest()
+
+
+def cache_lookup(scope, prompt: str, schema):
+    """Exact-match reuse for cheap structured steps (DOC §6.1 #6). The key covers the scope (workspace/VM,
+    CLI, model, effort), schema_hash and the full prompt, so a hit is only ever the answer to the identical
+    question. Cache errors never block the model call."""
+    from . import infra
+    try:
+        hit = infra.valkey().get(_exact_key(scope, prompt, schema))
+        return json.loads(hit) if hit is not None else None
+    except Exception:
+        return None
+
+
+def cache_store(scope, prompt: str, schema, out, ttl: int = 86_400) -> None:
+    from . import infra
+    try:
+        if isinstance(out, dict) and out:
+            infra.valkey().set(_exact_key(scope, prompt, schema), json.dumps(out, ensure_ascii=False), ex=ttl)
+    except Exception:
+        pass
+
+
+def exact_cache(workspace_id: str, task_type: str, model_tag: str, llm: Callable[[str, dict], dict]):
+    """Wrap an llm(prompt, schema) callable with cache_lookup/cache_store."""
+    def call(prompt, schema):
+        scope = (workspace_id, task_type, model_tag)
+        hit = cache_lookup(scope, prompt, schema)
+        if hit is not None:
+            return hit
+        out = llm(prompt, schema)
+        cache_store(scope, prompt, schema, out)
+        return out
+    return call

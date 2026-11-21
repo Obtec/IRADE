@@ -79,6 +79,62 @@ class PgOverrideStore:
             return c.execute("SELECT * FROM ux_overrides WHERE workspace_id=%s AND view_key=%s ORDER BY component_selector",
                              (workspace_id, view_key)).fetchall()
 
+    def delete(self, workspace_id, view_key, selector) -> bool:
+        with infra.pg() as c:
+            n = c.execute("DELETE FROM ux_overrides WHERE workspace_id=%s AND view_key=%s AND component_selector=%s",
+                          (workspace_id, view_key, selector)).rowcount
+            c.commit()
+            return n > 0
+
+    def list_views(self, workspace_id) -> list[dict]:
+        with infra.pg(readonly=True) as c:
+            return c.execute(
+                "SELECT view_key, count(*) AS count, count(*) FILTER (WHERE locked_by_user) AS locked_count "
+                "FROM ux_overrides WHERE workspace_id=%s GROUP BY view_key ORDER BY view_key",
+                (workspace_id,),
+            ).fetchall()
+
+    def locked_views(self, workspace_id) -> list[str]:
+        with infra.pg(readonly=True) as c:
+            return [
+                r["view_key"] for r in c.execute(
+                    "SELECT DISTINCT view_key FROM ux_overrides WHERE workspace_id=%s AND locked_by_user ORDER BY view_key",
+                    (workspace_id,),
+                ).fetchall()
+            ]
+
+
+# ---------------- collaborative CLI / chat messages ----------------
+def add_collab_message(
+    conn,
+    workspace_id,
+    role: str,
+    mode: str,
+    content: str,
+    meta: dict | None = None,
+    run_id=None,
+    user_id=None,
+) -> dict:
+    uid = user_id if (user_id and len(str(user_id)) == 36) else None
+    return conn.execute(
+        "INSERT INTO collab_messages (workspace_id, role, mode, content, meta_json, run_id, created_by) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *",
+        (workspace_id, role, mode, content, Jsonb(meta or {}), run_id, uid),
+    ).fetchone()
+
+
+def list_collab_messages(conn, workspace_id, limit: int = 100) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM collab_messages WHERE workspace_id=%s ORDER BY msg_id DESC LIMIT %s",
+        (workspace_id, max(1, min(300, int(limit)))),
+    ).fetchall()
+    rows.reverse()
+    return rows
+
+
+def clear_collab_messages(conn, workspace_id) -> None:
+    conn.execute("DELETE FROM collab_messages WHERE workspace_id=%s", (workspace_id,))
+
 
 # ---------------- research sessions (pgvector) ----------------
 class PgResearchStore:

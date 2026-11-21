@@ -281,7 +281,13 @@ def process(job: dict, wdb: WorkerDB) -> None:
         else:
             ok, patch = HANDLERS[ctx.node["kind"]](ctx, wdb)
     except Exception as e:
-        ok, patch = False, {"feedback": f"node crashed: {e!r}"[:2000]}
+        from .budget import BudgetHalt
+        if isinstance(e, BudgetHalt) or "budget_halt" in str(e):  # DOC §6.1 #7: 100 % -> stop + HITL
+            ok, patch = False, {"feedback": f"budget gate: {e}"[:500]}
+            ctx.hitl_requests.append({"id": "budget", "reason_code": "BUDGET_EXHAUSTED", "reversibility": "IRREVERSIBLE",
+                                      "files": [], "detail": str(e)[:300]})
+        else:
+            ok, patch = False, {"feedback": f"node crashed: {e!r}"[:2000]}
 
     def cheap(task):
         return vmx.llm(task) if vmx else infra.cheap_model(task, ctx.ws, ctx.run["run_id"], ctx.node["name"])
@@ -317,13 +323,15 @@ def process(job: dict, wdb: WorkerDB) -> None:
         log(run["run_id"], f"HITL card model unavailable: {e!r:.200}")
         cards = hitl.compress(ctx.hitl_requests, lambda p, sch: {})
     dispatch = hitl.dispatch(cards, datetime.now())
+    pause_at_current = bool(handoff.pop("pause_at_current", False))
     if dispatch.push_now:
-        status, current = "WAITING_HITL", nxt or ctx.node["name"]
+        status, current = "WAITING_HITL", ctx.node["name"] if pause_at_current else (nxt or ctx.node["name"])
     elif nxt is None:
         status, current = ("SUCCEEDED" if ok else "ESCALATED"), ctx.node["name"]
     else:
         status, current = "RUNNING", nxt
 
+    ux_reqs = [r for r in ctx.hitl_requests if r.get("reason_code") == "UX_VISUAL_REQUEST"]
     # (3) optimistic-lock commit: run state + HITL + next job atomically
     with infra.pg() as c:
         r = c.execute(orchestrator.COMMIT_RUN_SQL, {"next_node": current, "status": status,
@@ -336,13 +344,55 @@ def process(job: dict, wdb: WorkerDB) -> None:
             c.commit()
             return
         for card in dispatch.push_now + dispatch.digest:
+            reason_code = card["request_ids"][0] or "HITL"
+            saved_card = card
+            if card["reversibility"] == "IRREVERSIBLE" and "ux_visual" in (card.get("request_ids") or []) and ux_reqs:
+                reason_code = "UX_VISUAL_REQUEST"
+                saved_card = {**card, "reason_code": "UX_VISUAL_REQUEST", "ux_request": {
+                    "view_key": ux_reqs[0].get("view_key", "home"),
+                    "prompt": ux_reqs[0].get("prompt", ""),
+                    "viewport": ux_reqs[0].get("viewport", {"width": 1200, "height": 720}),
+                    "elements": ux_reqs[0].get("elements", []),
+                }}
             c.execute("INSERT INTO hitl_decisions (run_id, reversibility, reason_code, status, decision_card_json, "
                       "digest_batch_id) VALUES (%s,%s,%s,'PENDING',%s,%s)",
-                      (run["run_id"], card["reversibility"], card["request_ids"][0] or "HITL", Jsonb(card),
-                       hitl.digest_batch_id(dispatch.digest_at) if card["reversibility"] == "REVERSIBLE" else None))
+                      (run["run_id"], saved_card["reversibility"], reason_code, Jsonb(saved_card),
+                       hitl.digest_batch_id(dispatch.digest_at) if saved_card["reversibility"] == "REVERSIBLE" else None))
         c.execute(orchestrator.FINISH_JOB_SQL, {"status": "DONE" if ok else "FAILED", "job_id": job["job_id"]})
         if status == "RUNNING":
             c.execute(orchestrator.ENQUEUE_SQL, {"run_id": run["run_id"], "node_name": current, "priority": 5})
+        if handoff.get("collab_mode"):
+            if status == "WAITING_HITL" and handoff.get("ux_request"):
+                ux_req = handoff["ux_request"]
+                pgstore.add_collab_message(
+                    c, ctx.ws, "assistant", "agdd",
+                    f"🎨 2D UX 구성이 필요합니다 ({ux_req.get('view_key', 'home')}): {ux_req.get('prompt') or '캔버스에서 레이아웃을 배치해 주세요.'}",
+                    meta={"event": "UX_VISUAL_REQUEST", "ux_request": ux_req},
+                    run_id=run["run_id"],
+                )
+            elif status == "WAITING_HITL":
+                pgstore.add_collab_message(
+                    c, ctx.ws, "assistant", "agdd",
+                    f"⏸ 승인 대기 (HITL): {cards[0]['module'] if cards else current}",
+                    meta={"event": "WAITING_HITL", "cards": cards},
+                    run_id=run["run_id"],
+                )
+            elif status == "SUCCEEDED":
+                summary = handoff.get("dev_summary") or handoff.get("verify_summary") or "자율 그래프 실행이 완료되었습니다."
+                pgstore.add_collab_message(
+                    c, ctx.ws, "assistant", "agdd", summary,
+                    meta={"event": "SUCCEEDED", "changed_files": handoff.get("changed_files", []),
+                          "verify_summary": handoff.get("verify_summary", ""),
+                          "last_patch": (handoff.get("last_patch") or "")[:4000]},
+                    run_id=run["run_id"],
+                )
+            elif status in ("ESCALATED", "FAILED", "HALTED"):
+                pgstore.add_collab_message(
+                    c, ctx.ws, "assistant", "agdd",
+                    f"⚠ 실행 중단 ({status}): {(handoff.get('feedback') or '')[:1200]}",
+                    meta={"event": status, "feedback": (handoff.get("feedback") or "")[:2000]},
+                    run_id=run["run_id"],
+                )
         c.commit()
     try:
         infra.cache_invalidate(f"agdd:run:{run['run_id']}", f"agdd:dash:{ctx.ws}")

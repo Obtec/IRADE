@@ -106,6 +106,20 @@ class SpecEngine:
         self.sink = sink  # write-through hook: sink(event, payload)
 
     # ---------- mutation ----------
+    def delete(self, spec_type: str, spec_id: str) -> bool:
+        table, pk, _, _ = TABLES[spec_type]
+        with self.db:
+            n = self.db.execute(f"DELETE FROM {table} WHERE {pk}=?", (spec_id,)).rowcount
+            self.db.execute("DELETE FROM spec_fts WHERE spec_type=? AND spec_id=?", (spec_type, spec_id))
+            self.db.execute("DELETE FROM spec_traceability WHERE (source_type=? AND source_id=?) OR (target_type=? AND target_id=?)",
+                            (spec_type, spec_id, spec_type, spec_id))
+        return n > 0
+
+    def untrace(self, source_type, source_id, target_type, target_id, relation_type) -> None:
+        with self.db:
+            self.db.execute("DELETE FROM spec_traceability WHERE source_type=? AND source_id=? AND target_type=? "
+                            "AND target_id=? AND relation_type=?", (source_type, source_id, target_type, target_id, relation_type))
+
     def upsert(self, spec_type: str, row: dict) -> None:
         table, pk, dom, texts = TABLES[spec_type]
         row = dict(row)

@@ -205,3 +205,21 @@ CREATE TABLE IF NOT EXISTS cli_usage_snapshots (
     raw_text     text,
     PRIMARY KEY (workspace_id, cli)
 );
+
+-- IRADE Studio workspace link: an AGDD workspace addressed as "irade-<id>" is the same workspace as
+-- Studio workspace <id> (same members via the gateway, same runtime VM canvas).
+ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS irade_workspace_id integer UNIQUE;
+
+-- Collaborative CLI / Conversational AGDD message log per workspace.
+CREATE TABLE IF NOT EXISTS collab_messages (
+    msg_id       bigserial PRIMARY KEY,
+    workspace_id uuid NOT NULL REFERENCES workspaces ON DELETE CASCADE,
+    role         text NOT NULL CHECK (role IN ('user','assistant','system','event')),
+    mode         text NOT NULL DEFAULT 'agdd' CHECK (mode IN ('agdd','cli_chat','ux_canvas')),
+    content      text NOT NULL,
+    meta_json    jsonb NOT NULL DEFAULT '{}',
+    run_id       uuid REFERENCES workflow_runs ON DELETE SET NULL,
+    created_by   uuid REFERENCES users,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_collab_ws ON collab_messages (workspace_id, msg_id DESC);

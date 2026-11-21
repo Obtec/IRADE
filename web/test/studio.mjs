@@ -39,8 +39,13 @@ try {
   assert.equal(await page.locator('#interactive-lab a.home-card').count(), 3);
   await page.locator('#interactive-lab').screenshot({ path: '.artifacts/studio-get-started.png' });
 
-  await page.locator('#interactive-lab a.home-card[href="/studio"]').click();
-  await page.waitForURL('**/studio');
+  assert.equal(await page.locator('#interactive-lab a.home-card[href="/agdd/"]').count(), 1);
+  // The standalone /studio route is gone: legacy links redirect into the AGDD console / notebook route.
+  const legacy = await page.request.get(`${origin}/studio?workspace=42`, { maxRedirects: 0 });
+  assert.equal(legacy.status(), 308);
+  assert.equal(legacy.headers().location, '/agdd/?tab=ide&pane=studio&workspace=42');
+  await page.goto(`${origin}/agdd/notebook`);
+  await page.waitForURL('**/agdd/notebook');
   assert.equal(await page.title(), 'IRADE · Research Workspace');
   assert.equal(await page.locator('.type-card').count(), 4);
   await page.screenshot({ path: '.artifacts/studio-overview.png' });
@@ -249,7 +254,7 @@ try {
   await page.screenshot({ path: '.artifacts/studio-antigravity-right.png' });
 
   await page.locator('#account').click();
-  await page.waitForURL('**/login');
+  await page.waitForURL('**/login**');
   await page.locator('#login-particles').waitFor();
   const loginCanvasBox = await page.locator('#login-particles').boundingBox();
   assert.ok(loginCanvasBox && loginCanvasBox.width > 400 && loginCanvasBox.height > 400, 'Login particle landing canvas must fill viewport');
@@ -257,6 +262,17 @@ try {
   await page.locator('#orcid-login:not([disabled])').click();
   await page.getByRole('button', { name: /공동 연구 workspace/ }).click();
   await page.waitForFunction(() => document.querySelector('#connection-label')?.textContent === 'WORKSPACE LIVE SYNC');
+
+  // Stateless cookie session: the JWT lives only in an HttpOnly cookie, never in web storage, and a new tab stays signed in.
+  const sessionCookie = (await first.cookies()).find(c => c.name === 'IRADE_SESSION');
+  assert.ok(sessionCookie && sessionCookie.httpOnly && sessionCookie.secure && sessionCookie.sameSite === 'Strict', 'session cookie must be HttpOnly/Secure/Strict');
+  assert.equal(await page.evaluate(() => [...Object.keys(localStorage), ...Object.keys(sessionStorage)].some(k => k.startsWith('irade.orcid.token'))), false);
+  assert.equal(await page.evaluate(() => document.cookie.includes('IRADE_SESSION=')), false, 'session cookie must not be readable by scripts');
+  const newTab = await first.newPage();
+  await newTab.goto(`${origin}/login?next=/agdd/notebook`);
+  await newTab.waitForURL('**/agdd/notebook**');
+  await newTab.waitForFunction(() => document.querySelector('#account')?.textContent?.includes('계정'));
+  await newTab.close();
 
   await page.getByRole('button', { name: '새 셀 만들기', exact: false }).click();
   await page.getByRole('button', { name: 'Python 코드', exact: false }).last().click();
@@ -276,7 +292,7 @@ try {
   const peer = await second.newPage();
   peer.setDefaultTimeout(20000);
   peer.on('pageerror', error => errors.push(error.message));
-  await peer.goto(origin + '/?workspace=42', { waitUntil: 'networkidle' });
+  await peer.goto(origin + '/agdd/notebook?workspace=42', { waitUntil: 'networkidle' });
   await peer.waitForFunction(() => document.querySelector('#topbar-workspace')?.textContent === '공동 연구 workspace');
   await peer.locator('#cell-list [data-cell]', { hasText: '공동 연구' }).first().click();
 
@@ -387,7 +403,7 @@ try {
   const collab = await collabContext.newPage();
   collab.setDefaultTimeout(20000);
   collab.on('pageerror', error => errors.push(error.message));
-  await collab.goto(origin + '/?workspace=42', { waitUntil: 'networkidle' });
+  await collab.goto(origin + '/agdd/notebook?workspace=42', { waitUntil: 'networkidle' });
 
   await page.getByRole('button', { name: '새 셀 만들기', exact: false }).click();
   await page.getByRole('button', { name: /에이전트 대화/ }).last().click();
@@ -503,7 +519,7 @@ try {
 
   const mfaContext = await browser.newContext({ ignoreHTTPSErrors: true });
   const mfaPage = await mfaContext.newPage();
-  await mfaPage.goto(`${origin}/studio`);
+  await mfaPage.goto(`${origin}/agdd/notebook`);
   await mfaPage.locator('#account').click();
   await mfaContext.addCookies([{ name: 'fixture_mfa', value: '1', url: origin }]);
   await mfaPage.locator('#orcid-login:not([disabled])').click();

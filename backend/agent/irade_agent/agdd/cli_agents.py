@@ -29,6 +29,9 @@ class AgentSettings:
     permission: str = "sandbox"          # sandbox: full autonomy inside the VM | ask-edits: edits only, no shell
     cheap_model: str = ""                # model for structured/cheap steps (empty = same as model)
     cheap_effort: str = "low"
+    instructions: str = ""               # custom workspace agent tuning instructions
+    default_repo: str = "workspace"      # default repo under /workspace/repos/
+    ux_auto_canvas: bool = True          # pause & open 2D UX canvas on UX_VISUAL_REQUEST
 
     @classmethod
     def from_row(cls, row: dict | None) -> "AgentSettings":
@@ -51,6 +54,11 @@ class AgentSettings:
             raise ValueError("session must be new, per-run or a session id")
         if self.permission not in ("sandbox", "ask-edits"):
             raise ValueError("permission must be sandbox or ask-edits")
+        self.instructions = str(self.instructions or "").strip()[:4000]
+        self.default_repo = str(self.default_repo or "workspace").strip() or "workspace"
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", self.default_repo) or self.default_repo.startswith("."):
+            raise ValueError("invalid default_repo")
+        self.ux_auto_canvas = bool(self.ux_auto_canvas)
 
 
 class CliError(RuntimeError):
@@ -66,6 +74,7 @@ class AgentResult:
     cost_usd: float | None = None
     raw_tail: str = ""
     rate_limits: dict | None = None
+    model: str = ""
 
 
 class CliProfile:
@@ -74,6 +83,7 @@ class CliProfile:
     install = ""
     login_hint = ""
     models: tuple = ()
+    cheap_default = ""  # DOC §6.2 model routing: classify/check/lift/summarize steps use a low-cost model
 
     def version_cmd(self):
         return f"{self.binary} --version"
@@ -81,7 +91,7 @@ class CliProfile:
     def structured_cmd(self, prompt_file, schema_file, model, effort):
         raise NotImplementedError
 
-    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission):
+    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission, mcp=True):
         raise NotImplementedError
 
     def parse(self, output: str) -> AgentResult:
@@ -91,6 +101,9 @@ class CliProfile:
         raise NotImplementedError
 
     def usage_cmd(self) -> str:
+        raise NotImplementedError
+
+    def interactive_cmd(self, cwd: str, model: str, effort: str, session: str | None, permission: str) -> str:
         raise NotImplementedError
 
 
@@ -123,19 +136,25 @@ class Claude(CliProfile):
     install = PREREQ + "curl -fsSL https://claude.ai/install.sh | bash"
     login_hint = "claude  (브라우저 로그인 URL이 출력되면 열어서 코드 붙여넣기)  또는  claude setup-token"
     models = ("opus", "sonnet", "haiku", "fable")
+    cheap_default = "haiku"
 
     def _common(self, model, effort):
-        return (f" --model {shlex.quote(model)}" if model else "") + f" --effort {effort}"
+        # stable system prompt (per-machine cwd/env/git sections moved out) -> prompt-cache prefix reuse
+        return ((f" --model {shlex.quote(model)}" if model else "") + f" --effort {effort}"
+                " --exclude-dynamic-system-prompt-sections")
 
     def structured_cmd(self, prompt_file, schema_file, model, effort):
+        # pure JSON transforms: no built-in tools and no MCP servers -> no tool schemas in the prompt
         return (f"claude -p --output-format json --no-session-persistence --permission-mode dontAsk"
+                f" --tools \"\" --strict-mcp-config"
                 f"{self._common(model, effort)} --json-schema \"$(cat {sh_quote(schema_file)})\" < {sh_quote(prompt_file)}")
 
-    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission):
+    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission, mcp=True):
         perm = "--permission-mode bypassPermissions" if permission == "sandbox" else "--permission-mode acceptEdits"
         sess = f" --resume {shlex.quote(session)}" if session else ""
+        no_mcp = "" if mcp else " --strict-mcp-config"  # graph node allowed_mcp is empty -> load no MCP servers
         return (f"cd {sh_quote(cwd)} && claude -p --output-format stream-json --verbose {perm}"
-                f"{self._common(model, effort)}{sess} < {sh_quote(prompt_file)}")
+                f"{self._common(model, effort)}{no_mcp}{sess} < {sh_quote(prompt_file)}")
 
     def parse(self, output):
         result, rate = None, None
@@ -167,6 +186,11 @@ class Claude(CliProfile):
         # Plan limits are not exposed headlessly; rate_limit_event frames captured during runs fill the gauge.
         return "claude auth status 2>&1; echo '---'; timeout 120 claude -p /usage < /dev/null 2>&1 | tail -40"
 
+    def interactive_cmd(self, cwd: str, model: str, effort: str, session: str | None, permission: str) -> str:
+        perm = "--permission-mode bypassPermissions" if permission == "sandbox" else "--permission-mode acceptEdits"
+        sess = f" --resume {shlex.quote(session)}" if session and session not in ("new", "per-run") else ""
+        return f"cd {shlex.quote(cwd)} && claude {perm}{self._common(model, effort)}{sess}"
+
 
 class Codex(CliProfile):
     name, binary = "codex", "codex"
@@ -176,6 +200,7 @@ class Codex(CliProfile):
                "mv codex-x86_64-unknown-linux-musl $HOME/.local/bin/codex && chmod +x $HOME/.local/bin/codex && rm codex.tgz")
     login_hint = "codex login --device-auth  (표시된 URL과 코드로 로그인)"
     models = ("gpt-5.5", "gpt-5.5-codex", "gpt-5-mini")
+    cheap_default = "gpt-5-mini"
 
     def _common(self, model, effort):
         eff = {"xhigh": "xhigh", "max": "xhigh"}.get(effort, effort)
@@ -185,12 +210,14 @@ class Codex(CliProfile):
         out = f"{prompt_file}.last"
         emit = ("python3 -c 'import json,sys;print(json.dumps({\"agdd_last_message\": open(sys.argv[1]).read()}))' "
                 f"{sh_quote(out)} 2>/dev/null")
-        return (f"codex exec --json --ephemeral --skip-git-repo-check -s read-only{self._common(model, effort)} "
+        return (f"codex exec --json --ephemeral --skip-git-repo-check -s read-only -c 'mcp_servers={{}}'{self._common(model, effort)} "
                 f"--output-schema {sh_quote(schema_file)} -o {sh_quote(out)} - < {sh_quote(prompt_file)}; "
                 f"rc=$?; {emit}; exit $rc")
 
-    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission):
+    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission, mcp=True):
         sandbox = "--dangerously-bypass-approvals-and-sandbox" if permission == "sandbox" else "-s workspace-write"
+        if not mcp:
+            sandbox += " -c 'mcp_servers={}'"
         if session:
             return (f"cd {sh_quote(cwd)} && codex exec resume {shlex.quote(session)} --json {sandbox}"
                     f"{self._common(model, effort)} - < {sh_quote(prompt_file)}")
@@ -229,12 +256,19 @@ class Codex(CliProfile):
         return ("codex login status 2>&1; echo '---'; f=$(find $HOME/.codex/sessions -name '*.jsonl' -printf '%T@ %p\\n' "
                 "2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-); [ -n \"$f\" ] && grep -h '\"rate_limits\"' \"$f\" | tail -1; true")
 
+    def interactive_cmd(self, cwd: str, model: str, effort: str, session: str | None, permission: str) -> str:
+        sandbox = "--dangerously-bypass-approvals-and-sandbox" if permission == "sandbox" else "-s workspace-write"
+        if session and session not in ("new", "per-run"):
+            return f"cd {shlex.quote(cwd)} && codex resume {shlex.quote(session)} {sandbox}{self._common(model, effort)}"
+        return f"cd {shlex.quote(cwd)} && codex {sandbox}{self._common(model, effort)}"
+
 
 class Antigravity(CliProfile):
     name, binary = "agy", "agy"
     install = PREREQ + "curl -fsSL https://antigravity.google/cli/install.sh | bash"
     login_hint = "agy  (출력된 URL을 브라우저에서 열고 코드 붙여넣기)  또는 GEMINI_API_KEY 설정"
     models = ("gemini-3-pro", "gemini-3-flash")
+    cheap_default = "gemini-3-flash"
 
     def _common(self, model, effort):
         return (f" --model {shlex.quote(model)}" if model else "") + f" --effort {effort}"
@@ -243,7 +277,7 @@ class Antigravity(CliProfile):
         return (f"agy -p \"$(cat {sh_quote(prompt_file)})\" --output-format json"
                 f"{self._common(model, effort)} --json-schema \"$(cat {sh_quote(schema_file)})\"")
 
-    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission):
+    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission, mcp=True):
         perm = " --dangerously-skip-permissions" if permission == "sandbox" else ""
         sess = f" --conversation {shlex.quote(session)}" if session else ""
         return (f"cd {sh_quote(cwd)} && agy -p \"$(cat {sh_quote(prompt_file)})\" --output-format json"
@@ -273,6 +307,11 @@ class Antigravity(CliProfile):
         return ("timeout 90 agy -p /usage --print-timeout 60s < /dev/null 2>&1 | tail -40; echo '---'; "
                 "timeout 90 agy -p /credits --print-timeout 60s < /dev/null 2>&1 | tail -20")
 
+    def interactive_cmd(self, cwd: str, model: str, effort: str, session: str | None, permission: str) -> str:
+        perm = " --dangerously-skip-permissions" if permission == "sandbox" else ""
+        sess = f" --conversation {shlex.quote(session)}" if session and session not in ("new", "per-run") else ""
+        return f"cd {shlex.quote(cwd)} && agy{self._common(model, effort)}{perm}{sess}"
+
 
 PROFILES: dict[str, CliProfile] = {p.name: p for p in (Claude(), Codex(), Antigravity())}
 
@@ -280,9 +319,14 @@ PROFILES: dict[str, CliProfile] = {p.name: p for p in (Claude(), Codex(), Antigr
 class VmAgent:
     """Runs CLI agents inside the workspace VM through a VmShell."""
 
-    def __init__(self, shell: VmShell, settings: AgentSettings):
+    def __init__(self, shell: VmShell, settings: AgentSettings, gate=None):
         self.shell, self.s = shell, settings
         self.p = PROFILES[settings.cli]
+        # gate(kind) -> "ALLOW" | "FALLBACK" (>= 80 % budget: use the cheap model) ; raises BudgetHalt at 100 %
+        self.gate = gate or (lambda kind: "ALLOW")
+
+    def cheap_model(self) -> str:
+        return self.s.cheap_model or self.p.cheap_default or self.s.model
 
     def _files(self, prompt: str, schema: dict | None = None):
         base = f"{self.shell.tmp}/{uuid.uuid4().hex}"
@@ -295,25 +339,42 @@ class VmAgent:
         return self.shell.run(f"command -v {self.p.binary} >/dev/null", timeout=30).exit_code == 0
 
     def structured(self, prompt: str, schema: dict, timeout: float = 900) -> tuple[dict, AgentResult]:
+        from .semantic_cache import cache_lookup, cache_store
+        ckey = (f"vm{self.shell.canvas_id}", self.p.name, self.cheap_model(), self.s.cheap_effort)
+        hit = cache_lookup(ckey, prompt, schema)
+        if hit is not None:  # identical question (e.g. pre-flight on unchanged specs): no model call
+            return hit, AgentResult(ok=True, text="", model="cache")
+        self.gate("structured")
         base = self._files(prompt + "\n\n반드시 JSON 객체 하나만 출력하세요.", schema)
-        cmd = self.p.structured_cmd(base + ".prompt", base + ".schema.json", self.s.cheap_model or self.s.model,
-                                    self.s.cheap_effort)
-        r = self.shell.run(cmd, timeout=timeout)
-        self.shell.run(f"rm -f {base}.*", timeout=30)
-        res = self.p.parse(r.output)
         from .infra import parse_json
-        data = parse_json(res.text) if res.text else {}
-        if not res.ok or not isinstance(data, dict) or (r.exit_code != 0 and not data):
-            detail = (res.text or "")[:300] or r.output[-300:]
-            raise CliError(f"{self.p.name} structured call failed (exit {r.exit_code}): {detail}")
-        return data, res
+        models = [self.cheap_model()]
+        if not self.s.cheap_model and self.s.model != models[0]:
+            models.append(self.s.model)  # implicit cheap default unavailable on this account -> main model
+        try:
+            for i, model in enumerate(models):
+                cmd = self.p.structured_cmd(base + ".prompt", base + ".schema.json", model, self.s.cheap_effort)
+                r = self.shell.run(cmd, timeout=timeout)
+                res = self.p.parse(r.output)
+                data = parse_json(res.text) if res.text else {}
+                if res.ok and isinstance(data, dict) and (r.exit_code == 0 or data):
+                    res.model = model
+                    cache_store(ckey, prompt, schema, data)
+                    return data, res
+                if i + 1 == len(models):
+                    detail = (res.text or "")[:300] or r.output[-300:]
+                    raise CliError(f"{self.p.name} structured call failed (exit {r.exit_code}): {detail}")
+        finally:
+            self.shell.run(f"rm -f {base}.*", timeout=30)
 
-    def agent(self, task: str, cwd: str, session: str | None, timeout: float = 3600, on_progress=None) -> AgentResult:
+    def agent(self, task: str, cwd: str, session: str | None, timeout: float = 3600, on_progress=None,
+              mcp: bool = True) -> AgentResult:
+        model = self.cheap_model() if self.gate("agent") == "FALLBACK" else self.s.model
         base = self._files(task)
-        cmd = self.p.agent_cmd(base + ".prompt", cwd, self.s.model, self.s.effort, session, self.s.permission)
+        cmd = self.p.agent_cmd(base + ".prompt", cwd, model, self.s.effort, session, self.s.permission, mcp)
         r = self.shell.run(cmd, timeout=timeout, on_progress=on_progress)
         self.shell.run(f"rm -f {base}.*", timeout=30)
         res = self.p.parse(r.output)
+        res.model = model
         if r.timed_out:
             res.ok, res.text = False, f"timeout after {timeout}s"
         elif r.exit_code != 0 and not res.text:

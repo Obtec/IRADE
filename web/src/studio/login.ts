@@ -1,4 +1,11 @@
+import { endSession, establishSession, hasSession } from './authToken.ts';
 import { initParticleField } from './particleField.ts';
+
+// Never log in inside a frame (e.g. the AGDD console's Studio iframe): the post-login redirect would
+// nest the whole console inside that frame.
+if (window.top && window.top !== window.self) {
+  try { window.top.location.replace(location.href); } catch { /* cross-origin parent: stay framed */ }
+}
 
 interface Login { accessToken?: string; mfaRequired?: boolean; challengeToken?: string }
 interface Profile { orcid: string; issuer: string }
@@ -6,7 +13,20 @@ initParticleField('#login-particles', { variant: 'login' });
 const get = <T extends HTMLElement = HTMLElement>(selector: string): T => document.querySelector<T>(selector)!;
 const origin = location.origin;
 const params = new URL(location.href).searchParams;
-if (params.get('next') === '/agdd/') { sessionStorage.setItem('irade.login.next', '/agdd/'); }
+const NEXT = ['/agdd/', '/agdd/notebook'];  // where to return after login (default: AGDD console)
+if (NEXT.includes(params.get('next') || '')) { sessionStorage.setItem('irade.login.next', params.get('next')!); }
+// Still signed in (stateless 24 h token): skip the login screen. The hint cookie alone is not proof —
+// confirm with the server first, otherwise a stale/invalid session cookie bounces between here and `next`.
+if (!params.has('orcid') && hasSession()) {
+  void (async () => {
+    let valid = false;
+    try { valid = (await fetch('/api/irade/auth/me', { credentials: 'same-origin', redirect: 'error' })).ok; } catch { /* treat as signed out */ }
+    if (!valid) { await endSession(); return; }
+    const next = new URL(NEXT.includes(params.get('next') || '') ? params.get('next')! : '/agdd/', origin);
+    if (params.get('workspace')) { next.searchParams.set('workspace', String(Number(params.get('workspace')))); }
+    sessionStorage.removeItem('irade.login.next'); location.replace(String(next));
+  })();
+}
 const target = Number(params.get('workspace'));
 const workspace = Number.isSafeInteger(target) && target > 0 ? target : undefined;
 const button = get<HTMLButtonElement>('#orcid-login');
@@ -23,13 +43,12 @@ async function request<T>(path: string, body?: object, token?: string): Promise<
   if (!response.ok) { throw new Error(result.message || '로그인을 완료하지 못했습니다. 다시 시도하세요.'); }
   return result as T;
 }
-function finish(result: Login): void {
+async function finish(result: Login): Promise<void> {
   if (!result.accessToken) { throw new Error('로그인 토큰을 받지 못했습니다.'); }
-  sessionStorage.setItem(`irade.orcid.token:${origin}`, result.accessToken);
-  const next = sessionStorage.getItem('irade.login.next');
+  await establishSession(result.accessToken);  // HttpOnly cookie; the token is not kept by the page
+  const next = sessionStorage.getItem('irade.login.next') || '/agdd/';
   sessionStorage.removeItem('irade.login.next');
-  if (next === '/agdd/') { location.replace(new URL(next, origin).toString()); return; }
-  const url = new URL('/studio', origin);
+  const url = new URL(NEXT.includes(next) ? next : '/agdd/', origin);
   if (workspace) { url.searchParams.set('workspace', String(workspace)); } else { url.searchParams.set('workspaces', '1'); }
   location.replace(String(url));
 }
@@ -49,7 +68,7 @@ get('#mfa-form').addEventListener('submit', event => {
   void (async () => { try {
     const data = new FormData(event.target as HTMLFormElement);
     const result = await request<Login>(authEndpoint('mfa/verify'), { challengeToken: challenge, code: String(data.get('code')).trim() });
-    if (completing) { finish(result); } else if (result.accessToken) { await link(result.accessToken); } else { throw new Error('인증 응답을 확인할 수 없습니다.'); }
+    if (completing) { await finish(result); } else if (result.accessToken) { await link(result.accessToken); } else { throw new Error('인증 응답을 확인할 수 없습니다.'); }
   } catch (error) { fail(error); } finally { submit.disabled = false; } })();
 });
 get('#link-form').addEventListener('submit', event => {
@@ -80,7 +99,7 @@ void (async () => {
       else {
         const response = await request<{ login: Login; orcid: string; issuer: string }>('/api/irade/auth/session', {});
         completing = response;
-        if (!verify(response.login)) { finish(response.login); }
+        if (!verify(response.login)) { await finish(response.login); }
       }
     }
   } catch (error) { fail(error); }

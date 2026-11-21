@@ -226,6 +226,8 @@ public class JwtTokenProvider {
         return false;
     }
 
+    public java.util.Date getExpiration(String token){return getClaims(token).getExpiration();}
+
     private Claims getClaims(String token) {
         return Jwts.parser()
                 .verifyWith(key)

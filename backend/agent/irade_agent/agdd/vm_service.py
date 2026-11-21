@@ -12,6 +12,7 @@ from .vm import CANVAS_BASE, RuntimeClient, VmShell
 
 REPOS_DIR = "/workspace/repos"
 _shells: dict[tuple, VmShell] = {}
+_canvas_cache: dict[str, int] = {}
 _lock = threading.Lock()
 
 
@@ -20,15 +21,24 @@ def enabled() -> bool:
 
 
 def canvas_for(workspace_id) -> int:
+    key = str(workspace_id)
+    with _lock:
+        hit = _canvas_cache.get(key)
+        if hit is not None:
+            return hit
     with infra.pg() as c:
         r = c.execute("SELECT canvas_id FROM workspace_vms WHERE workspace_id=%s", (workspace_id,)).fetchone()
         if r:
-            return r["canvas_id"]
-        r = c.execute("INSERT INTO workspace_vms (workspace_id, canvas_id) VALUES (%s, %s + nextval('agdd_vm_seq')) "
-                      "ON CONFLICT (workspace_id) DO UPDATE SET workspace_id = EXCLUDED.workspace_id "
-                      "RETURNING canvas_id", (workspace_id, CANVAS_BASE)).fetchone()
-        c.commit()
-        return r["canvas_id"]
+            cid = r["canvas_id"]
+        else:
+            r = c.execute("INSERT INTO workspace_vms (workspace_id, canvas_id) VALUES (%s, %s + nextval('agdd_vm_seq')) "
+                          "ON CONFLICT (workspace_id) DO UPDATE SET workspace_id = EXCLUDED.workspace_id "
+                          "RETURNING canvas_id", (workspace_id, CANVAS_BASE)).fetchone()
+            c.commit()
+            cid = r["canvas_id"]
+    with _lock:
+        _canvas_cache[key] = int(cid)
+    return int(cid)
 
 
 def shell(workspace_id, name: str = "agdd") -> VmShell:
@@ -59,16 +69,34 @@ def save_settings(workspace_id, data: dict, user) -> AgentSettings:
 
 
 def agent(workspace_id, override: dict | None = None, name: str = "agdd") -> VmAgent:
-    return VmAgent(shell(workspace_id, name), load_settings(workspace_id, override))
+    return VmAgent(shell(workspace_id, name), load_settings(workspace_id, override), budget_gate(workspace_id))
+
+
+def budget_gate(workspace_id):
+    """Returns a gate(kind) for VmAgent: reads this month's workspace_budgets row (no row = unlimited)."""
+    from datetime import datetime, timezone
+    from . import budget
+
+    def gate(kind):
+        period = datetime.now(timezone.utc).strftime("%Y-%m")
+        with infra.pg(readonly=True) as c:
+            row = c.execute("SELECT limit_usd, spent_usd FROM workspace_budgets WHERE workspace_id=%s AND period_ym=%s",
+                            (workspace_id, period)).fetchone()
+        return "ALLOW" if row is None else budget.cli_gate(row["limit_usd"], row["spent_usd"])
+    return gate
 
 
 def record_usage(workspace_id, run_id, node, settings: AgentSettings, res, ms: int, cheap: bool = False):
-    """CLI calls are billed by the provider plan, not the gateway: keep tokens/cost + rate-limit snapshots."""
+    """Record tokens/cost + rate-limit snapshots and charge reported CLI cost to the workspace budget."""
+    from datetime import datetime, timezone
     from . import pgstore
-    model = f"{settings.cli}:{(settings.cheap_model if cheap else settings.model) or 'default'}"
+    model = f"{settings.cli}:{getattr(res, 'model', '') or (settings.cheap_model if cheap else settings.model) or 'default'}"
     with infra.pg() as c:
         if run_id:
             pgstore.record_execution(c, run_id, node or "-", model, res.usage or {}, res.cost_usd or 0, ms)
+        if res.cost_usd:
+            c.execute("UPDATE workspace_budgets SET spent_usd = spent_usd + %s WHERE workspace_id=%s AND period_ym=%s",
+                      (res.cost_usd, workspace_id, datetime.now(timezone.utc).strftime("%Y-%m")))
         if res.rate_limits:
             c.execute("INSERT INTO cli_usage_snapshots (workspace_id, cli, rate_limits) VALUES (%s,%s,%s) "
                       "ON CONFLICT (workspace_id, cli) DO UPDATE SET rate_limits=EXCLUDED.rate_limits, "

@@ -27,7 +27,7 @@ try {
 	const page = await context.newPage();
 	page.setDefaultTimeout(20000);
 
-	await page.goto(`${origin}/?workspace=42`, { waitUntil: 'networkidle' });
+	await page.goto(`${origin}/agdd/notebook?workspace=42`, { waitUntil: 'networkidle' });
 	const logoLoaded = await page.locator('.wordmark img').evaluate(img => img.complete && img.naturalWidth > 0);
 	assert.equal(logoLoaded, true, 'IRADE header logo must load');
 	await page.waitForFunction(() => document.querySelector('#connection-label')?.textContent === 'WORKSPACE LIVE SYNC');
