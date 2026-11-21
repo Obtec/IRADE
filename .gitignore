@@ -187,11 +187,18 @@ docker-compose.override.yml
 *.sqlite
 *.sqlite3
 *.db
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.db-wal
+*.db-shm
 *.rdb
 *.dump
 *.bak
 *.sql.gz
 *.tmp
+.*-tmp.*
 appendonlydir/
 /db/elasticsearch/.dev-tls/
 /db/elasticsearch/certs/
@@ -219,3 +226,7 @@ appendonlydir/
 # Local design drafts (not part of the repository)
 /DOC.md
 /graphspec_agdd.html
+
+# AGDD local runtime artifacts
+.agdd/
+**/.agdd/

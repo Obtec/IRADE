@@ -257,3 +257,9 @@ appendonlydir/
 # AGDD local runtime
 agdd.env
 agdd-workspace/
+*.sqlite-wal
+*.sqlite-shm
+*.db-wal
+*.db-shm
+.agdd/
+**/.agdd/

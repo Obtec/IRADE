@@ -94,3 +94,22 @@ Email verification uses Spring Mail and its Jakarta Mail/Angus runtime dependenc
 ## Passkey verification
 
 [Yubico java-webauthn-server](https://github.com/Yubico/java-webauthn-server) `webauthn-server-core` and `yubico-util` 2.10.1 are used for server-side WebAuthn verification. Their upstream COPYING includes BSD-2-Clause and Google BSD-3-Clause notices; the exact versioned [COPYING](licenses/upstream/yubico-webauthn-2.10.1-COPYING) is included in the application JAR under `META-INF/agora-licenses`. Locked transitive dependencies retain their own licenses.
+
+## AGDD Agent & Console
+
+The AGDD control-plane and worker images (`backend/docker/agdd/agdd.Dockerfile`, `worker.Dockerfile`) install Python packages pinned in `backend/agent/requirements.txt` and `backend/agent/requirements-agdd.txt`:
+
+| Component | Version | License and notice |
+| --- | --- | --- |
+| `psycopg`, `psycopg-binary`, `psycopg-pool` | 3.2.9 / 3.2.6 | **LGPL-3.0**; keep installed wheel `.dist-info` notices and satisfy LGPL-3.0 relinking/source obligations if redistributing the container images. |
+| `openai` | 2.54.0 | Apache-2.0 |
+| `mcp` | 1.30.0 | MIT |
+| `python-dotenv` | 1.2.4 | BSD-3-Clause |
+| `redis` | 6.2.0 | MIT |
+| `boto3` | 1.38.0 | Apache-2.0 |
+| `duckdb` | 1.3.0 | MIT |
+| `pyarrow` | 20.0.0 | Apache-2.0 |
+| `pytest` (worker image) | 8.4.1 | MIT |
+| `playwright` (worker image) | 1.64.1 | Apache-2.0; worker image also installs Playwright Chromium binaries at build time under `/ms-playwright`. |
+
+At runtime in browsers, `backend/agent/irade_agent/agdd/static/console.html` loads `@xterm/xterm` 5.5.0 (MIT), `@xterm/addon-fit` 0.10.0 (MIT), and `monaco-editor` 0.52.2 (MIT) from jsDelivr CDN (not vendored in this repository). Separate vendor Docker images referenced by `backend/docker-compose.agdd.yml` (`pgvector/pgvector:pg17`, `valkey/valkey:8.1`, `chrislusf/seaweedfs:3.97`, `edoburu/pgbouncer`) are not redistributed by this repository.
