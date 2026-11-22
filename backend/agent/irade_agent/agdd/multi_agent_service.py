@@ -500,6 +500,7 @@ def invoker(ws, repo_key: str, run_id: str, media: VmMedia | None = None):
         settings = vm_service.load_settings(ws, override)
         term = f"agdd-ma-{node['id']}" + (f"-t{ctx['subtask']['index']}" if ctx.get("subtask") else "")
         sh = VmShell(RuntimeClient(), vm_service.canvas_for(ws), term[:64])  # parallel sub-tasks: one PTY each
+        sh.mirror = True  # echo CLI output into the PTY: the console's agent monitor watches it live
         agent = VmAgent(sh, settings, vm_service.budget_gate(ws))
         files = media.files_for(metas)
         t0 = time.time()

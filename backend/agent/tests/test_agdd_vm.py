@@ -65,6 +65,22 @@ def test_structured_and_agent_with_session_resume(vm):
     assert "--resume" in calls[2] and "bypassPermissions" in " ".join(calls[1])
 
 
+
+def test_mirror_echoes_output_to_pty_and_keeps_exit_code(vm):
+    """mirror=True: the console's agent monitor sees captured output live in the PTY; result is unchanged."""
+    sh, home, rt = vm
+    sh.mirror = True
+    before = sh.offset
+    r = sh.run("echo mirrored-line; echo " + "x" * 600 + "; exit 3")
+    assert r.exit_code == 3 and "mirrored-line" in r.output and "x" * 600 in r.output  # capture file is unclipped
+    import base64
+    poll = sh.client.terminal(sh.canvas_id, sh.owner, sh.name, "poll", offset=before)
+    seen = base64.b64decode(poll.get("data") or b"").decode(errors="replace")
+    assert "mirrored-line" in seen and "x" * 600 not in seen  # PTY view is clipped to MIRROR_COLS
+    sh.mirror = False
+    r2 = sh.run("echo hidden-line")
+    assert r2.exit_code == 0 and r2.output.strip() == "hidden-line"
+
 def test_settings_validation():
     with pytest.raises(ValueError):
         AgentSettings.from_row({"cli": "nope"})
@@ -117,3 +133,98 @@ def test_agy_real_output_shape():
 def test_claude_not_logged_in_is_failure():
     out = '{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login","session_id":"x"}'
     assert not PROFILES["claude"].parse(out).ok
+
+
+def test_vmshell_recovers_from_expired_pty(tmp_path):
+    rt = FakeRuntime(str(tmp_path / "m.sock"), str(tmp_path / "vms"))
+    home = tmp_path / "vms" / "1900000001"
+    home.mkdir(parents=True, exist_ok=True)
+    sh = VmShell(RuntimeClient(str(tmp_path / "m.sock")), 1900000001, "agdd-exp", home=str(home))
+    try:
+        r1 = sh.run_inline("echo FIRST", timeout=5)
+        assert r1.exit_code == 0 and "FIRST" in r1.output
+
+        # Simulate guest idle-reaper removing all live PTY sessions while host holds VmShell.
+        with rt.state.lock:
+            for key, sess in list(rt.state.sessions.items()):
+                sess.proc.kill()
+                del rt.state.sessions[key]
+
+        r2 = sh.run_inline("echo RECOVERED", timeout=5)
+        assert r2.exit_code == 0 and "RECOVERED" in r2.output
+    finally:
+        sh.close()
+        rt.stop()
+
+
+def test_vmshell_read_file_timeout_raises_runtime_error_and_decodes_b64(monkeypatch, tmp_path):
+    import base64
+    from irade_agent.agdd.vm import CommandResult, RuntimeError_
+
+    rt = FakeRuntime(str(tmp_path / "m.sock"), str(tmp_path / "vms"))
+    sh = VmShell(RuntimeClient(str(tmp_path / "m.sock")), 1900000001, "agdd-rf")
+    try:
+        monkeypatch.setattr(sh, "run", lambda *a, **k: CommandResult(124, "timeout after 30s", timed_out=True))
+        with pytest.raises(RuntimeError_):
+            sh.read_file("/tmp/missing.json")
+
+        monkeypatch.setattr(sh, "run", lambda *a, **k: CommandResult(1, "timeout after 30s", timed_out=False))
+        with pytest.raises(RuntimeError_):
+            sh.read_file("/tmp/missing.json")
+
+        payload = base64.b64encode(b'{"ok":true}').decode()
+        monkeypatch.setattr(
+            sh,
+            "run",
+            lambda cmd, *a, **k: CommandResult(0, "11") if "stat " in cmd else CommandResult(0, f"{payload[:8]}\r\n{payload[8:]}\n"),
+        )
+        assert sh.read_file("/tmp/ok.json") == b'{"ok":true}'
+    finally:
+        sh.close()
+        rt.stop()
+
+
+def test_agy_model_effort_and_structured_cmd():
+    agy = PROFILES["agy"]
+    assert agy.cheap_default == "gemini-3.8-flash"
+
+    # Empty model must not emit --effort (rejected by agy CLI when model is default).
+    cmd_empty = agy.agent_cmd("/w/p", "/r", "", "low", None, "sandbox")
+    assert "--model" not in cmd_empty and "--effort" not in cmd_empty
+
+    # gemini-3.8-flash does not accept max/xhigh; effort must be clamped.
+    cmd_clamped = agy.agent_cmd("/w/p", "/r", "gemini-3.8-flash", "max", None, "sandbox")
+    assert "--model gemini-3.8-flash" in cmd_clamped and "--effort max" not in cmd_clamped
+
+    # structured_cmd passes schema path directly via --json-schema and disables slash commands.
+    sc = agy.structured_cmd("/w/p", "/w/schema.json", "gemini-3.8-flash", "low")
+    assert "--print=" in sc and "--json-schema" in sc and "/w/schema.json" in sc
+    assert "--model gemini-3.8-flash" in sc and "--effort low" in sc
+    assert "--disable-slash-commands" in sc and "cat '/w/schema.json'" not in sc
+
+
+def test_vmagent_structured_fails_fast_on_auth_error(tmp_path):
+    from irade_agent.agdd.cli_agents import CliError
+
+    rt = FakeRuntime(str(tmp_path / "m.sock"), str(tmp_path / "vms"))
+    home = tmp_path / "vms" / "1900000001"
+    (home / ".local" / "bin").mkdir(parents=True)
+    agy_stub = home / ".local" / "bin" / "agy"
+    agy_stub.write_text(
+        '#!/usr/bin/env python3\n'
+        'import json, os, sys\n'
+        'open(os.path.join(os.environ["HOME"], "agy-calls.log"), "a").write(json.dumps(sys.argv[1:]) + "\\n")\n'
+        'print(json.dumps({"conversation_id":"","status":"ERROR","response":"","error":"Not logged in. Please authenticate first.","usage":{}}))\n'
+        'sys.exit(1)\n'
+    )
+    agy_stub.chmod(agy_stub.stat().st_mode | stat.S_IEXEC)
+    sh = VmShell(RuntimeClient(str(tmp_path / "m.sock")), 1900000001, "agdd-auth", home=str(home))
+    try:
+        settings = AgentSettings(cli="agy", model="gemini-4-neon", cheap_model="gemini-4-neon", effort="low", permission="sandbox")
+        with pytest.raises(CliError):
+            VmAgent(sh, settings).structured("hello", {"type": "object"})
+        calls = (home / "agy-calls.log").read_text().strip().splitlines()
+        assert len(calls) == 1
+    finally:
+        sh.close()
+        rt.stop()

@@ -213,3 +213,41 @@ def test_route_request_retries_then_falls_back():
     assert router.route_request("x", lambda p, s: calls.append(1) or seq.pop(0)).route_mode == "FAST_TRACK"
     assert len(calls) == 2
     assert router.route_request("x", lambda p, s: {}).reasons == ["size estimate unavailable"]
+
+
+def test_preflight_coalesces_batches_and_checks_bidirectional_adoption(eng):
+    # All 3 small domains in PLATFORM_SNAPSHOT fit into a single semantic batch.
+    assert len(preflight.build_batches(eng)) == 1
+
+    # Reverse traceability direction (ARC -> SRS): ACCEPT_NOW SRS linked from DEFER ARC.
+    eng.trace("ARC", "ARC-004", "SRS", "REQ-001", "IMPLEMENTS")
+    types = {(c["conflict_type"], tuple(sorted(c["involved_ids"]))) for c in preflight.sql_checks(eng)}
+    assert ("ADOPTION_MISMATCH", ("ARC-004", "REQ-001")) in types
+
+
+def test_semantic_checks_handles_weird_recommended_and_sequential_workers(eng):
+    def llm(prompt, schema):
+        return {
+            "conflicts": [
+                {
+                    "conflict_type": "REQ_VS_REQ",
+                    "severity": "WARNING",
+                    "involved_ids": ["REQ-001", "REQ-002"],
+                    "explanation": "edge case",
+                    "resolution_options": ["opt A", "opt B"],
+                    "recommended": None,
+                },
+                {
+                    "conflict_type": "REQ_VS_ARC",
+                    "severity": "WARNING",
+                    "involved_ids": ["REQ-001", "ARC-002"],
+                    "explanation": "bool rec",
+                    "resolution_options": ["first", "second"],
+                    "recommended": True,
+                },
+            ]
+        }
+
+    out = preflight.semantic_checks(eng, llm, workers=1)
+    assert len(out) == 2
+    assert all(c["resolution_options"]["recommended"] == 0 for c in out)

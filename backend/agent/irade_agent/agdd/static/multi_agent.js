@@ -108,6 +108,7 @@
     if (b) b.textContent = "저장 *";
     if ($("#ma-undo")) $("#ma-undo").disabled = !MA.undo.length;
     if ($("#ma-redo")) $("#ma-redo").disabled = !MA.redo.length;
+    clearTimeout(MA._monT); MA._monT = setTimeout(() => syncMonitor(), 300);  // agents added/removed/renamed
   };
   let maLastUndoKey = "", maLastUndoAt = 0;
   function snapshotMaUndo() {
@@ -657,6 +658,65 @@
     return fresh.length;
   }
 
+  // ------------------------------------------------------------ agent monitor (one read-only VM PTY per agent)
+  // Each agent call runs in its own automation PTY `agdd-ma-<node>` (orchestrator workers: `-t<index>`) and the
+  // CLI output is mirrored there, so the console can watch every agent live. A PTY is opened per call and closed
+  // afterwards; while the run is RUNNING a pane keeps re-attaching to the next session of the same name.
+  const termOf = (id, idx) => (`agdd-ma-${id}` + (idx == null ? "" : `-t${idx}`)).slice(0, 64);
+  const isWorker = id => MA.graph.edges.some(e => e.to === id && e.when === "spawn");
+  const runActive = () => MA.run?.status === "RUNNING";
+  const ST_KO = { idle: "대기", pending: "대기", running: "작업 중", done: "완료", failed: "실패", skipped: "건너뜀", waiting: "입력 대기" };
+  const ST_CLS = { running: "warn", done: "ok", failed: "bad", waiting: "warn" };
+  function subtaskStates() {
+    const m = {};
+    for (const e of MA.run?.events || []) {
+      const x = e.meta_json || {};
+      if (!x.subtask || x.index == null || !e.node) continue;
+      const status = e.type === "node_started" ? "running" : e.type === "node_finished" ? "done" : e.type === "node_failed" ? "failed" : "";
+      if (status) m[termOf(e.node, x.index)] = { node: e.node, index: x.index, status };
+    }
+    return m;
+  }
+  const paneStatus = p => (p.index != null ? MA._subs?.[p.name]?.status : nodeState(p.node)?.status) || "idle";
+
+  function buildMonitor() {
+    if (MA.mon) { MA.mon.stop(); MA.mon = null; }
+    const host = $("#ma-mon"); if (!host) return;
+    if (!MA.vm) { host.innerHTML = `<div class="muted" style="font-size:12.5px">에이전트별 실시간 터미널은 워크스페이스 VM이 연결된 경우에만 사용할 수 있습니다 (CLI 에이전트가 VM PTY에서 실행됨).</div>`; return; }
+    const agents = MA.graph.nodes.filter(n => n.kind === "agent").length;
+    MA.mon = G.TermGrid(host, {
+      storeKey: "agdd.ma.mon", layout: agents > 2 ? "4" : "2", closable: false, fontSize: 12,
+      height: Math.max(360, Math.round(innerHeight * 0.55)),
+      connect: () => runActive(), rearm: () => runActive(),
+      idleText: () => "팀이 실행되면 이 에이전트의 CLI 출력이 실시간으로 표시됩니다.",
+      busy: p => paneStatus(p) === "running",
+      meta: p => {
+        const s = paneStatus(p), ns = p.index == null ? nodeState(p.node) : null, n = node(p.node);
+        return `<span class="chip ${ST_CLS[s] || ""}" style="font-size:10.5px;padding:0 6px">${esc(ST_KO[s] || s)}</span>`
+          + (ns?.runs ? `<span class="chip" style="font-size:10.5px;padding:0 6px">#${ns.runs}</span>` : "")
+          + (n ? `<span class="chip" style="font-size:10.5px;padding:0 6px">${esc(n.mode || "think")}${n.cli ? " · " + esc(n.cli) : ""}</span>` : "");
+      },
+      onActive: p => { if (p?.node && node(p.node)) { MA.sel = { type: "node", id: p.node }; draw(true); } },
+      empty: "팀에 에이전트 노드가 없습니다.",
+    });
+    syncMonitor();
+  }
+
+  function syncMonitor() {
+    const mon = MA.mon; if (!mon || !MA.graph || G.getTAB() !== "team") return;
+    MA._subs = subtaskStates();
+    const want = MA.graph.nodes.filter(n => n.kind === "agent" && !isWorker(n.id))
+      .map(n => ({ name: termOf(n.id), node: n.id, index: null, label: `🤖 ${n.label || n.id}` }));
+    for (const [name, v] of Object.entries(MA._subs)) want.push({ name, node: v.node, index: v.index, label: `⑂ ${label(v.node)} · 워커 #${v.index + 1}` });
+    const names = new Set(want.map(w => w.name));
+    for (const p of [...mon.panes]) if (!names.has(p.name)) mon.remove(p.name);
+    for (const w of want) { const p = mon.find(w.name); if (p) Object.assign(p, w); else mon.add({ ...w, ro: true, banner: false }, { focus: false }); }
+    if (runActive()) for (const p of mon.panes) if (!p.term || p.state === "ended") mon.connect(p.name, { fresh: true });
+    mon.refresh();
+    const c = $("#ma-mon-count");
+    if (c) { const busy = mon.panes.filter(p => paneStatus(p) === "running").length; c.textContent = `${mon.panes.length}개 세션${busy ? ` · ${busy}개 작업 중` : ""}`; }
+  }
+
   async function poll() {
     clearTimeout(MA.poll);
     if (!MA.run || G.getTAB() !== "team") return;
@@ -665,7 +725,7 @@
       const data = await api("GET", `${WSP()}/team-runs/${MA.run.team_run_id}?after=${after}`, undefined, { fresh: true });
       if (G.getTAB() !== "team") return;
       ingest(data);
-      draw(); drawFeed(); drawRunHead();
+      draw(); drawFeed(); drawRunHead(); syncMonitor();
       if (data.status !== "RUNNING") { refreshHistory(); return; }
     } catch (e) { toast(e.message, true); }
     MA.poll = setTimeout(poll, 1500);
@@ -683,7 +743,7 @@
     const res = await api("POST", `${WSP()}/team-runs`, { team_id: MA.teamId || null, graph: MA.graph, request, attachments: MA.runAtt }, { noInvalidate: true });
     MA.run = { team_run_id: res.team_run_id, status: "RUNNING", events: [], node_state: {}, result_json: {}, active: true };
     toast("팀 실행을 시작했습니다");
-    draw(); drawFeed(); drawRunHead(); refreshHistory(); poll();
+    draw(); drawFeed(); drawRunHead(); refreshHistory(); syncMonitor(); poll();
   }
 
   // ------------------------------------------------------------ team persistence
@@ -765,7 +825,10 @@
           <div id="ma-runhead" style="margin-top:8px"></div>
         </div>
         <div class="card" style="margin:0"><b>협업 타임라인</b> <span class="muted" style="font-size:12px">에이전트 작업·메시지·결과가 실시간으로 표시됩니다</span><div id="ma-feed" class="ma-feed" style="margin-top:8px"></div></div>
-      </div>`);
+      </div>
+      <div class="card" style="margin:12px 0 0"><div class="row" style="margin-bottom:6px"><b>에이전트 모니터</b> <span class="muted" style="font-size:12px" id="ma-mon-count"></span>
+        <span class="muted" style="font-size:12px">— 에이전트마다 VM 터미널(<span class="mono">agdd-ma-*</span>)의 CLI 출력을 읽기 전용으로 실시간 표시합니다. 패널을 누르면 캔버스에서 해당 노드가 선택됩니다.</span></div>
+        <div id="ma-mon"></div></div>`);
 
     $("#ma-team").onchange = e => {
       if (MA.dirty && !confirm("저장하지 않은 변경 사항이 있습니다. 계속할까요?")) { e.target.value = MA.teamId; return; }
@@ -841,7 +904,7 @@
       const data = await api("GET", `${WSP()}/team-runs/${e.target.value}`, undefined, { fresh: true });
       ingest(data, true); MA.flashes = [];
       if (data.graph_json && confirm("이 실행에 사용된 그래프를 캔버스에 불러올까요? (취소: 현재 캔버스 유지)")) { snapshotMaUndo(); const u = MA.undo, r = MA.redo; loadGraph(data.graph_json, MA.teamId, MA.name); MA.undo = u; MA.redo = r; touch(); }
-      draw(); drawFeed(); drawRunHead(); if (data.status === "RUNNING") poll();
+      draw(); drawFeed(); drawRunHead(); syncMonitor(); if (data.status === "RUNNING") poll();
     });
     const vw = $("#view");
     vw.onkeydown = null;
@@ -865,7 +928,7 @@
       });
     }
     if (!MA.json) draw(true); else drawInspector();
-    drawFeed(); drawRunHead(); refreshHistory();
+    drawFeed(); drawRunHead(); refreshHistory(); buildMonitor();
     if (MA.run?.status === "RUNNING") poll();
     clearInterval(MA.anim);
     MA.anim = setInterval(() => { if (G.getTAB() !== "team") return clearInterval(MA.anim); if (MA.flashes.length) draw(); }, 900);

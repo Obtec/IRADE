@@ -28,6 +28,7 @@
     if (COLLAB.cliTerm) { try { COLLAB.cliTerm.stop(); } catch {} COLLAB.cliTerm = null; }
     COLLAB.renderedMode = "";
     COLLAB.watchRunId = "";
+    COLLAB.activeRunStatus = "";
     COLLAB.feedSig = "";
     COLLAB.filesSig = "";
   }
@@ -197,6 +198,7 @@
     }
 
     const activeRun = (state.runs || [])[0] || null;
+    COLLAB.activeRunStatus = activeRun?.status || "";
     if ($("#c-run-status")) {
       $("#c-run-status").innerHTML = activeRun
         ? `<span class="chip ${statusCls(activeRun.status)}">${esc(activeRun.status)}</span>`
@@ -439,7 +441,12 @@
       box.hidden = !box.hidden;
       if (!box.hidden && !COLLAB.watchTerm) {
         $("#c-watch-term").innerHTML = "";
-        COLLAB.watchTerm = openTerminal($("#c-watch-term"), `agdd-${String(COLLAB.watchRunId).slice(0, 8)}`, true);
+        COLLAB.watchTerm = openTerminal(
+          $("#c-watch-term"),
+          `agdd-${String(COLLAB.watchRunId).slice(0, 8)}`,
+          true,
+          { rearm: () => ["PENDING", "RUNNING"].includes(COLLAB.activeRunStatus) }
+        );
       }
     };
     $("#c-refresh-state").onclick = () => renderCollab();

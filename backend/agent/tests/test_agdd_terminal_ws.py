@@ -399,3 +399,27 @@ def test_automation_watch_mode_is_readonly_and_does_not_spawn_pty(env):
         ws2.close()
     finally:
         sh.close()
+
+
+def test_automation_watch_attach_error_returns_expired_not_fatal_error(env, monkeypatch):
+    """When an automation PTY disappears mid-attach, watch mode emits expired=True instead of an error frame."""
+
+    class _DyingAttachClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def terminal(self, *a, **k):
+            return {"data": "", "offset": 0}
+
+        def attach_terminal(self, cid, owner, name, cols=80, rows=24, offset=0, mirror=True):
+            raise OSError("pty closed during attach")
+
+    monkeypatch.setattr("irade_agent.agdd.vm.RuntimeClient", _DyingAttachClient)
+
+    tk = _post_ticket(env, name="agdd-dying")["ticket"]
+    ws = _connect_ws(env, name="agdd-dying")
+    ws.send_json({"type": "attach", "ticket": tk, "cols": 80, "rows": 24, "offset": 0})
+    frame = ws.recv_json()
+    assert frame.get("type") == "output" and frame.get("expired") is True
+    assert frame.get("type") != "error"
+    ws.close()

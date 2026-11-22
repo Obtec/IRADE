@@ -24,10 +24,16 @@ SYSTEM_OWNER = 1
 INPUT_CHUNK = 6000           # manager limit: 8192 bytes per input
 READ_CHUNK = 96 * 1024       # bytes of file per base64 read (< 256 KiB PTY buffer after encoding)
 POLL_INTERVAL = 0.4
+MIRROR_COLS = 400            # mirrored (watched) output: clip long stream-json lines in the PTY view
 KEEPALIVE = 60               # guest reaps sessions idle > 120 s
+IDLE_REOPEN = 110            # reopen cached PTYs proactively before guest 120 s idle reap
 
 
 class RuntimeError_(Exception):
+    pass
+
+
+class _SessionExpired(RuntimeError_):
     pass
 
 
@@ -139,27 +145,45 @@ class VmShell:
     """A dedicated automation PTY in the workspace VM. Commands run via bash with output captured to files."""
 
     def __init__(self, client: RuntimeClient, canvas_id: int, name: str = "agdd", owner: int = SYSTEM_OWNER,
-                 home: str = "/workspace"):
+                 home: str = "/workspace", mirror: bool = False):
         self.client, self.canvas_id, self.name, self.owner = client, canvas_id, name, owner
+        # mirror=True also echoes captured command output to the PTY (lines clipped to MIRROR_COLS) so members
+        # watching this automation terminal in the console see the agent working live. The full output is still
+        # read back from the capture file.
+        self.mirror = mirror
         self.home = home.rstrip("/")
         self.tmp = f"{self.home}/.agdd/tmp"
         self.offset = 0
         self.opened = False
+        self._last_ok = 0.0
         self.lock = threading.RLock()  # one command at a time per PTY
 
     def _term(self, op, data=""):
         r = self.client.terminal(self.canvas_id, self.owner, self.name, op, data, offset=self.offset)
         if r.get("error"):
+            if op != "open":
+                self.opened = False
             raise RuntimeError_(f"terminal {op} failed: {r.get('message') or r['error']}")
+        if r.get("expired"):
+            self.opened = False
+            raise _SessionExpired("terminal session expired")
+        self._last_ok = time.monotonic()
         return r
 
     def open(self) -> None:
+        self.offset = 0
+        self.opened = False
         r = self._term("open")
         self.offset = r.get("offset", 0)
         self.opened = True
         # quiet, deterministic shell for automation
-        self._send(f"stty -echo; export PS1='' PROMPT_COMMAND='' HISTFILE=/dev/null; mkdir -p {self.tmp}\n")
-        self._read_until(None, 3)
+        tag = uuid.uuid4().hex[:8]
+        ready = f"__AGDD_READY_{tag}__"
+        self._send(
+            f"stty -echo; export PS1='' PROMPT_COMMAND='' HISTFILE=/dev/null; "
+            f"mkdir -p {self.tmp}; echo \"__AGDD_READY_\"\"{tag}__\"\n"
+        )
+        self._read_until(ready, 15)
 
     def _send(self, text: str) -> None:
         data = text.encode()
@@ -172,14 +196,14 @@ class VmShell:
         delay = 0.03  # adaptive polling: quick commands return in tens of ms, long ones back off to POLL_INTERVAL
         while time.monotonic() < end:
             r = self._term("poll")
-            if r.get("expired"):
-                self.opened = False
-                raise RuntimeError_("terminal session expired")
             if r.get("data"):
                 buf += base64.b64decode(r["data"])
             self.offset = r.get("offset", self.offset)
             if marker and marker.encode() in buf:
                 return buf.decode(errors="replace")
+            if r.get("exited"):
+                self.opened = False
+                raise _SessionExpired(f"terminal session exited ({r.get('exitCode')})")
             if r.get("data"):
                 delay = 0.03
             time.sleep(delay)
@@ -189,7 +213,7 @@ class VmShell:
         return buf.decode(errors="replace")
 
     def ensure(self):
-        if not self.opened:
+        if not self.opened or (self._last_ok and time.monotonic() - self._last_ok >= IDLE_REOPEN):
             self.open()
 
     @_locked
@@ -261,43 +285,66 @@ class VmShell:
     @_locked
     def read_file(self, path: str, max_bytes: int = 4 * 1024 * 1024) -> bytes:
         r = self.run(f"stat -c %s {sh_quote(path)} 2>/dev/null || echo -1", timeout=30, capture=False)
-        size = int((r.output.strip().splitlines() or ["-1"])[-1])
+        if r.timed_out:
+            raise RuntimeError_(f"read_file timed out: {path}")
+        try:
+            size = int((r.output.strip().splitlines() or ["-1"])[-1])
+        except ValueError as e:
+            raise RuntimeError_(f"read_file stat failed for {path}: {r.output[:200]}") from e
         if size < 0:
             raise FileNotFoundError(path)
         out = b""
         for off in range(0, min(size, max_bytes), READ_CHUNK):
             r = self.run(f"tail -c +{off + 1} {sh_quote(path)} | head -c {READ_CHUNK} | base64 -w0", timeout=60,
                          capture=False)
-            out += base64.b64decode(r.output.strip())
+            if r.timed_out:
+                raise RuntimeError_(f"read_file chunk timed out: {path}")
+            out += base64.b64decode("".join(r.output.split()))
         return out
 
     @_locked
     def run(self, command: str, timeout: float = 600, check: bool = False, capture: bool = True,
             on_progress=None) -> CommandResult:
         """Run ``command`` in bash; returns exit code and combined output (read from a file, not the PTY)."""
-        self.ensure()
-        tag = uuid.uuid4().hex[:12]
-        out_file = f"{self.tmp}/{tag}.out"
-        done = f"__AGDD_DONE_{tag}_"
-        begin = f"__AGDD_BEGIN_{tag}__"
-        script = f"( {command} ) > {out_file} 2>&1 < /dev/null; echo \"{done}$?__\"\n" if capture else \
-            f"echo {begin}; ( {command} ) 2>/dev/null < /dev/null; _rc=$?; echo; echo \"{done}${{_rc}}__\"\n"
-        self._send(script)
-        buf = ""
-        end = time.monotonic() + timeout
-        last_keep = time.monotonic()
-        while True:
-            remaining = end - time.monotonic()
-            if remaining <= 0:
-                self._send("\x03")  # Ctrl+C
-                return CommandResult(124, f"timeout after {timeout}s", True)
+        for attempt in range(2):
+            self.ensure()
+            tag = uuid.uuid4().hex[:12]
+            out_file = f"{self.tmp}/{tag}.out"
+            done = f"__AGDD_DONE_{tag}_"
+            begin = f"__AGDD_BEGIN_{tag}__"
+            if capture and self.mirror:
+                script = (f"( {command} ) 2>&1 < /dev/null | tee {out_file} | cut -c1-{MIRROR_COLS}; "
+                          f"echo \"{done}${{PIPESTATUS[0]}}__\"\n")
+            elif capture:
+                script = f"( {command} ) > {out_file} 2>&1 < /dev/null; echo \"{done}$?__\"\n"
+            else:
+                script = f"echo {begin}; ( {command} ) 2>/dev/null < /dev/null; _rc=$?; echo; echo \"{done}${{_rc}}__\"\n"
+            buf = ""
             try:
-                buf += self._read_until(done, min(remaining, KEEPALIVE))
+                self._send(script)
+                end = time.monotonic() + timeout
+                last_keep = time.monotonic()
+                while True:
+                    remaining = end - time.monotonic()
+                    if remaining <= 0:
+                        try:
+                            self._send("\x03")  # Ctrl+C
+                        except _SessionExpired:
+                            pass
+                        return CommandResult(124, f"timeout after {timeout}s", True)
+                    try:
+                        buf += self._read_until(done, min(remaining, KEEPALIVE))
+                        break
+                    except TimeoutError:
+                        if on_progress and time.monotonic() - last_keep > 5:
+                            on_progress()
+                            last_keep = time.monotonic()
                 break
-            except TimeoutError:
-                if on_progress and time.monotonic() - last_keep > 5:
-                    on_progress()
-                    last_keep = time.monotonic()
+            except _SessionExpired:
+                if attempt == 0 and not buf:
+                    self.opened = False
+                    continue
+                raise
         m = re.search(re.escape(done) + r"(\d+)__", buf)
         code = int(m.group(1)) if m else 1
         if not capture:
@@ -305,7 +352,10 @@ class VmShell:
             body = body[body.rfind(begin) + len(begin):] if begin in body else body
             return CommandResult(code, body.strip())
         text = self.read_file(out_file).decode(errors="replace")
-        self._send(f"rm -f {out_file}\n")
+        try:
+            self._send(f"rm -f {out_file}\n")
+        except _SessionExpired:
+            pass
         if check and code != 0:
             detail = text[-800:].strip() or "empty output (check VM disk space / No space left on device)"
             raise RuntimeError_(f"command failed ({code}): {detail}")

@@ -3,6 +3,7 @@ SSE log stream (DOC.md §2 Application & Control Layer)."""
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import math
 import os
@@ -12,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -86,19 +88,42 @@ def _engine(body) -> str:
     return e
 
 
-def _vm_llm(ws, name, override=None):
-    """Cheap structured steps through the workspace's selected CLI inside its VM."""
+@contextlib.contextmanager
+def _vm_llm_session(ws, name, override=None):
+    """Lazy ephemeral VM PTY for cheap structured CLI calls; closed on exit so guest PTY slots never leak."""
     import time as _t
-    from .cli_agents import VmAgent
-    from .vm import RuntimeClient, VmShell
+    from . import cli_agents, vm
     settings = vm_service.load_settings(ws, override)
-    agent = VmAgent(VmShell(RuntimeClient(), vm_service.canvas_for(ws), name), settings)
-    t0 = [_t.time()]
+    pty_name = f"{name}-{uuid.uuid4().hex[:8]}"[:64]
+    sh = vm.VmShell(vm.RuntimeClient(), vm_service.canvas_for(ws), pty_name)
+    agent = cli_agents.VmAgent(sh, settings, vm_service.budget_gate(ws))
 
-    def on_result(res):
-        vm_service.record_usage(ws, None, name, settings, res, int((_t.time() - t0[0]) * 1000), cheap=True)
-        t0[0] = _t.time()
-    return agent.cheap_llm(on_result)
+    def call(prompt: str, schema: dict) -> dict:
+        t0 = _t.time()
+        data, res = agent.structured(prompt, schema)
+        vm_service.record_usage(ws, None, pty_name, settings, res, int((_t.time() - t0) * 1000), cheap=True)
+        return data
+
+    try:
+        yield call
+    finally:
+        try:
+            sh.close()
+        except Exception:
+            pass
+
+
+def _lazy_vm_llm(stack: contextlib.ExitStack, ws, name, override=None):
+    """Defer opening an ephemeral VM PTY until an LLM call is actually needed."""
+    fn = None
+
+    def call(prompt: str, schema: dict) -> dict:
+        nonlocal fn
+        if fn is None:
+            fn = stack.enter_context(_vm_llm_session(ws, name, override))
+        return fn(prompt, schema)
+
+    return call
 
 
 def _require_vm():
@@ -853,31 +878,48 @@ def put_trace(ctx, ws, body):
 def run_preflight(ctx, ws, body):
     """3-step: (1) hydrate in a short read -> (2) SQL + LLM checks with no DB connection held ->
     (3) commit the snapshot in a short write (DOC.md §4.1: LLM calls are never inside a transaction)."""
-    from concurrent.futures import ThreadPoolExecutor
+    use_vm = _engine(body) == "vm-cli"
+    run_semantic = bool(body.get("semantic", True))
+    run_ambiguity = bool(body.get("ambiguity", True))
+    agent_override = body.get("agent") or {}
 
     with infra.pg(readonly=True) as c:
         eng = _ws_engine(c, ws)
     try:
-        use_vm = _engine(body) == "vm-cli"
-        llm_for = (lambda task: _vm_llm(ws, "agdd-gate")) if use_vm else (lambda task: infra.cheap_model(task, ws))
-        llm = llm_for("conflict_check") if body.get("semantic", True) else None
         snaps = []
-        with ThreadPoolExecutor(max_workers=1) as ex:  # ambiguity linting overlaps the conflict gate
-            amb = ex.submit(router.ambiguity_gate, eng.rows("SRS"),
-                            _vm_llm(ws, "agdd-amb") if use_vm else llm_for("ambiguity")) \
-                if body.get("ambiguity", True) else None
-            res = preflight.run_gate(eng, llm, lambda snap, ok: snaps.append((snap, ok)))
-            questions = amb.result() if amb and res.passed else []
+        with contextlib.ExitStack() as stack:
+            if use_vm:
+                # Lazily open one ephemeral VM PTY only if Stage 3 or ambiguity needs the CLI,
+                # run batches sequentially (workers=1) to share that warm PTY, and close it on exit.
+                vm_llm = None
+
+                def _vm_call(prompt: str, schema: dict) -> dict:
+                    nonlocal vm_llm
+                    if vm_llm is None:
+                        vm_llm = stack.enter_context(_vm_llm_session(ws, "agdd-gate", agent_override))
+                    return vm_llm(prompt, schema)
+
+                llm = _vm_call if run_semantic else None
+                amb_llm = _vm_call if run_ambiguity else None
+                workers = 1
+            else:
+                llm = infra.cheap_model("conflict_check", ws) if run_semantic else None
+                amb_llm = infra.cheap_model("ambiguity", ws) if run_ambiguity else None
+                workers = 4
+
+            res = preflight.run_gate(eng, llm, lambda snap, ok: snaps.append((snap, ok)), workers=workers)
+            questions = router.ambiguity_gate(eng.rows("SRS"), amb_llm) if (amb_llm and res.passed) else []
     finally:
         eng.close()
     with infra.pg() as c:
         sid = pgstore.save_snapshot(c, ws, *snaps[0])
+        latest = pgstore.latest_snapshot(c, ws)
         c.commit()
     spec_store.update(ws, sid, snaps[0][0])
     vm_sync.sync_workspace_context_async(ws)
     infra_safe(infra.cache_invalidate, f"agdd:dash:{ws}")
-    return {"passed": res.passed, "snapshot_id": sid, "conflicts": res.conflicts,
-            "ambiguity_questions": questions, "scope": res.scope}
+    return {"passed": res.passed, "snapshot_id": sid, "version": latest["version"] if latest else None,
+            "conflicts": res.conflicts, "ambiguity_questions": questions, "scope": res.scope}
 
 
 # ---------------- graphs ----------------
@@ -901,7 +943,11 @@ def publish_graph(ctx, ws, body):
 # ---------------- runs ----------------
 @route("POST", r"/workspaces/(?P<ws>[^/]+)/runs", "EDITOR")
 def start_run(ctx, ws, body):
-    with infra.pg() as c:
+    engine = _engine(body)
+    agent_override = body.get("agent") or {}
+    if engine == "vm-cli":
+        vm_service.load_settings(ws, agent_override)  # validates cli/model/effort/session before queueing
+    with infra.pg(readonly=True) as c:
         snap = c.execute("SELECT snapshot_id FROM spec_snapshots WHERE workspace_id=%s AND conflict_passed "
                          "ORDER BY version DESC LIMIT 1", (ws,)).fetchone()
         latest = pgstore.latest_snapshot(c, ws)
@@ -912,15 +958,16 @@ def start_run(ctx, ws, body):
                       (body["graph_id"], ws)).fetchone()
         if not g:
             raise HttpError(404, "graph not found")
-        engine = _engine(body)
-        agent_override = body.get("agent") or {}
-        if engine == "vm-cli":
-            vm_service.load_settings(ws, agent_override)  # validates cli/model/effort/session before queueing
-        route_llm = _vm_llm(ws, "agdd-route", agent_override) if engine == "vm-cli" else infra.cheap_model("route", ws)
-        decision = router.route_request(body.get("request", ""), route_llm) \
-            if body.get("request") else router.RouteDecision("FULL_AGDD", ["no request text"])
-        entry = g["definition_json"].get("fast_track_entry") if decision.route_mode == "FAST_TRACK" else None
-        entry = entry or g["definition_json"]["entry"]
+    with contextlib.ExitStack() as stack:
+        if body.get("request"):
+            route_llm = stack.enter_context(_vm_llm_session(ws, "agdd-route", agent_override)) \
+                if engine == "vm-cli" else infra.cheap_model("route", ws)
+            decision = router.route_request(body["request"], route_llm)
+        else:
+            decision = router.RouteDecision("FULL_AGDD", ["no request text"])
+    entry = g["definition_json"].get("fast_track_entry") if decision.route_mode == "FAST_TRACK" else None
+    entry = entry or g["definition_json"]["entry"]
+    with infra.pg() as c:
         run = c.execute(
             "INSERT INTO workflow_runs (graph_id, graph_version, snapshot_id, route_mode, current_node, status, handoff_json) "
             "VALUES (%s,%s,%s,%s,%s,'PENDING',%s) RETURNING run_id",
@@ -1126,8 +1173,11 @@ def _start_collab_agdd_run(ws: str, request_text: str, repo_key: str, extra_hand
             eng = _ws_engine(c, ws)
         try:
             snaps = []
-            llm = _vm_llm(ws, "agdd-gate", agent_override) if engine == "vm-cli" else infra.cheap_model("conflict_check", ws)
-            res = preflight.run_gate(eng, llm, lambda snap, ok: snaps.append((snap, ok)))
+            with contextlib.ExitStack() as stack:
+                llm = _lazy_vm_llm(stack, ws, "agdd-gate", agent_override) if engine == "vm-cli" \
+                    else infra.cheap_model("conflict_check", ws)
+                res = preflight.run_gate(eng, llm, lambda snap, ok: snaps.append((snap, ok)),
+                                         workers=1 if engine == "vm-cli" else 4)
         finally:
             eng.close()
         with infra.pg() as c:
@@ -1145,10 +1195,12 @@ def _start_collab_agdd_run(ws: str, request_text: str, repo_key: str, extra_hand
             return {"blocked": True, "conflicts": res.conflicts, "snapshot_id": sid}
         latest = {"snapshot_id": sid}
 
-    route_llm = _vm_llm(ws, "agdd-route", agent_override) if engine == "vm-cli" else infra.cheap_model("route", ws)
     if request_text:
         try:
-            decision = router.route_request(request_text, route_llm)
+            with contextlib.ExitStack() as stack:
+                route_llm = stack.enter_context(_vm_llm_session(ws, "agdd-route", agent_override)) \
+                    if engine == "vm-cli" else infra.cheap_model("route", ws)
+                decision = router.route_request(request_text, route_llm)
         except Exception as exc:
             decision = router.RouteDecision("FULL_AGDD", [f"router fallback: {exc}"])
     else:
@@ -1762,17 +1814,23 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("x-content-type-options", "nosniff")
         self.send_header("content-security-policy", "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'")
         self.send_header("cache-control", "private, max-age=3600")
-        self.end_headers()
-        for chunk in res.chunks:
-            self.wfile.write(chunk)
+        try:
+            self.end_headers()
+            for chunk in res.chunks:
+                self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _send(self, code, obj):
         data = pgstore.dumps(obj).encode()
         self.send_response(code)
         self.send_header("content-type", "application/json; charset=utf-8")
         self.send_header("content-length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _auth(self):
         # The upstream gateway (Spring/nginx) authenticates the user and forwards X-User-Id with a shared token.
@@ -1901,9 +1959,13 @@ class Handler(BaseHTTPRequestHandler):
         except (KeyError, ValueError, json.JSONDecodeError) as e:
             self._send(400, {"error": repr(e)[:300]})
         except Exception as e:  # CLI / VM failures must surface, never pass silently
+            from .budget import BudgetHalt
             from .cli_agents import CliError
+            from .llm_gateway import BudgetHalt as GatewayBudgetHalt
             from .vm import RuntimeError_
-            if isinstance(e, (CliError, RuntimeError_, TimeoutError)):
+            if isinstance(e, (BudgetHalt, GatewayBudgetHalt)):
+                self._send(402, {"error": str(e)[:600]})
+            elif isinstance(e, (CliError, RuntimeError_, TimeoutError)):
                 self._send(502, {"error": str(e)[:600]})
             else:
                 raise

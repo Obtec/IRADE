@@ -437,8 +437,12 @@ def handle_websocket(
                 timeout=30.0,
             )
         except Exception as e:
-            ws.send_json({"type": "error", "retryable": True, "message": str(e)[:300]})
-            ws.send_close(1011)
+            if ticket.watch:
+                ws.send_json({"type": "output", "data": "", "offset": offset, "expired": True})
+                ws.send_close(1000)
+            else:
+                ws.send_json({"type": "error", "retryable": True, "message": str(e)[:300]})
+                ws.send_close(1011)
             return
 
         unix_buf = bytearray()
@@ -475,8 +479,12 @@ def handle_websocket(
                 except OSError:
                     chunk = b""
                 if not chunk:
-                    ws.send_json({"type": "error", "retryable": True, "message": "런타임 스트림 연결이 종료되었습니다."})
-                    ws.send_close(1011)
+                    if ticket.watch:
+                        ws.send_json({"type": "output", "data": "", "offset": offset, "expired": True})
+                        ws.send_close(1000)
+                    else:
+                        ws.send_json({"type": "error", "retryable": True, "message": "런타임 스트림 연결이 종료되었습니다."})
+                        ws.send_close(1011)
                     return
                 unix_buf.extend(chunk)
                 if len(unix_buf) > MAX_UNIX_BUF:
@@ -489,19 +497,27 @@ def handle_websocket(
                     try:
                         first_frame = json.loads(first_line)
                     except (json.JSONDecodeError, ValueError):
-                        ws.send_json({"type": "error", "retryable": True, "message": "잘못된 런타임 응답입니다."})
-                        ws.send_close(1011)
+                        if ticket.watch:
+                            ws.send_json({"type": "output", "data": "", "offset": offset, "expired": True})
+                            ws.send_close(1000)
+                        else:
+                            ws.send_json({"type": "error", "retryable": True, "message": "잘못된 런타임 응답입니다."})
+                            ws.send_close(1011)
                         return
                     break
 
         if not isinstance(first_frame, dict) or "error" in first_frame:
-            err_msg = (
-                str(first_frame.get("message") or first_frame["error"])
-                if isinstance(first_frame, dict)
-                else "런타임 오류"
-            )
-            ws.send_json({"type": "error", "retryable": False, "message": err_msg})
-            ws.send_close(1011)
+            if ticket.watch:
+                ws.send_json({"type": "output", "data": "", "offset": offset, "expired": True})
+                ws.send_close(1000)
+            else:
+                err_msg = (
+                    str(first_frame.get("message") or first_frame["error"])
+                    if isinstance(first_frame, dict)
+                    else "런타임 오류"
+                )
+                ws.send_json({"type": "error", "retryable": False, "message": err_msg})
+                ws.send_close(1011)
             return
 
         ws.send_json(first_frame)
@@ -549,12 +565,12 @@ def handle_websocket(
             if not isinstance(frame, dict):
                 return True
             if "error" in frame:
-                if ticket.watch:
+                err_msg = str(frame.get("message") or frame["error"])
+                if ticket.watch or "expired" in err_msg.lower():
                     ws.send_json({"type": "output", "data": "", "expired": True})
                     ws.send_close(1000)
                 else:
-                    ws.send_json({"type": "error", "retryable": True,
-                                  "message": str(frame.get("message") or frame["error"])})
+                    ws.send_json({"type": "error", "retryable": True, "message": err_msg})
                     ws.send_close(1011)
                 return False
             ws.send_json(frame)

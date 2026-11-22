@@ -68,10 +68,17 @@ def sql_checks(eng: SpecEngine, ids=None) -> list[dict]:
     for typ in ("ARC", "SCH"):
         table, pk, _, _ = TABLES[typ]
         rows = db.execute(f"""
-            SELECT s.req_id, x.{pk} AS dep, x.adoption_status FROM spec_traceability t
-            JOIN srs_requirements s ON t.source_type='SRS' AND t.source_id=s.req_id
-            JOIN {table} x ON t.target_type='{typ}' AND t.target_id=x.{pk}
-            WHERE s.adoption_status='ACCEPT_NOW' AND x.adoption_status IN ('DEFER','REJECT')""").fetchall()
+            SELECT DISTINCT req_id, dep, adoption_status FROM (
+                SELECT s.req_id, x.{pk} AS dep, x.adoption_status FROM spec_traceability t
+                JOIN srs_requirements s ON t.source_type='SRS' AND t.source_id=s.req_id
+                JOIN {table} x ON t.target_type='{typ}' AND t.target_id=x.{pk}
+                WHERE s.adoption_status='ACCEPT_NOW' AND x.adoption_status IN ('DEFER','REJECT')
+                UNION ALL
+                SELECT s.req_id, x.{pk} AS dep, x.adoption_status FROM spec_traceability t
+                JOIN srs_requirements s ON t.target_type='SRS' AND t.target_id=s.req_id
+                JOIN {table} x ON t.source_type='{typ}' AND t.source_id=x.{pk}
+                WHERE s.adoption_status='ACCEPT_NOW' AND x.adoption_status IN ('DEFER','REJECT')
+            )""").fetchall()
         for r in rows:
             out.append(_conflict(ids, "SQL_DETERMINISTIC", "CRITICAL", "ADOPTION_MISMATCH", [r["req_id"], r["dep"]],
                                  f"ACCEPT_NOW 요구사항 {r['req_id']}가 {r['adoption_status']} 상태의 {r['dep']}에 의존합니다.",
@@ -99,30 +106,45 @@ def sql_checks(eng: SpecEngine, ids=None) -> list[dict]:
 _WORD = re.compile(r"[0-9A-Za-z가-힣_]{3,}")
 
 
+def _dedup(items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    seen, uniq = set(), []
+    for m in items:
+        if m not in seen:
+            seen.add(m)
+            uniq.append(m)
+    return uniq
+
+
 def build_batches(eng: SpecEngine, min_size: int = 5, max_size: int = 15) -> list[list[tuple[str, str]]]:
-    """Cluster ACCEPT_NOW rows: same domain + 1-hop trace + top FTS keyword neighbours."""
+    """Cluster ACCEPT_NOW rows: same domain + 1-hop trace, coalesce small clusters, then top FTS neighbours."""
     reqs = eng.rows("SRS")
     by_domain: dict[str, list[dict]] = {}
     for r in reqs:
         by_domain.setdefault(r["domain"], []).append(r)
-    batches: list[list[tuple[str, str]]] = []
+    clusters: list[tuple[list[tuple[str, str]], list[dict]]] = []
     for _, group in sorted(by_domain.items()):
         for i in range(0, len(group), max_size):
             chunk = group[i:i + max_size]
             members: list[tuple[str, str]] = [("SRS", r["req_id"]) for r in chunk]
             for r in chunk:  # 1-hop links (including DEFER targets for IMPLICIT_SCOPE checks)
                 members += [(t, s) for t, s, _ in eng.linked("SRS", r["req_id"])]
-            if len(set(members)) < min_size:  # FTS keyword neighbours
-                words = sorted(set(_WORD.findall(" ".join(r["acceptance_criteria"] + " " + r["title"] for r in chunk))))
-                if words:
-                    q = " OR ".join(f'"{w}"' for w in words[:12])
-                    members += eng.search(q, limit=max_size)
-            seen, uniq = set(), []
-            for m in members:
-                if m not in seen:
-                    seen.add(m)
-                    uniq.append(m)
-            batches.append(uniq[:max_size])
+            clusters.append((_dedup(members)[:max_size], chunk))
+    merged: list[tuple[list[tuple[str, str]], list[dict]]] = []
+    for members, chunk in clusters:
+        if merged:
+            combined = _dedup(merged[-1][0] + members)
+            if len(combined) <= max_size:
+                merged[-1] = (combined, merged[-1][1] + chunk)
+                continue
+        merged.append((members, chunk))
+    batches: list[list[tuple[str, str]]] = []
+    for members, chunk in merged:
+        if len(members) < min_size:  # FTS keyword neighbours
+            words = sorted(set(_WORD.findall(" ".join(r["acceptance_criteria"] + " " + r["title"] for r in chunk))))
+            if words:
+                q = " OR ".join(f'"{w}"' for w in words[:12])
+                members = _dedup(members + eng.search(q, limit=max_size))
+        batches.append(members[:max_size])
     return batches
 
 
@@ -138,18 +160,32 @@ def semantic_checks(eng: SpecEngine, llm: CheapModel, ids=None, batches=None, wo
         payload = [dict(eng.get(t, s), spec_type=t) for t, s in batch if eng.get(t, s)]
         if len(payload) >= 2:
             jobs.append((batch, SEMANTIC_PROMPT + json.dumps(payload, ensure_ascii=False)))
-    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(jobs) or 1))) as ex:
-        results = list(ex.map(lambda j: llm(j[1], SEMANTIC_SCHEMA), jobs))
+    if workers <= 1 or len(jobs) <= 1:
+        results = [llm(j[1], SEMANTIC_SCHEMA) for j in jobs]
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as ex:
+            results = list(ex.map(lambda j: llm(j[1], SEMANTIC_SCHEMA), jobs))
     for (batch, _), result in zip(jobs, results):
+        if not isinstance(result, dict):
+            continue
         valid = {s for _, s in batch}
-        for c in result.get("conflicts", []):
-            involved = [i for i in c.get("involved_ids", []) if i in valid]
+        for c in (result.get("conflicts") or []):
+            if not isinstance(c, dict):
+                continue
+            involved = [i for i in (c.get("involved_ids") or []) if i in valid]
             if c.get("conflict_type") not in SEMANTIC_TYPES or not involved:
                 continue  # drop hallucinated / out-of-batch findings
             sev = c.get("severity") if c.get("severity") in ("CRITICAL", "WARNING") else "WARNING"
+            opts = [str(o) for o in (c.get("resolution_options") or [])]
+            rec_raw = c.get("recommended", 0)
+            try:
+                rec = 0 if isinstance(rec_raw, bool) or rec_raw is None else int(rec_raw)
+            except (TypeError, ValueError):
+                rec = 0
+            if not (0 <= rec < len(opts)):
+                rec = 0
             out.append(_conflict(ids, "LLM_SEMANTIC", sev, c["conflict_type"], involved,
-                                 str(c.get("explanation", ""))[:600], list(c.get("resolution_options", [])),
-                                 int(c.get("recommended", 0))))
+                                 str(c.get("explanation", ""))[:600], opts, rec))
     return out
 
 
@@ -167,12 +203,12 @@ class GateResult:
 
 
 def run_gate(eng: SpecEngine, llm: CheapModel | None = None,
-             commit_snapshot: Callable[[dict, bool], None] | None = None) -> GateResult:
+             commit_snapshot: Callable[[dict, bool], None] | None = None, workers: int = 4) -> GateResult:
     ids = _Ids()
     conflicts = sql_checks(eng, ids)
     # Skip paid semantic stage when structural CRITICALs already block execution.
     if llm is not None and not conflicts:
-        conflicts += semantic_checks(eng, llm, ids)
+        conflicts += semantic_checks(eng, llm, ids, workers=workers)
     eng.record_conflicts(conflicts)
     passed = not any(c["severity"] == "CRITICAL" for c in conflicts)
     snap = eng.snapshot()

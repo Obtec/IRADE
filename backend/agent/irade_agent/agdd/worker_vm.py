@@ -55,8 +55,9 @@ class VmCtx:
         from .cli_agents import VmAgent
         from .vm import RuntimeClient, VmShell
         # a fresh PTY per job (not cached): closed after the job so guest PTY slots are not leaked
-        self.agent = VmAgent(VmShell(RuntimeClient(), vm_service.canvas_for(ctx.ws), f"agdd-{str(ctx.run['run_id'])[:8]}"),
-                             self.settings, vm_service.budget_gate(ctx.ws))
+        shell = VmShell(RuntimeClient(), vm_service.canvas_for(ctx.ws), f"agdd-{str(ctx.run['run_id'])[:8]}")
+        shell.mirror = True  # echo CLI output into the PTY so the console can watch the run live
+        self.agent = VmAgent(shell, self.settings, vm_service.budget_gate(ctx.ws))
         self.shell = self.agent.shell
         rk = (ctx.handoff.get("repo_key") or self.settings.default_repo or "workspace").strip() or "workspace"
         self.repo_key = rk

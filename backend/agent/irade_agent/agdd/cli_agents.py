@@ -299,15 +299,24 @@ class Antigravity(CliProfile):
     name, binary = "agy", "agy"
     install = PREREQ + "curl -fsSL https://antigravity.google/cli/install.sh | bash"
     login_hint = "agy  (출력된 URL을 브라우저에서 열고 코드 붙여넣기)  또는 GEMINI_API_KEY 설정"
-    models = ("gemini-3-pro", "gemini-3-flash")
-    cheap_default = "gemini-3-flash"
+    models = ("gemini-4-neon", "gemini-4-argon", "gemini-3.8-flash", "gemini-4-hydrogen")
+    cheap_default = "gemini-3.8-flash"
 
     def _common(self, model, effort):
-        return (f" --model {shlex.quote(model)}" if model else "") + f" --effort {effort}"
+        if not model:
+            return ""
+        if re.search(r"-(?:low|medium|high|xhigh)$", model):
+            return f" --model {shlex.quote(model)}"
+        if model in ("gemini-4-neon", "gemini-4-hydrogen"):
+            eff = {"max": "xhigh"}.get(effort, effort)
+        else:
+            eff = {"max": "high", "xhigh": "high"}.get(effort, effort)
+        return f" --model {shlex.quote(model)} --effort {eff}"
 
     def structured_cmd(self, prompt_file, schema_file, model, effort, files=()):
-        return (f"agy -p \"$(cat {sh_quote(prompt_file)})\" --output-format json"
-                f"{self._common(model, effort)} --json-schema \"$(cat {sh_quote(schema_file)})\"")
+        return (f"agy --print=\"$(cat {sh_quote(prompt_file)})\" --output-format json"
+                f" --disable-slash-commands --print-timeout 240s"
+                f"{self._common(model, effort)} --json-schema {sh_quote(schema_file)}")
 
     def prompt_suffix(self, files) -> str:
         # Gemini-family CLIs inline @path references as multimodal parts (image, video, audio, PDF)
@@ -317,7 +326,7 @@ class Antigravity(CliProfile):
     def agent_cmd(self, prompt_file, cwd, model, effort, session, permission, mcp=True, files=()):
         perm = " --dangerously-skip-permissions" if permission == "sandbox" else ""
         sess = f" --conversation {shlex.quote(session)}" if session else ""
-        return (f"cd {sh_quote(cwd)} && agy -p \"$(cat {sh_quote(prompt_file)})\" --output-format json"
+        return (f"cd {sh_quote(cwd)} && agy --print=\"$(cat {sh_quote(prompt_file)})\" --output-format json"
                 f"{self._common(model, effort)}{perm}{sess}")
 
     def parse(self, output):
@@ -327,6 +336,8 @@ class Antigravity(CliProfile):
             (obj.get("response") or obj.get("result") or "")
         u = obj.get("usage") or {}
         err = obj.get("error") or (obj.get("status") == "ERROR")
+        if err and not text:
+            text = str(obj.get("error") or "")
         return AgentResult(ok=bool(obj) and not err,
                            text=text if isinstance(text, str) else json.dumps(text, ensure_ascii=False),
                            session_id=obj.get("conversation_id") or None,
@@ -388,19 +399,29 @@ class VmAgent:
         if not self.s.cheap_model and self.s.model != models[0]:
             models.append(self.s.model)  # implicit cheap default unavailable on this account -> main model
         try:
-            for i, model in enumerate(models):
+            i = 0
+            while i < len(models):
+                model = models[i]
                 cmd = self.p.structured_cmd(base + ".prompt", base + ".schema.json", model, self.s.cheap_effort,
                                             files)
                 r = self.shell.run(cmd, timeout=timeout)
                 res = self.p.parse(r.output)
-                data = parse_json(res.text) if res.text else {}
+                data = parse_json(res.text) if (res.ok and res.text) else {}
                 if res.ok and isinstance(data, dict) and (r.exit_code == 0 or data):
                     res.model = model
                     cache_store(ckey, prompt, schema, data)
                     return data, res
-                if i + 1 == len(models):
+                low = (res.text + "\n" + r.output).lower()
+                non_model_err = r.exit_code == 127 or any(
+                    m in low for m in ("not logged in", "please run /login", "authentication failed", "command not found")
+                )
+                if (not non_model_err and self.p.name == "agy" and not self.s.cheap_model
+                        and "invalid model selection" in low and "" not in models):
+                    models.append("")
+                if non_model_err or i + 1 == len(models):
                     detail = (res.text or "")[:300] or r.output[-300:]
                     raise CliError(f"{self.p.name} structured call failed (exit {r.exit_code}): {detail}")
+                i += 1
         finally:
             self.shell.run(f"rm -f {base}.*", timeout=30)
 

@@ -634,7 +634,7 @@ def test_http_ide_cells_specs_ux_and_collab(tmp_path, monkeypatch):
         base = f"http://127.0.0.1:{srv.server_port}"
         try:
             # Static assets
-            for asset, expected_ctype in (("ide.js", "javascript"), ("collab.js", "javascript"), ("ux_canvas.js", "javascript"), ("ux_canvas.css", "text/css")):
+            for asset, expected_ctype in (("ide.js", "javascript"), ("terms.js", "javascript"), ("collab.js", "javascript"), ("ux_canvas.js", "javascript"), ("ux_canvas.css", "text/css")):
                 code, ctype, txt = _http_req(base, "GET", f"/static/{asset}")
                 assert code == 200 and expected_ctype in ctype and len(txt) > 100
             code, ctype, html = _http_req(base, "GET", "/console")
@@ -1274,3 +1274,69 @@ def test_vendor_urls_localized_only_for_bundled_packages(tmp_path, monkeypatch):
     assert agdd_api._vendor_file("@xterm/xterm@5.5.0/lib/xterm.js") == (pkg / "lib/xterm.js").resolve()
     for bad in ("../secret.js", "@xterm/xterm@5.5.0/../../x.js", "@xterm/xterm@5.5.0/.complete", "@xterm//x.js"):
         assert agdd_api._vendor_file(bad) is None
+
+
+def test_preflight_vm_gate_closes_pty_skips_sql_block_and_returns_version(tmp_path, monkeypatch):
+    import concurrent.futures
+    import stat
+
+    ws = str(uuid.uuid4())
+    state = FakeState(ws_id=ws, canvas_id=21)
+    bad_snap = _sample_snapshot()
+    for r in bad_snap["srs"]:
+        if r["req_id"] == "REQ-004":
+            r["adoption_status"] = "ACCEPT_NOW"
+    state.add_snapshot(bad_snap, passed=False)
+
+    monkeypatch.setenv("API_TOKEN", "test-api-token")
+    monkeypatch.setattr(infra, "cache_invalidate", lambda *keys: None)
+    vm_sync._VM_SCRIPTS_READY.clear()
+
+    with _fake_rt(tmp_path, monkeypatch, 21) as (rt, vm_home):
+        (vm_home / ".local" / "bin").mkdir(parents=True, exist_ok=True)
+        stub = vm_home / ".local" / "bin" / "claude"
+        stub.write_text(
+            '#!/usr/bin/env python3\n'
+            'import json, os, sys\n'
+            'sys.stdin.read()\n'
+            'open(os.path.join(os.environ["HOME"], "claude-gate.log"), "a").write(json.dumps(sys.argv[1:]) + "\\n")\n'
+            'print(json.dumps({"type":"result","subtype":"success","is_error":False,"result":"",'
+            '"structured_output":{"conflicts":[],"questions":[]},'
+            '"session_id":"s-gate","total_cost_usd":0.001,"usage":{"input_tokens":5,"output_tokens":3}}))\n'
+        )
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+
+        _patch_state(monkeypatch, state, runtime_srv=rt)
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), api.Handler)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        base = f"http://127.0.0.1:{srv.server_port}"
+        try:
+            # 1. Stage 1 SQL conflict skips VM/LLM completely and leaves zero PTYs open.
+            code, _, r_bad = _http_req(base, "POST", f"/workspaces/{ws}/preflight",
+                                       {"engine": "vm-cli", "semantic": True, "ambiguity": True})
+            assert code == 200
+            assert r_bad["passed"] is False and r_bad["version"] == 2
+            assert not (vm_home / "claude-gate.log").exists()
+            assert rt.state.sessions == {}
+
+            # 2. Clean specs run semantic + ambiguity concurrently across requests without PTY leaks/collisions.
+            state.add_snapshot(_sample_snapshot(), passed=False)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                futs = [
+                    pool.submit(_http_req, base, "POST", f"/workspaces/{ws}/preflight",
+                                {"engine": "vm-cli", "semantic": True, "ambiguity": True})
+                    for _ in range(2)
+                ]
+                results = [f.result(timeout=30) for f in futs]
+
+            for c_code, _, c_body in results:
+                assert c_code == 200
+                assert c_body["passed"] is True
+                assert isinstance(c_body["version"], int)
+            assert len((vm_home / "claude-gate.log").read_text().strip().splitlines()) == 4
+            assert rt.state.sessions == {}
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            vm_sync._VM_SCRIPTS_READY.clear()

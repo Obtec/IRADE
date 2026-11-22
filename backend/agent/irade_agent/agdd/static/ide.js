@@ -363,9 +363,13 @@
     $("#ide-bot-out").hidden = IDE.bottomTab !== "out";
     $("#ide-bot-term").hidden = IDE.bottomTab !== "term";
     document.querySelectorAll("[data-ibot]").forEach(b => b.classList.toggle("on", b.dataset.ibot === IDE.bottomTab));
-    if (open && IDE.bottomTab === "term" && !IDE.term) {
-      $("#ide-term-host").innerHTML = "";
-      IDE.term = openTerminal($("#ide-term-host"), "ide", false);
+    if (open && IDE.bottomTab === "term") {
+      if (!IDE.term) {
+        $("#ide-term-host").innerHTML = "";
+        IDE.term = openTerminal($("#ide-term-host"), "ide", false);
+      } else {
+        requestAnimationFrame(() => IDE.term?.fit?.());
+      }
     }
     if (open && IDE.bottomTab === "out") renderRunOut();
   }
@@ -548,6 +552,7 @@
       </div>
     </div>`;
 
+    stopIdeTerm();
     G.V(`<div class="row" style="justify-content:space-between; margin-bottom:10px">
         <div><h2>IDE · 코드 & 셀</h2><p class="sub" style="margin:0">VM의 <span class="mono">/workspace/repos/${esc(IDE.repo || "workspace")}</span> 파일을 직접 생성·편집·실행하고, 노트북 셀(<span class="mono">cells/</span>)과 양방향 동기화합니다.</p></div>
         <div class="row">

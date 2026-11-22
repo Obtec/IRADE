@@ -78,13 +78,18 @@ def ambiguity_gate(requirements: list[dict], llm: CheapModel) -> list[dict]:
     if not requirements:
         return []
     result = llm(AMBIGUITY_PROMPT + json.dumps(requirements, ensure_ascii=False), AMBIGUITY_SCHEMA)
+    if not isinstance(result, dict):
+        return []
     valid = {r.get("req_id") for r in requirements}
     out = []
-    for q in result.get("questions", []):
-        opts = list(q.get("options") or [])
+    for q in (result.get("questions") or []):
+        if not isinstance(q, dict):
+            continue
+        opts = [str(o) for o in (q.get("options") or [])]
         if q.get("category") not in CHECKLIST or len(opts) < 2 or q.get("spec_id") not in valid:
             continue
         rec = q.get("recommended", 0)
-        q["recommended"] = rec if isinstance(rec, int) and 0 <= rec < len(opts) else 0
+        q["options"] = opts
+        q["recommended"] = rec if isinstance(rec, int) and not isinstance(rec, bool) and 0 <= rec < len(opts) else 0
         out.append(q)
     return out

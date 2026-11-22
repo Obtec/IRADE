@@ -246,12 +246,15 @@ const statusCls = s => ({ ACCEPT_NOW: "ok", SUCCEEDED: "ok", APPROVED: "ok", DEF
 const COLLAB = {}, UXC = {}, MA = {};
 
 const render = run(async () => {
-  if (TAB !== "ide" && IDE.editor) { IDE.editor.dispose(); IDE.editor = null; }
-  if (TAB !== "ide" && IDE.stopTerm) IDE.stopTerm();
-  if (TAB !== "collab" && COLLAB.stop) COLLAB.stop();
+  const wsChanged = WS !== LAST_WS;
+  if ((TAB !== "ide" || wsChanged) && IDE.editor) { IDE.editor.dispose(); IDE.editor = null; }
+  if ((TAB !== "ide" || wsChanged) && IDE.stopTerm) IDE.stopTerm();
+  if ((TAB !== "collab" || wsChanged) && COLLAB.stop) COLLAB.stop();
+  LAST_WS = WS;
   const vw = $("#view"); vw.oninput = vw.onchange = vw.onclick = null;
   $("#studio-host").hidden = true;
-  $("#view").classList.toggle("wide", ["ide", "collab", "graphs", "specs", "ux", "team"].includes(TAB));
+  $("#view").classList.toggle("wide", ["ide", "collab", "graphs", "specs", "ux", "team", "vm"].includes(TAB));
+  if (MA.mon) { MA.mon.stop(); MA.mon = null; }
   nav(); if (ES) { ES.close(); ES = null; } if (TERM) { TERM.stop(); TERM = null; } clearTimeout(RUN_POLL); RUN_POLL = null; if (RES_CTL) { try { RES_CTL.abort(); } catch {} RES_CTL = null; }
   if (!WS) return V(`<h2>시작하기</h2><p class="sub">${GATEWAY ? "IRADE 계정으로 로그인되었습니다. 상단에서 Studio와 같은 workspace를 선택하거나 새로 만드세요." : "상단에 API 토큰(agdd.env의 AGDD_API_TOKEN)을 넣고 저장한 뒤 워크스페이스를 만드세요. 사용자 ID는 이 브라우저에서 자동 생성됩니다."}</p>`);
   if (TAB !== LAST_TAB && TAB === "specs" && !SPEC.dirty.size) SPEC.ws = "";  // refresh when entering the tab
@@ -260,7 +263,7 @@ const render = run(async () => {
   const slowTimer = setTimeout(() => { if (seq === RENDER_SEQ) V(`<h2>${esc(TABS[tab])}</h2><p class="sub">불러오는 중…</p><div class="skeleton"></div><div class="skeleton" style="width:70%"></div>`); }, 120);
   try { await VIEWS[tab](); } finally { clearTimeout(slowTimer); }
 });
-let RENDER_SEQ = 0, LAST_TAB = "";
+let RENDER_SEQ = 0, LAST_TAB = "", LAST_WS = "";
 // Size the Studio iframe to the space left below its header row (that row wraps on narrow screens,
 // so a fixed calc() either cuts the frame off at the bottom or leaves a gap).
 function fitStudio() {
@@ -271,14 +274,25 @@ function fitStudio() {
 addEventListener("resize", fitStudio);
 const stale = tab => tab !== TAB;
 
-function openTerminal(el, name, readOnly) {
+// opts.rearm(): when it returns true, an ended/missing session is not final — the terminal keeps waiting and
+// re-attaches to the next session with the same name (automation PTYs are opened per agent call and closed after).
+// opts.onState(state): "connecting" | "live" | "waiting" | "ended". opts.fontSize, opts.banner (false = none).
+function openTerminal(el, name, readOnly, opts = {}) {
+  const onState = s => { try { opts.onState?.(s); } catch {} };
   if (typeof Terminal === "undefined" || typeof FitAddon === "undefined") {
     if (el) el.innerHTML = `<div class="muted" style="padding:12px">터미널 라이브러리(xterm.js)를 불러오지 못했습니다. 네트워크/CDN 연결 상태를 확인하세요.</div>`;
-    return { term: null, type() {}, stop() {} };
+    onState("ended");
+    return { term: null, name, type() {}, stop() {}, focus() {}, fit() {} };
   }
-  const term = new Terminal({ fontSize: 13, cursorBlink: !readOnly, convertEol: false, scrollback: 5000, disableStdin: !!readOnly,
+  const term = new Terminal({ fontSize: opts.fontSize || 13, cursorBlink: !readOnly, convertEol: false, scrollback: 5000, disableStdin: !!readOnly,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', theme: { background: "#111111" } });
-  const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(el); fit.fit();
+  const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(el);
+  let alive = true;
+  const safeFit = () => {
+    if (!alive || !el || !el.isConnected || el.clientWidth < 10 || el.clientHeight < 10) return;
+    try { fit.fit(); } catch {}
+  };
+  safeFit();
   const dims = () => ({ cols: Math.max(2, Math.min(300, term.cols || 80)), rows: Math.max(2, Math.min(150, term.rows || 24)) });
   // Replayed history (attach/open backlog) still contains the original programs' terminal queries
   // (DA, DECRQM, CPR, OSC 10/11 colour, …). xterm.js would answer them again and the answers would be
@@ -293,7 +307,8 @@ function openTerminal(el, name, readOnly) {
     replaying++;
     term.write(u8, () => { replaying--; });
   };
-  let offset = 0, alive = true, ws = null, ready = false, everReady = false, pending = "";
+  let offset = 0, ws = null, ready = false, everReady = false, pending = "";
+  let waiting = false, rearmPending = false, sawData = false;
   let reconnectDelay = 500, reconnectTimer = null, resizeTimer = null;
   let { cols: lastCols, rows: lastRows } = dims(), wake = null, fallbackActive = false;
   const basePath = `/workspaces/${WS}/vm/terminal/${name}`;
@@ -309,12 +324,29 @@ function openTerminal(el, name, readOnly) {
     const done = () => { clearTimeout(t); if (wake === done) wake = null; r(); };
     const t = setTimeout(done, ms); wake = done;
   });
+  const ended = msg => {
+    if (opts.rearm && alive && opts.rearm()) {
+      if (!waiting) term.write(`\r\n\x1b[90m${sawData ? msg + " — " : ""}다음 세션 대기 중…\x1b[0m\r\n`);
+      waiting = true; rearmPending = true; offset = 0; onState("waiting");
+      return;
+    }
+    term.write(`\r\n${msg}\r\n`); alive = false; onState("ended");
+  };
   const take = (r, replay = false) => {
-    if (r.data) writeB64(r.data, replay);
+    if (r.data) {
+      if (waiting) { waiting = false; term.write("\r\n\x1b[90m──────── 새 세션 ────────\x1b[0m\r\n"); onState("live"); }
+      sawData = true; writeB64(r.data, replay);
+    }
     if (typeof r.offset === "number") offset = r.offset;
-    if (r.expired) { term.write("\r\n[세션 만료 — 다시 열기]\r\n"); alive = false; }
-    else if (r.exited) { term.write(`\r\n[프로세스 종료 (${r.exitCode ?? ""})]\r\n`); alive = false; }
-    else if (r.closed) { term.write("\r\n[세션 종료]\r\n"); alive = false; }
+    if (r.expired) {
+      if (!readOnly && !(opts.rearm && opts.rearm())) {
+        rearmPending = true; offset = 0; onState("connecting");
+      } else {
+        ended("[세션 만료 — 다시 열기]");
+      }
+    }
+    else if (r.exited) ended(`[프로세스 종료 (${r.exitCode ?? ""})]`);
+    else if (r.closed) ended("[세션 종료]");
   };
   const sendCmd = (operation, data = "") => {
     if (!ws || ws.readyState !== WebSocket.OPEN || !ready) return false;
@@ -339,9 +371,18 @@ function openTerminal(el, name, readOnly) {
     if (fallbackActive || !alive) return;
     fallbackActive = true;
     const call = (op, extra = {}) => api("POST", basePath, { operation: op, ...dims(), offset, data: "", ...extra }, { noInvalidate: true });
-    try { take(await call("open"), true); } catch (e) { term.write("\r\n[연결 실패] " + e.message + "\r\n"); alive = false; return; }
+    try { take(await call("open"), true); } catch (e) { term.write("\r\n[연결 실패] " + e.message + "\r\n"); alive = false; onState("ended"); return; }
     let idleDelay = 30;
     while (alive) {
+      if (rearmPending) {
+        rearmPending = false;
+        await sleep(readOnly ? 2500 : 300);
+        if (!alive) break;
+        if (!readOnly) {
+          try { take(await call("open"), true); } catch (e) { term.write("\r\n[연결 실패] " + e.message + "\r\n"); alive = false; onState("ended"); return; }
+        }
+        continue;
+      }
       try {
         if (pending && !readOnly) {
           const d = takeChunk(pending); pending = pending.slice(d.length);
@@ -361,7 +402,7 @@ function openTerminal(el, name, readOnly) {
     try { tk = await api("POST", `${basePath}/ticket`, {}, { noInvalidate: true }); }
     catch (e) {
       if (!everReady && /HTTP 404\b/.test(e.message)) { startHttpFallback(); return; }
-      if (!everReady && /HTTP 40[13]\b|read-only/i.test(e.message)) { term.write("\r\n[연결 실패] " + e.message + "\r\n"); alive = false; return; }
+      if (!everReady && /HTTP 40[13]\b|read-only/i.test(e.message)) { term.write("\r\n[연결 실패] " + e.message + "\r\n"); alive = false; onState("ended"); return; }
       if (alive) { reconnectTimer = setTimeout(connectWs, reconnectDelay); reconnectDelay = Math.min(5000, reconnectDelay * 2); }
       return;
     }
@@ -380,6 +421,7 @@ function openTerminal(el, name, readOnly) {
       let f; try { f = JSON.parse(ev.data); } catch { return; }
       if (f.type === "ready") {
         ready = true; everReady = true; reconnectDelay = 500;
+        if (!waiting) onState("live");
         take(f, true);
         const cur = dims();
         if ((cur.cols !== lastCols || cur.rows !== lastRows) && !readOnly) sendCmd("resize");
@@ -387,25 +429,37 @@ function openTerminal(el, name, readOnly) {
         flushPending();
       } else if (f.type === "output" || f.type === "closed") {
         take(f);
-        if (!alive) sock.close(1000);
+        if (!alive || rearmPending) sock.close(1000);
       } else if (f.type === "error") {
-        term.write(`\r\n[오류] ${f.message || "연결 오류"}\r\n`);
-        if (f.retryable === false) { alive = false; sock.close(1000); }
+        if (opts.rearm && alive && opts.rearm()) {
+          ended(f.message || "세션 대기 중");
+          sock.close(1000);
+        } else if (f.retryable !== false) {
+          onState("connecting");
+          if (/expired|만료/i.test(f.message || "")) offset = 0;
+        } else {
+          term.write(`\r\n[오류] ${f.message || "연결 오류"}\r\n`);
+          alive = false;
+          onState("ended");
+          sock.close(1000);
+        }
       }
     };
     sock.onclose = () => {
       if (ws === sock) { ws = null; ready = false; }
       if (!alive) return;
+      if (rearmPending) { rearmPending = false; reconnectTimer = setTimeout(connectWs, readOnly ? 2500 : 300); return; }
       if (!everReady && !opened) { startHttpFallback(); return; }
       reconnectTimer = setTimeout(connectWs, reconnectDelay);
       reconnectDelay = Math.min(5000, reconnectDelay * 2);
     };
   };
-  term.write(readOnly ? "[자동화 세션 관전 중 — 읽기 전용]\r\n" : "VM 부팅/연결 중… (처음은 최대 1~2분)\r\n");
+  if (opts.banner !== false) term.write(readOnly ? "[자동화 세션 관전 중 — 읽기 전용]\r\n" : "VM 부팅/연결 중… (처음은 최대 1~2분)\r\n");
+  onState("connecting");
   connectWs();
   if (!readOnly) term.onData(sendInput);
   const sendResize = () => {
-    fit.fit();
+    safeFit();
     const { cols, rows } = dims();
     if (cols === lastCols && rows === lastRows) return;
     lastCols = cols; lastRows = rows;
@@ -417,8 +471,11 @@ function openTerminal(el, name, readOnly) {
   const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(onResize) : null;
   if (ro) ro.observe(el);
   return {
-    term,
+    term, name,
     type: t => { sendInput(t); term.focus(); },
+    focus: () => term.focus(),
+    fit: () => onResize(),
+    close: () => api("POST", basePath, { operation: "close", ...dims(), offset, data: "" }, { noInvalidate: true }),
     stop() {
       alive = false;
       clearTimeout(reconnectTimer); clearTimeout(resizeTimer);
@@ -889,18 +946,36 @@ const VIEWS = {
         <button class="g" id="applyvm">적용 (OWNER)</button><button class="g" id="resetvm">메모리 초기화</button>
         <span class="muted">저장소 위치: <span class="mono">${esc(st.repos_dir)}/&lt;repo_key&gt;</span></span></div>`}
       <div class="card"><div class="row" style="margin-bottom:8px"><b>터미널</b>
-        <select id="tname"><option value="main">main</option><option value="t2">t2</option><option value="t3">t3</option></select>
-        <button class="g" id="topen">열기</button><span class="muted">자동화 세션 관전:</span><input id="watch" placeholder="agdd-xxxxxxxx" size="16"><button class="g" id="twatch">관전</button>
-        <span class="muted">빠른 명령:</span>
+        <button class="b" id="tnew" title="새 셸 세션 (main, t2, t3 …)">＋ 새 터미널</button>
+        <input id="tname" placeholder="세션 이름" size="10" title="기존 세션 이름을 입력하면 다시 연결합니다"><button class="g" id="topen">열기</button>
+        <span class="muted">관전:</span><input id="watch" placeholder="agdd-xxxxxxxx" size="16" list="watch-list"><datalist id="watch-list"></datalist><button class="g" id="twatch">관전</button>
+        <button class="g" id="tteam" title="현재 팀 캔버스의 에이전트 PTY(agdd-ma-*)를 모두 관전 패널로 엽니다">팀 에이전트 관전</button></div>
+        <div class="row" style="margin-bottom:8px"><span class="muted">빠른 명령 (활성 터미널):</span>
         <button class="g" data-cmd="cd /workspace/repos 2>/dev/null || mkdir -p /workspace/repos && cd /workspace/repos; ls -la">repos</button>
         <button class="g" data-cmd="apt update">apt update</button>
         <button class="g" id="demo">데모 저장소 만들기</button></div>
-        <div id="term" class="term"></div></div>`);
-    const start = (name, ro) => { if (TERM) TERM.stop(); $("#term").innerHTML = ""; TERM = openTerminal($("#term"), name, ro); };
+        <div id="term"></div></div>`);
+    const teamAgents = () => (MA.graph?.nodes || []).filter(n => n.kind === "agent")
+      .filter(n => !(MA.graph.edges || []).some(e => e.to === n.id && e.when === "spawn"))
+      .map(n => ({ name: `agdd-ma-${n.id}`.slice(0, 64), label: `🤖 ${n.label || n.id}` }));
     if (!err) {
-      start("main");
-      $("#topen").onclick = () => start($("#tname").value);
-      $("#twatch").onclick = () => start($("#watch").value.trim(), true);
+      const grid = window.AGDD.TermGrid($("#term"), { storeKey: `agdd.terms.${WS}`, height: Math.max(420, innerHeight - 330),
+        rearm: p => p.ro, empty: "＋ 새 터미널로 VM 셸을 여세요." });
+      TERM = { type: t => { if (!grid.type(t)) { const p = grid.add({ name: grid.nextName() }); setTimeout(() => p?.term?.type(t), 50); } }, stop: () => grid.stop(), grid };
+      grid.restore([{ name: "main" }]);
+      if (!grid.panes.length) grid.add({ name: "main" }, { focus: false });
+      $("#watch-list").innerHTML = teamAgents().map(a => `<option value="${esc(a.name)}">${esc(a.label)}</option>`).join("");
+      $("#tnew").onclick = () => grid.add({ name: grid.nextName() });
+      const openNamed = () => { const n = $("#tname").value.trim() || grid.nextName(); grid.add({ name: n, ro: n.startsWith("agdd-") }); $("#tname").value = ""; };
+      $("#topen").onclick = openNamed; $("#tname").onkeydown = e => { if (e.key === "Enter") openNamed(); };
+      const watchNamed = () => { const n = $("#watch").value.trim(); if (!n) return; if (!n.startsWith("agdd-")) return toast("관전은 자동화 세션(agdd-…)만 가능합니다", true); const a = teamAgents().find(x => x.name === n); grid.add({ name: n, ro: true, label: a?.label || "" }); $("#watch").value = ""; };
+      $("#twatch").onclick = watchNamed; $("#watch").onkeydown = e => { if (e.key === "Enter") watchNamed(); };
+      $("#tteam").onclick = () => {
+        const list = teamAgents();
+        if (!list.length) return toast("팀 캔버스에 에이전트 노드가 없습니다 (멀티 에이전트 탭에서 팀을 먼저 여세요)", true);
+        list.forEach(a => grid.add({ ...a, ro: true }, { focus: false }));
+        if (grid.layout === "1") grid.setLayout(list.length > 2 ? "4" : "2");
+      };
       document.querySelectorAll("button[data-cmd]").forEach(b => b.onclick = () => TERM?.type(b.dataset.cmd + "\r"));
       $("#demo").onclick = run(async () => { if (!confirm("/workspace/repos/demo 저장소를 생성할까요? (기존 demo 폴더가 있으면 덮어씁니다)")) return; toast("데모 저장소 생성 중…"); const r = await api("POST", `/workspaces/${WS}/vm/demo-repo`, {}); toast(`생성됨: ${r.path}`); });
       $("#applyvm").onclick = run(async () => {
@@ -913,8 +988,22 @@ const VIEWS = {
   async agents() {
     const cfg = await api("GET", `/workspaces/${WS}/agent-settings`);
     const s = cfg.settings;
-    let clis = peek(`/workspaces/${WS}/vm/clis`), cliErr = "";
-    if (clis === undefined) { clis = null; api("GET", `/workspaces/${WS}/vm/clis`).then(() => { if (TAB === "agents") render(); }).catch(e => { if (TAB === "agents") toast(e.message, true); }); }
+    const errMap = VIEWS._cliErr || (VIEWS._cliErr = {});
+    let clis = peek(`/workspaces/${WS}/vm/clis`), cliErr = errMap[WS] || "";
+    if (clis !== undefined) {
+      delete errMap[WS];
+      cliErr = "";
+    } else if (!cliErr) {
+      clis = null;
+      const wsAt = WS;
+      api("GET", `/workspaces/${WS}/vm/clis`).then(() => {
+        delete errMap[wsAt];
+        if (TAB === "agents" && WS === wsAt) render();
+      }).catch(e => {
+        errMap[wsAt] = e.message || "CLI 상태 확인 실패";
+        if (TAB === "agents" && WS === wsAt) { toast(errMap[wsAt], true); render(); }
+      });
+    }
     const opt = (list, cur) => list.map(v => `<option ${v === cur ? "selected" : ""}>${esc(v)}</option>`).join("");
     V(`<div class="row" style="justify-content:space-between;margin-bottom:8px"><div><h2>CLI 에이전트</h2><p class="sub" style="margin:0">AGDD의 모든 모델 단계(사전 검사, 모호성, 라우팅, Dev, 의미 검증, Watchdog, HITL 카드)는 이 워크스페이스 VM 안에서 선택한 CLI로 실행됩니다. 기본 엔진: <b>${esc(cfg.engine_default)}</b></p></div>
         <button class="g" id="refresh-clis">설치 상태 새로고침</button></div>
@@ -943,6 +1032,7 @@ const VIEWS = {
     $("#refresh-clis").onclick = run(async () => {
       $("#refresh-clis").disabled = true;
       try {
+        delete errMap[WS];
         CACHE.delete(`/workspaces/${WS}/vm/clis`);
         const fresh = await api("GET", `/workspaces/${WS}/vm/clis?refresh=1`, undefined, { fresh: true });
         CACHE.set(`/workspaces/${WS}/vm/clis`, { t: Date.now(), v: fresh });
@@ -1093,24 +1183,35 @@ const VIEWS = {
     });
   },
   async gate() {
-    const last = await api("GET", `/workspaces/${WS}/conflicts`);
+    const last = await api("GET", `/workspaces/${WS}/conflicts`, undefined, { fresh: true });
+    if (stale("gate")) return;
+    const statusHtml = (ver, ok) => `최신 스냅샷 v${esc(ver ?? "-")}: ${ok ? '<b class="ok">통과</b>' : '<b class="warn">미통과/미검사</b>'}`;
     V(`<h2>사전 검사 (Pre-Flight Gate)</h2><p class="sub">1) SQL 무결성 → 2) 배치 묶기 → 3) 저렴한 모델 의미 검사 → 4) CRITICAL 0건이면 실행 허가. 모호성 린터도 함께 실행됩니다.</p>
-      <div class="card row"><span>최신 스냅샷 v${esc(last.version ?? "-")}: ${last.conflict_passed ? '<b class="ok">통과</b>' : '<b class="warn">미통과/미검사</b>'}</span>
+      <div class="card row"><span id="gate-status">${statusHtml(last.version, last.conflict_passed)}</span>
+      <select id="gate-eng" title="사전 검사 LLM 엔진"><option value="">엔진 기본</option><option value="vm-cli">VM CLI</option><option value="gateway">Gateway</option></select>
       <label><input type="checkbox" id="sem" checked> 의미 검사</label><label><input type="checkbox" id="amb" checked> 모호성 린터</label><button class="b" id="go">검사 실행</button></div><div id="out"></div>`);
     $("#go").onclick = run(async () => {
-      $("#go").disabled = true; $("#out").innerHTML = `<p class="muted">검사 중…</p>`;
+      const eng = $("#gate-eng")?.value || "";
+      const body = { semantic: $("#sem").checked, ambiguity: $("#amb").checked, ...(eng ? { engine: eng } : {}) };
+      $("#go").disabled = true; $("#out").innerHTML = `<p class="muted">검사 중… (VM CLI 선택 시 첫 기동·LLM 분석에 수십 초~1분 정도 걸릴 수 있습니다)</p>`;
       try {
-        const r = await api("POST", `/workspaces/${WS}/preflight`, { semantic: $("#sem").checked, ambiguity: $("#amb").checked });
-        $("#out").innerHTML = `<div class="card row" style="justify-content:space-between"><span><b class="${r.passed ? "ok" : "bad"}">${r.passed ? "통과 — 실행 가능" : "차단 — CRITICAL 충돌"}</b> · 스냅샷 ${esc(r.snapshot_id)}</span>
+        const r = await api("POST", `/workspaces/${WS}/preflight`, body);
+        const conflicts = r.conflicts || [];
+        const questions = r.ambiguity_questions || [];
+        if ($("#gate-status")) $("#gate-status").innerHTML = statusHtml(r.version ?? "-", r.passed);
+        $("#out").innerHTML = `<div class="card row" style="justify-content:space-between"><span><b class="${r.passed ? "ok" : "bad"}">${r.passed ? "통과 — 실행 가능" : "차단 — CRITICAL 충돌"}</b> · 스냅샷 v${esc(r.version ?? "-")} <span class="mono muted">${esc(r.snapshot_id)}</span></span>
           ${r.passed ? `<span class="row"><button class="g" id="g-to-runs">실행 탭으로 →</button><button class="b" id="g-to-collab">협업으로 →</button></span>` : `<button class="g" id="g-to-specs">명세 수정하기 →</button>`}</div>` +
-          r.conflicts.map(c => `<div class="card"><span class="chip ${c.severity === "CRITICAL" ? "bad" : "warn"}">${esc(c.severity)}</span> <b>${esc(c.conflict_type)}</b> ${c.involved_ids.map(id => `<button type="button" class="chip link-chip mono" data-jump-spec="${esc(id)}">${esc(id)}</button>`).join(" ")} <span class="muted">${esc(c.check_stage)}</span><p>${esc(c.explanation)}</p><ol>${c.resolution_options.options.map((o, i) => `<li>${esc(o)}${i === c.resolution_options.recommended ? " <span class='chip'>권장</span>" : ""}</li>`).join("")}</ol></div>`).join("") +
-          (r.ambiguity_questions.length ? `<div class="card"><h3>미결정 항목 (권장 기본값으로 진행됨)</h3>${r.ambiguity_questions.map(q => `<p><span class="chip">${esc(q.category)}</span> <button type="button" class="chip link-chip mono" data-jump-spec="${esc(q.spec_id)}">${esc(q.spec_id)}</button> ${esc(q.question)}<br>${q.options.map((o, i) => i === q.recommended ? `<b>${esc(o)}</b>` : esc(o)).join(" / ")}</p>`).join("")}</div>` : "") +
-          (r.scope ? `<div class="card"><h3>Executable Scope</h3><pre>${esc(JSON.stringify(r.scope.requirements.map(x => x.req_id)))} + ARC ${esc(JSON.stringify(r.scope.architecture.map(x => x.arch_id)))} + SCH ${esc(JSON.stringify(r.scope.schemas.map(x => x.schema_id)))}</pre></div>` : "");
+          conflicts.map(c => `<div class="card"><span class="chip ${c.severity === "CRITICAL" ? "bad" : "warn"}">${esc(c.severity)}</span> <b>${esc(c.conflict_type)}</b> ${(c.involved_ids || []).map(id => `<button type="button" class="chip link-chip mono" data-jump-spec="${esc(id)}">${esc(id)}</button>`).join(" ")} <span class="muted">${esc(c.check_stage)}</span><p>${esc(c.explanation)}</p><ol>${(c.resolution_options?.options || []).map((o, i) => `<li>${esc(o)}${i === c.resolution_options?.recommended ? " <span class='chip'>권장</span>" : ""}</li>`).join("")}</ol></div>`).join("") +
+          (questions.length ? `<div class="card"><h3>미결정 항목 (권장 기본값으로 진행됨)</h3>${questions.map(q => `<p><span class="chip">${esc(q.category)}</span> <button type="button" class="chip link-chip mono" data-jump-spec="${esc(q.spec_id)}">${esc(q.spec_id)}</button> ${esc(q.question)}<br>${(q.options || []).map((o, i) => i === q.recommended ? `<b>${esc(o)}</b>` : esc(o)).join(" / ")}</p>`).join("")}</div>` : "") +
+          (r.scope ? `<div class="card"><h3>Executable Scope</h3><pre>${esc(JSON.stringify((r.scope.requirements || []).map(x => x.req_id)))} + ARC ${esc(JSON.stringify((r.scope.architecture || []).map(x => x.arch_id)))} + SCH ${esc(JSON.stringify((r.scope.schemas || []).map(x => x.schema_id)))}</pre></div>` : "");
         document.querySelectorAll("[data-jump-spec]").forEach(b => b.onclick = () => { SPEC.jumpId = b.dataset.jumpSpec; TAB = "specs"; store.set("agdd.tab", TAB); render(); });
         if ($("#g-to-runs")) $("#g-to-runs").onclick = () => { TAB = "runs"; store.set("agdd.tab", TAB); render(); };
         if ($("#g-to-collab")) $("#g-to-collab").onclick = () => { TAB = "collab"; store.set("agdd.tab", TAB); render(); };
         if ($("#g-to-specs")) $("#g-to-specs").onclick = () => { TAB = "specs"; store.set("agdd.tab", TAB); render(); };
-      } finally { $("#go").disabled = false; }
+      } catch (e) {
+        if ($("#out")) $("#out").innerHTML = `<div class="card" style="border-color:var(--bad)"><b class="bad">사전 검사 실패</b><p class="sub" style="margin:6px 0 0">${esc(e?.message || e)}</p></div>`;
+        toast(e?.message || String(e), true);
+      } finally { if ($("#go")) $("#go").disabled = false; }
     });
   },
   async graphs() {
@@ -1379,6 +1480,7 @@ window.AGDD = {
   if (["chat", "cli"].includes(q.get("mode"))) COLLAB.mode = q.get("mode");
   if (q.get("view") && /^[A-Za-z0-9_.-]{1,64}$/.test(q.get("view"))) UXC.view = q.get("view"); }
 </script>
+<script src="static/terms.js"></script>
 <script src="static/ide.js"></script>
 <script src="static/collab.js"></script>
 <script src="static/ux_canvas.js"></script>
