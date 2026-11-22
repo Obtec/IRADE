@@ -42,6 +42,7 @@ class LockedOverrideError(PermissionError):
 
 
 ALLOWED_KEYS = {"layout", "tokens", "visibility", "order", "size", "spacing", "variant", "props"}
+CANVAS_META_SELECTOR = ":canvas"
 
 
 def _validate_config(config: dict) -> None:
@@ -149,7 +150,7 @@ def normalize_ux_request(obj: dict | None) -> dict | None:
         if not isinstance(el, dict):
             continue
         sel = str(el.get("selector") or f"#el-{i + 1}").strip()[:64] or f"#el-{i + 1}"
-        elems.append({
+        item = {
             "selector": sel,
             "kind": str(el.get("kind") or "section").strip()[:32] or "section",
             "label": str(el.get("label") or sel).strip()[:120],
@@ -158,7 +159,12 @@ def normalize_ux_request(obj: dict | None) -> dict | None:
             "w": _clamp_int(el.get("w", 240), 24, width, 240),
             "h": _clamp_int(el.get("h", 120), 24, height, 120),
             "note": str(el.get("note") or "").strip()[:500],
-        })
+        }
+        if isinstance(el.get("variant"), str) and el.get("variant").strip():
+            item["variant"] = el["variant"].strip()[:40]
+        if isinstance(el.get("props"), dict):
+            item["props"] = dict(el["props"])
+        elems.append(item)
     return {
         "view_key": view_key,
         "prompt": prompt,
@@ -187,13 +193,19 @@ def summarize_2d_layout(
     viewport: dict | None = None,
 ) -> dict:
     """Convert raw ``ux_overrides`` bindings into a structured 2D spatial layout + relations for agents."""
-    vp_w = _clamp_int((viewport or {}).get("width", 1200), 320, 3840, 1200)
-    vp_h = _clamp_int((viewport or {}).get("height", 720), 320, 2160, 720)
-    locked_set = set(locked_selectors or ())
+    raw_bindings = bindings or {}
+    raw_canvas = raw_bindings.get(CANVAS_META_SELECTOR)
+    canvas_cfg = dict(raw_canvas) if isinstance(raw_canvas, dict) else None
+    vp_src = viewport if isinstance(viewport, dict) and viewport else (
+        canvas_cfg.get("size") if isinstance(canvas_cfg, dict) and isinstance(canvas_cfg.get("size"), dict) else {}
+    )
+    vp_w = _clamp_int(vp_src.get("w", vp_src.get("width", 1200)), 320, 3840, 1200)
+    vp_h = _clamp_int(vp_src.get("h", vp_src.get("height", 720)), 320, 2160, 720)
+    locked_set = set(locked_selectors or ()) - {CANVAS_META_SELECTOR}
     elements = []
     connections = []
-    for idx, (sel, cfg) in enumerate(sorted((bindings or {}).items())):
-        if not isinstance(cfg, dict):
+    for idx, (sel, cfg) in enumerate(sorted(raw_bindings.items())):
+        if sel == CANVAS_META_SELECTOR or not isinstance(cfg, dict):
             continue
         layout = cfg.get("layout") if isinstance(cfg.get("layout"), dict) else {}
         size = cfg.get("size") if isinstance(cfg.get("size"), dict) else {}
@@ -225,6 +237,7 @@ def summarize_2d_layout(
             "layout": layout,
             "spacing": spacing,
             "tokens": tokens,
+            "props": props,
             "visibility": cfg.get("visibility", "visible"),
             "variant": cfg.get("variant"),
             "connects_to": conns,
@@ -259,10 +272,13 @@ def summarize_2d_layout(
             elif b["y"] + b["h"] <= a["y"] + 8:
                 relations.append({"type": "above", "source": b["selector"], "target": a["selector"]})
 
-    return {
+    res = {
         "viewport": {"width": vp_w, "height": vp_h},
         "elements": elements,
         "connections": connections,
         "spatial_relations": relations,
         "locked_selectors": sorted(locked_set),
     }
+    if canvas_cfg is not None:
+        res["canvas"] = canvas_cfg
+    return res

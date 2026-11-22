@@ -263,3 +263,6 @@ agdd-workspace/
 *.db-shm
 .agdd/
 **/.agdd/
+
+# AGDD console offline browser bundles (python -m irade_agent.agdd.fetch_vendor)
+agent/irade_agent/agdd/static/vendor/

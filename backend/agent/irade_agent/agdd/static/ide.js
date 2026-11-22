@@ -18,6 +18,101 @@
   const encPath = p => p.split("/").map(encodeURIComponent).join("/");
   const extOf = p => (p.split(".").pop() || "").toLowerCase();
 
+  function renderSimpleMarkdown(md) {
+    const blocks = [];
+    let text = String(md || "").replace(/\r\n?/g, "\n");
+    text = text.replace(/```([A-Za-z0-9_+-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
+      const idx = blocks.length;
+      blocks.push(`<pre><code class="lang-${esc(lang)}">${esc(code.replace(/\n$/, ""))}</code></pre>`);
+      return `\n@@BLOCK_${idx}@@\n`;
+    });
+    const inline = s => {
+      let out = esc(s);
+      out = out.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
+      out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+      out = out.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+      out = out.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, lbl, rawHref) => {
+        const href = rawHref.replace(/&amp;/g, "&");
+        if (/^(https?:\/\/|\/|#)/i.test(href)) return `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${lbl}</a>`;
+        return `${lbl} (${esc(rawHref)})`;
+      });
+      return out;
+    };
+    const lines = text.split("\n"), out = [];
+    let i = 0;
+    while (i < lines.length) {
+      const ln = lines[i];
+      const bm = /^@@BLOCK_(\d+)@@$/.exec(ln.trim());
+      if (bm) { out.push(blocks[+bm[1]]); i++; continue; }
+      if (!ln.trim()) { i++; continue; }
+      const hm = /^(#{1,4})\s+(.+)$/.exec(ln);
+      if (hm) { out.push(`<h${hm[1].length}>${inline(hm[2])}</h${hm[1].length}>`); i++; continue; }
+      if (/^([-*_]){3,}$/.test(ln.trim())) { out.push("<hr>"); i++; continue; }
+      if (/^>\s?/.test(ln)) {
+        const bq = [];
+        while (i < lines.length && /^>\s?/.test(lines[i])) { bq.push(inline(lines[i].replace(/^>\s?/, ""))); i++; }
+        out.push(`<blockquote>${bq.join("<br>")}</blockquote>`);
+        continue;
+      }
+      if (/^\|.+\|$/.test(ln.trim()) && i + 1 < lines.length && /^\|[\s:|-]+\|$/.test(lines[i + 1].trim())) {
+        const parseRow = r => r.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim());
+        const ths = parseRow(ln).map(c => `<th>${inline(c)}</th>`).join("");
+        i += 2;
+        const trs = [];
+        while (i < lines.length && /^\|.+\|$/.test(lines[i].trim())) {
+          trs.push(`<tr>${parseRow(lines[i]).map(c => `<td>${inline(c)}</td>`).join("")}</tr>`);
+          i++;
+        }
+        out.push(`<table><thead><tr>${ths}</tr></thead><tbody>${trs.join("")}</tbody></table>`);
+        continue;
+      }
+      if (/^[-*+]\s+/.test(ln)) {
+        const items = [];
+        while (i < lines.length && /^[-*+]\s+/.test(lines[i])) { items.push(`<li>${inline(lines[i].replace(/^[-*+]\s+/, ""))}</li>`); i++; }
+        out.push(`<ul>${items.join("")}</ul>`);
+        continue;
+      }
+      if (/^\d+\.\s+/.test(ln)) {
+        const items = [];
+        while (i < lines.length && /^\d+\.\s+/.test(lines[i])) { items.push(`<li>${inline(lines[i].replace(/^\d+\.\s+/, ""))}</li>`); i++; }
+        out.push(`<ol>${items.join("")}</ol>`);
+        continue;
+      }
+      const para = [];
+      while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s+|>\s?|[-*+]\s+|\d+\.\s+|([-*_]){3,}$|@@BLOCK_\d+@@$)/.test(lines[i])) {
+        para.push(inline(lines[i]));
+        i++;
+      }
+      out.push(`<p>${para.join("<br>")}</p>`);
+    }
+    return out.join("\n");
+  }
+
+  function idePrompt(title, defaultVal = "", placeholder = "") {
+    return new Promise(resolve => {
+      document.getElementById("ide-modal-backdrop")?.remove();
+      const wrap = document.createElement("div");
+      wrap.id = "ide-modal-backdrop";
+      wrap.style.cssText = "position:fixed;inset:0;z-index:120;background:rgba(0,0,0,.45);display:grid;place-items:center;padding:16px";
+      wrap.innerHTML = `<div class="card" style="width:min(440px,100%);margin:0;box-shadow:0 12px 36px rgba(0,0,0,.3)">
+        <h3 style="margin:0 0 10px">${esc(title)}</h3>
+        <input id="ide-prompt-in" value="${esc(defaultVal)}" placeholder="${esc(placeholder)}" style="width:100%;margin-bottom:12px">
+        <div class="row" style="justify-content:flex-end"><button type="button" class="g" id="ide-prompt-cancel">취소</button><button type="button" class="b" id="ide-prompt-ok">확인</button></div>
+      </div>`;
+      document.body.appendChild(wrap);
+      const inp = wrap.querySelector("#ide-prompt-in");
+      const finish = v => { wrap.remove(); resolve(v); };
+      wrap.querySelector("#ide-prompt-cancel").onclick = () => finish(null);
+      wrap.querySelector("#ide-prompt-ok").onclick = () => finish(inp.value);
+      wrap.onclick = e => { if (e.target === wrap) finish(null); };
+      inp.onkeydown = e => {
+        if (e.key === "Escape") { e.preventDefault(); finish(null); }
+        else if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); finish(inp.value); }
+      };
+      requestAnimationFrame(() => { inp.focus(); inp.select(); });
+    });
+  }
+
   function stopIdeTerm() {
     if (IDE.term) {
       try { IDE.term.stop(); } catch {}
@@ -37,11 +132,13 @@
     if (!IDE.tree) return `<div class="muted" style="padding:12px">저장소를 불러오는 중…</div>`;
     const st = IDE.tree.status || {};
     const q = (IDE.filter || "").toLowerCase();
-    const allFiles = (IDE.tree.files || []).filter(f => !q || f.toLowerCase().includes(q));
+    const rawFiles = IDE.tree.files || [];
+    const allFiles = rawFiles.filter(f => !q || f.toLowerCase().includes(q));
     const cellFiles = allFiles.filter(f => f.startsWith("cells/") && !f.endsWith("/.irade-manifest.json"));
     const otherFiles = allFiles.filter(f => !f.startsWith("cells/"));
     const changed = allFiles.filter(f => st[f]);
     const del = Object.keys(st).filter(f => st[f] === "D");
+    const emptyDirs = (IDE.tree.dirs || []).filter(d => (!q || d.toLowerCase().includes(q)) && !rawFiles.some(f => f === d || f.startsWith(d + "/")));
 
     const item = f => {
       const ext = extOf(f);
@@ -61,6 +158,15 @@
         </span>
       </div>`;
     };
+    const dirRow = d => `<div class="tree-row">
+      <button class="tree-item" data-new-in-dir="${esc(d)}" title="폴더 '${esc(d)}'에 새 파일 만들기">
+        <span>📁</span><span style="overflow:hidden;text-overflow:ellipsis">${esc(d)}</span><span class="st muted" style="font-weight:400">(빈 폴더)</span>
+      </button>
+      <span class="tree-acts">
+        <button class="icon" data-new-in-dir="${esc(d)}" title="폴더에 파일 추가">+📄</button>
+        <button class="icon bad" data-del-f="${esc(d)}" title="폴더 삭제">✕</button>
+      </span>
+    </div>`;
 
     const parts = [];
     if (cellFiles.length) {
@@ -70,8 +176,9 @@
       parts.push(`<div class="ide-head">Git 변경 (${changed.length + del.length})</div>` + changed.map(item).join("") +
         del.map(f => `<div class="tree-row"><div class="tree-item"><span class="st st-D" style="margin:0">D</span><s>${esc(f)}</s></div></div>`).join(""));
     }
-    parts.push(`<div class="ide-head">저장소 파일 (${otherFiles.length})</div>` +
-      (otherFiles.slice(0, 2000).map(item).join("") || `<div class="muted" style="padding:8px 12px;font-size:12px">파일이 없습니다. 상단 <b>+ 파일</b>로 만드세요.</div>`));
+    const repoListing = emptyDirs.map(dirRow).join("") + otherFiles.slice(0, 2000).map(item).join("");
+    parts.push(`<div class="ide-head">저장소 파일 (${otherFiles.length}${emptyDirs.length ? ` · 폴더 ${emptyDirs.length}` : ""})</div>` +
+      (repoListing || `<div class="muted" style="padding:8px 12px;font-size:12px">파일이 없습니다. 상단 <b>+📄</b>로 만드세요.</div>`));
     return parts.join("");
   }
 
@@ -95,6 +202,7 @@
   async function saveActiveFile() {
     const path = IDE.active;
     if (!path || path === "__diff__" || IDE.commit || !IDE.repo) return;
+    if (IDE.files[path]?.truncated) return toast("256 KiB 초과 파일은 잘림 방지를 위해 읽기 전용으로 열렸습니다", true);
     const text = IDE.dirty.has(path)
       ? IDE.dirty.get(path)
       : (IDE.editor && typeof IDE.editor.getValue === "function" ? IDE.editor.getValue() : IDE.files[path]?.content);
@@ -105,8 +213,8 @@
     for (const k of [...CACHE.keys()]) if (k.includes("/ide/")) CACHE.delete(k);
     if (path.startsWith("cells/")) notifyStudioCellChange();
     toast(`저장됨: ${path}`);
-    $("#ide-tabs").innerHTML = ideTabsHtml();
-    $("#ide-save").disabled = true;
+    if ($("#ide-tabs")) $("#ide-tabs").innerHTML = ideTabsHtml();
+    if ($("#ide-save")) $("#ide-save").disabled = true;
     await refreshTreeOnly();
   }
 
@@ -121,7 +229,7 @@
     if (!$("#ide-tabs")) return;
     $("#ide-tabs").innerHTML = ideTabsHtml();
     $("#ide-tree").innerHTML = ideTreeHtml();
-    $("#ide-log").innerHTML = ideLogHtml();
+    if ($("#ide-log")) $("#ide-log").innerHTML = ideLogHtml();
     const host = $("#ide-editor"), preview = $("#ide-preview"), empty = $("#ide-empty");
     const hasDoc = Boolean(IDE.commit || IDE.active);
     empty.style.display = hasDoc ? "none" : "grid";
@@ -133,6 +241,9 @@
     const ext = isRealFile ? extOf(IDE.active) : "";
     const canPrev = isRealFile && (ext === "html" || ext === "md");
     const canRun = isRealFile && RUNNABLE.has(ext);
+    const activeFile = isRealFile ? IDE.files[IDE.active] : null;
+    const isTrunc = Boolean(activeFile?.truncated);
+    const canRev = Boolean(isRealFile && activeFile?.head != null && (IDE.tree?.status?.[IDE.active] || IDE.dirty.has(IDE.active)));
 
     $("#ide-path").textContent = IDE.commit
       ? `commit ${IDE.commit.slice(0, 7)}`
@@ -141,12 +252,14 @@
         : IDE.active
           ? `/workspace/repos/${IDE.repo}/${IDE.active}`
           : (IDE.repo ? `/workspace/repos/${IDE.repo}` : "");
+    if ($("#ide-trunc-warn")) $("#ide-trunc-warn").hidden = !isTrunc;
 
     $("#ide-mode").style.visibility = isRealFile ? "visible" : "hidden";
     const prevBtn = $("#ide-mode-preview");
     if (prevBtn) prevBtn.hidden = !canPrev;
     $("#ide-mode").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.m === IDE.mode));
-    if ($("#ide-save")) $("#ide-save").disabled = !(isRealFile && IDE.dirty.has(IDE.active));
+    if ($("#ide-save")) $("#ide-save").disabled = !(isRealFile && !isTrunc && IDE.dirty.has(IDE.active));
+    if ($("#ide-revert")) $("#ide-revert").hidden = !canRev;
     if ($("#ide-run")) $("#ide-run").hidden = !canRun;
     if ($("#ide-ask-agent")) $("#ide-ask-agent").hidden = !isRealFile;
 
@@ -160,7 +273,11 @@
         preview.srcdoc = content;
       } else {
         preview.setAttribute("sandbox", "");
-        preview.srcdoc = `<!doctype html><html><body style="font:14px/1.6 system-ui;padding:18px;background:${darkMode() ? "#18181b;color:#eee" : "#fff;color:#111"}"><pre style="white-space:pre-wrap">${esc(content)}</pre></body></html>`;
+        const dark = darkMode();
+        const mdCss = dark
+          ? "body{font:14px/1.75 system-ui,sans-serif;padding:20px 24px;margin:0;background:#18181b;color:#e4e4e7;overflow-wrap:anywhere}h1,h2,h3,h4{color:#fafafa;margin:18px 0 8px}h2{border-bottom:1px solid #27272a;padding-bottom:6px}code{background:#27272a;padding:2px 6px;border-radius:4px;font-family:ui-monospace,Menlo,monospace}pre{padding:12px;background:#111114;border:1px solid #27272a;border-radius:8px;overflow:auto}pre code{background:none;padding:0}blockquote{border-left:3px solid #7fc0a9;padding-left:12px;margin:10px 0;color:#a1a1aa}table{border-collapse:collapse;width:100%;margin:10px 0}th,td{border:1px solid #3f3f46;padding:6px 10px}a{color:#7fc0a9}hr{border:0;border-top:1px solid #27272a;margin:16px 0}"
+          : "body{font:14px/1.75 system-ui,sans-serif;padding:20px 24px;margin:0;background:#ffffff;color:#1d1d1b;overflow-wrap:anywhere}h1,h2,h3,h4{color:#111;margin:18px 0 8px}h2{border-bottom:1px solid #e3e2dc;padding-bottom:6px}code{background:#efeee8;padding:2px 6px;border-radius:4px;font-family:ui-monospace,Menlo,monospace}pre{padding:12px;background:#f7f7f5;border:1px solid #e3e2dc;border-radius:8px;overflow:auto}pre code{background:none;padding:0}blockquote{border-left:3px solid #2f5d50;padding-left:12px;margin:10px 0;color:#6b6b66}table{border-collapse:collapse;width:100%;margin:10px 0}th,td{border:1px solid #e3e2dc;padding:6px 10px}a{color:#2f5d50}hr{border:0;border-top:1px solid #e3e2dc;margin:16px 0}";
+        preview.srcdoc = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>${mdCss}</style></head><body>${renderSimpleMarkdown(content)}</body></html>`;
       }
       return;
     }
@@ -191,15 +308,17 @@
       return;
     }
     const val = IDE.dirty.has(f.path) ? IDE.dirty.get(f.path) : (f.content ?? "");
-    const ed = monaco.editor.create(host, { ...opts, readOnly: false, value: val, language: langOf(f.path) });
-    ed.onDidChangeModelContent(() => {
-      const next = ed.getValue();
-      if (next !== (IDE.files[f.path]?.content ?? "")) IDE.dirty.set(f.path, next);
-      else IDE.dirty.delete(f.path);
-      if ($("#ide-save")) $("#ide-save").disabled = !IDE.dirty.has(f.path);
-      $("#ide-tabs").innerHTML = ideTabsHtml();
-    });
-    ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => run(saveActiveFile)());
+    const ed = monaco.editor.create(host, { ...opts, readOnly: isTrunc, value: val, language: langOf(f.path) });
+    if (!isTrunc) {
+      ed.onDidChangeModelContent(() => {
+        const next = ed.getValue();
+        if (next !== (IDE.files[f.path]?.content ?? "")) IDE.dirty.set(f.path, next);
+        else IDE.dirty.delete(f.path);
+        if ($("#ide-save")) $("#ide-save").disabled = !IDE.dirty.has(f.path);
+        $("#ide-tabs").innerHTML = ideTabsHtml();
+      });
+      ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => run(saveActiveFile)());
+    }
     IDE.editor = ed;
   }
 
@@ -266,30 +385,57 @@
         await refreshTreeOnly(); await ideShow(); toast("삭제됨");
         return;
       }
+      const newDirBtn = e.target.closest("[data-new-in-dir]");
+      if (newDirBtn) {
+        e.stopPropagation();
+        const dir = newDirBtn.dataset.newInDir;
+        const p = await idePrompt(`폴더 '${dir}'에 새 파일 만들기`, `${dir}/main.py`, `${dir}/example.py`);
+        if (!p || !p.trim()) return;
+        const clean = p.trim();
+        await ideMut("PUT", `/repos/${encodeURIComponent(IDE.repo)}/files/${encPath(clean)}`, { content: "" });
+        if (clean.startsWith("cells/")) notifyStudioCellChange();
+        await refreshTreeOnly();
+        await ideOpen(clean);
+        return;
+      }
       const ren = e.target.closest("[data-ren]");
       if (ren) {
         e.stopPropagation();
         const src = ren.dataset.ren;
-        const dst = prompt("새 경로/파일명:", src);
+        const dst = await idePrompt("새 경로/파일명", src);
         if (!dst || dst.trim() === src) return;
-        await ideMut("POST", `/repos/${encodeURIComponent(IDE.repo)}/rename`, { from: src, to: dst.trim() });
+        const cleanDst = dst.trim();
+        await ideMut("POST", `/repos/${encodeURIComponent(IDE.repo)}/rename`, { from: src, to: cleanDst });
         const idx = IDE.open.indexOf(src);
-        if (idx >= 0) IDE.open[idx] = dst.trim();
-        if (IDE.active === src) IDE.active = dst.trim();
+        if (idx >= 0) IDE.open[idx] = cleanDst;
+        if (IDE.dirty.has(src)) {
+          const draft = IDE.dirty.get(src);
+          IDE.dirty.delete(src);
+          IDE.dirty.set(cleanDst, draft);
+        }
         delete IDE.files[src];
-        if (src.startsWith("cells/") || dst.trim().startsWith("cells/")) notifyStudioCellChange();
-        await refreshTreeOnly(); await ideShow(); toast("이름 변경됨");
+        if (src.startsWith("cells/") || cleanDst.startsWith("cells/")) notifyStudioCellChange();
+        await refreshTreeOnly();
+        if (IDE.active === src) {
+          delete IDE.files[cleanDst];
+          await ideOpen(cleanDst);
+        } else {
+          await ideShow();
+        }
+        toast("이름 변경됨");
         return;
       }
       const b = e.target.closest("[data-f]");
       if (b) await ideOpen(b.dataset.f);
     });
-    $("#ide-log").onclick = run(async e => {
-      const b = e.target.closest("[data-c]"); if (!b) return;
-      const sha = b.dataset.c;
-      if (!IDE.files["commit:" + sha]) IDE.files["commit:" + sha] = (await ideApi(`/repos/${encodeURIComponent(IDE.repo)}/commits/${sha}`)).patch;
-      IDE.commit = sha; await ideShow();
-    });
+    if ($("#ide-log")) {
+      $("#ide-log").onclick = run(async e => {
+        const b = e.target.closest("[data-c]"); if (!b) return;
+        const sha = b.dataset.c;
+        if (!IDE.files["commit:" + sha]) IDE.files["commit:" + sha] = (await ideApi(`/repos/${encodeURIComponent(IDE.repo)}/commits/${sha}`)).patch;
+        IDE.commit = sha; await ideShow();
+      });
+    }
     $("#ide-tabs").onclick = run(async e => {
       const x = e.target.closest("[data-close]");
       if (x) {
@@ -311,7 +457,7 @@
   }
 
   document.addEventListener("keydown", e => {
-    if (G.getTAB() === "ide" && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s" && IDE.active && !IDE.commit && IDE.active !== "__diff__") {
+    if (G.getTAB() === "ide" && !e.isComposing && (e.ctrlKey || e.metaKey) && e.code === "KeyS" && IDE.active && !IDE.commit && IDE.active !== "__diff__") {
       e.preventDefault();
       run(saveActiveFile)();
     }
@@ -375,11 +521,12 @@
         <div class="ide-col">
           <div class="ide-tabs" id="ide-tabs"></div>
           <div class="ide-head" style="text-transform:none; letter-spacing:0; font-size:12px">
-            <span class="mono" id="ide-path">${esc(IDE.repo ? "/workspace/repos/" + IDE.repo : "")}</span>
+            <span class="row" style="gap:6px;min-width:0"><span class="mono" id="ide-path">${esc(IDE.repo ? "/workspace/repos/" + IDE.repo : "")}</span><span class="chip warn" id="ide-trunc-warn" hidden>256 KiB 초과 · 읽기 전용</span></span>
             <span class="row" style="gap:6px">
               <span class="seg" id="ide-mode"><button data-m="file">편집</button><button data-m="diff">HEAD Diff</button><button data-m="preview" id="ide-mode-preview" hidden>미리보기</button></span>
               <button class="g" id="ide-run" style="padding:3px 9px;font-size:12px" hidden>▶ 실행</button>
               <button class="g" id="ide-ask-agent" style="padding:3px 9px;font-size:12px" hidden>✦ 에이전트 전달</button>
+              <button class="g bad" id="ide-revert" style="padding:3px 9px;font-size:12px" hidden title="HEAD 버전으로 되돌리기">↶ 되돌리기</button>
               <button class="b" id="ide-save" style="padding:3px 9px;font-size:12px" disabled>저장</button>
             </span>
           </div>
@@ -408,6 +555,7 @@
           <select id="ide-repo">${repos.length ? repos.map(r => `<option value="${esc(r.repo)}" ${r.repo === IDE.repo ? "selected" : ""}>${esc(r.repo)} · ${esc(r.branch)}${r.dirty ? " ●" : ""}</option>`).join("") : `<option value="">저장소 없음</option>`}</select>
           <button class="g" id="ide-new-repo">+ 저장소</button>
           <button class="g" id="ide-wdiff">작업 트리 diff</button>
+          <button class="g" id="ide-commit">✓ 커밋</button>
           <button class="g" id="ide-toggle-term">터미널</button>
           <button class="g" id="ide-refresh">새로고침</button>
         </div></div>
@@ -417,12 +565,11 @@
         : ideShell}`);
 
     bindPane(); ideBind();
-    if (!splitOn && !$("#ide-log")) {} // guarded in ideShow
     $("#ide-filter").oninput = () => { IDE.filter = $("#ide-filter").value.toLowerCase(); $("#ide-tree").innerHTML = ideTreeHtml(); };
     $("#ide-repo").onchange = run(async () => { IDE.repo = $("#ide-repo").value; store.set("agdd.repo", IDE.repo); await ideLoadRepo(); });
     $("#ide-new-repo").onclick = run(async () => {
-      const name = prompt("새 저장소 이름 (영문/숫자/._-):", "app");
-      if (!name) return;
+      const name = await idePrompt("새 저장소 이름 (영문/숫자/._-)", "app");
+      if (!name || !name.trim()) return;
       await ideMut("POST", "/repos", { repo: name.trim() });
       IDE.repo = name.trim(); store.set("agdd.repo", IDE.repo);
       for (const k of [...CACHE.keys()]) if (k.includes("/ide/")) CACHE.delete(k);
@@ -430,7 +577,7 @@
     });
     $("#ide-new-file").onclick = run(async () => {
       if (!IDE.repo) return;
-      const p = prompt("새 파일 경로 (예: src/app.py 또는 cells/note.md):", "main.py");
+      const p = await idePrompt("새 파일 경로 (예: src/app.py 또는 cells/note.md)", "main.py");
       if (!p || !p.trim()) return;
       const clean = p.trim();
       await ideMut("PUT", `/repos/${encodeURIComponent(IDE.repo)}/files/${encPath(clean)}`, { content: "" });
@@ -440,13 +587,47 @@
     });
     $("#ide-new-dir").onclick = run(async () => {
       if (!IDE.repo) return;
-      const p = prompt("새 폴더 경로 (예: src/components):", "src");
+      const p = await idePrompt("새 폴더 경로 (예: src/components)", "src");
       if (!p || !p.trim()) return;
       await ideMut("POST", `/repos/${encodeURIComponent(IDE.repo)}/mkdir`, { path: p.trim() });
       await refreshTreeOnly();
       toast(`폴더 생성됨: ${p.trim()}`);
     });
     $("#ide-save").onclick = run(saveActiveFile);
+    $("#ide-revert").onclick = run(async () => {
+      const path = IDE.active;
+      if (!path || !IDE.repo) return;
+      if (!confirm(`${path}의 변경 사항을 HEAD 커밋 상태로 되돌릴까요?`)) return;
+      if (IDE.files[path]?.head != null && IDE.tree?.status?.[path]) {
+        await ideMut("POST", `/repos/${encodeURIComponent(IDE.repo)}/revert`, { path });
+      }
+      IDE.dirty.delete(path);
+      delete IDE.files[path];
+      for (const k of [...CACHE.keys()]) if (k.includes("/ide/")) CACHE.delete(k);
+      if (path.startsWith("cells/")) notifyStudioCellChange();
+      await refreshTreeOnly();
+      await ideOpen(path);
+      toast(`되돌림: ${path}`);
+    });
+    $("#ide-commit").onclick = run(async () => {
+      if (!IDE.repo) return;
+      if (IDE.dirty.size && confirm(`저장되지 않은 변경 ${IDE.dirty.size}건을 먼저 저장하고 커밋할까요?`)) {
+        for (const p of [...IDE.dirty.keys()]) {
+          if (IDE.files[p]?.truncated) continue;
+          const content = IDE.dirty.get(p);
+          await ideMut("PUT", `/repos/${encodeURIComponent(IDE.repo)}/files/${encPath(p)}`, { content });
+          IDE.dirty.delete(p);
+        }
+      }
+      const msg = await idePrompt("Git 커밋 메시지", "update workspace files");
+      if (!msg || !msg.trim()) return;
+      const r = await ideMut("POST", `/repos/${encodeURIComponent(IDE.repo)}/commit`, { message: msg.trim() });
+      if (!r.ok) return toast(r.error || "커밋할 변경 사항이 없습니다", true);
+      for (const k of [...CACHE.keys()]) if (k.includes("/ide/")) CACHE.delete(k);
+      await refreshTreeOnly();
+      await ideShow();
+      toast(`커밋됨: ${String(r.sha || "").slice(0, 7)}`);
+    });
     $("#ide-run").onclick = run(async () => {
       if (!IDE.active || IDE.commit || IDE.active === "__diff__") return;
       if (IDE.dirty.has(IDE.active)) await saveActiveFile();
@@ -481,5 +662,13 @@
     if (IDE.repo && IDE.tree && IDE.ws === WS && IDE.treeRepo === IDE.repo) await ideShow();
     else if (IDE.repo) await ideLoadRepo();
     else await ideShow();
+    if (IDE.pendingOpen) {
+      const target = IDE.pendingOpen;
+      IDE.pendingOpen = "";
+      // Files just written by an agent may be missing from the cached tree; refresh once before giving up.
+      if (IDE.repo && !IDE.tree?.files?.includes(target)) await refreshTreeOnly();
+      if (IDE.tree?.files?.includes(target)) await ideOpen(target);
+      else toast(`파일을 찾을 수 없습니다: ${target}`, true);
+    }
   };
 })();

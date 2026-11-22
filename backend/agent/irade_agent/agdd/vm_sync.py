@@ -436,7 +436,14 @@ if op == "sync":
         kind = c.get("kind", "markdown")
         ext = EXT.get(kind, "md")
         prev = man.get(cid)
-        rel = prev["path"] if (prev and prev.get("path", "").endswith("." + ext)) else slug_for(c, used)
+        custom_path = str(c.get("path") or "").replace("\\", "/").lstrip("/")
+        valid_custom = (
+            custom_path.startswith("cells/")
+            and ".." not in custom_path.split("/")
+            and custom_path not in used
+            and any(custom_path.endswith("." + e) for e in EXT.values())
+        )
+        rel = prev["path"] if (prev and prev.get("path", "").endswith("." + ext)) else (custom_path if valid_custom else slug_for(c, used))
         used.add(rel)
         full = os.path.join(ws_repo, rel)
         os.makedirs(os.path.dirname(full), exist_ok=True)
@@ -648,6 +655,7 @@ def sync_cells(workspace_id, cells: list[dict], delete_missing: bool = True, for
             "title": str(c.get("title") or "")[:120],
             "text": str(c.get("text") or ""),
             "frameOrder": int(c.get("frameOrder", i * 10)),
+            **({"path": str(c["path"])} if c.get("path") else {}),
         })
     return _run_vm_script(
         sh,

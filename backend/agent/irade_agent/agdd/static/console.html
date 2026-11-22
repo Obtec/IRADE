@@ -170,7 +170,7 @@ const authHeaders = () => GATEWAY ? {} : { "authorization": "Bearer " + $("#toke
 const uuid = () => crypto.randomUUID ? crypto.randomUUID() : "xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx".replace(/x/g, () => (Math.random()*16|0).toString(16));
 $("#token").value = store.get("agdd.token");
 $("#user").value = store.get("agdd.user") || uuid();
-let WS = store.get("agdd.ws"), TAB = store.get("agdd.tab") || "ide", ES = null, TERM = null;
+let WS = store.get("agdd.ws"), TAB = store.get("agdd.tab") || "ide", ES = null, TERM = null, RUN_POLL = null, RES_CTL = null;
 
 function toast(msg, bad) { const t = $("#toast"); t.textContent = msg; t.style.background = bad ? "var(--bad)" : "var(--ink)"; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", 4000); }
 // GET responses are cached (30 s, VM-backed calls 5 min) and in-flight requests are shared, so switching tabs is instant.
@@ -252,7 +252,7 @@ const render = run(async () => {
   const vw = $("#view"); vw.oninput = vw.onchange = vw.onclick = null;
   $("#studio-host").hidden = true;
   $("#view").classList.toggle("wide", ["ide", "collab", "graphs", "specs", "ux", "team"].includes(TAB));
-  nav(); if (ES) { ES.close(); ES = null; } if (TERM) { TERM.stop(); TERM = null; }
+  nav(); if (ES) { ES.close(); ES = null; } if (TERM) { TERM.stop(); TERM = null; } clearTimeout(RUN_POLL); RUN_POLL = null; if (RES_CTL) { try { RES_CTL.abort(); } catch {} RES_CTL = null; }
   if (!WS) return V(`<h2>시작하기</h2><p class="sub">${GATEWAY ? "IRADE 계정으로 로그인되었습니다. 상단에서 Studio와 같은 workspace를 선택하거나 새로 만드세요." : "상단에 API 토큰(agdd.env의 AGDD_API_TOKEN)을 넣고 저장한 뒤 워크스페이스를 만드세요. 사용자 ID는 이 브라우저에서 자동 생성됩니다."}</p>`);
   if (TAB !== LAST_TAB && TAB === "specs" && !SPEC.dirty.size) SPEC.ws = "";  // refresh when entering the tab
   LAST_TAB = TAB;
@@ -272,15 +272,26 @@ addEventListener("resize", fitStudio);
 const stale = tab => tab !== TAB;
 
 function openTerminal(el, name, readOnly) {
+  if (typeof Terminal === "undefined" || typeof FitAddon === "undefined") {
+    if (el) el.innerHTML = `<div class="muted" style="padding:12px">터미널 라이브러리(xterm.js)를 불러오지 못했습니다. 네트워크/CDN 연결 상태를 확인하세요.</div>`;
+    return { term: null, type() {}, stop() {} };
+  }
   const term = new Terminal({ fontSize: 13, cursorBlink: !readOnly, convertEol: false, scrollback: 5000, disableStdin: !!readOnly,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', theme: { background: "#111111" } });
   const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open(el); fit.fit();
   const dims = () => ({ cols: Math.max(2, Math.min(300, term.cols || 80)), rows: Math.max(2, Math.min(150, term.rows || 24)) });
-  const writeB64 = b64 => {
+  // Replayed history (attach/open backlog) still contains the original programs' terminal queries
+  // (DA, DECRQM, CPR, OSC 10/11 colour, …). xterm.js would answer them again and the answers would be
+  // typed into the live shell, so drop terminal reports emitted while a replay chunk is being parsed.
+  let replaying = 0;
+  const REPORT_RE = /^(?:\x1b\[[?>=]?[\d;]*\$?[cRyntu]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\)+$/;
+  const writeB64 = (b64, replay = false) => {
     if (!b64) return;
     const bin = atob(b64); const u8 = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
-    term.write(u8);
+    if (!replay) { term.write(u8); return; }
+    replaying++;
+    term.write(u8, () => { replaying--; });
   };
   let offset = 0, alive = true, ws = null, ready = false, everReady = false, pending = "";
   let reconnectDelay = 500, reconnectTimer = null, resizeTimer = null;
@@ -298,8 +309,8 @@ function openTerminal(el, name, readOnly) {
     const done = () => { clearTimeout(t); if (wake === done) wake = null; r(); };
     const t = setTimeout(done, ms); wake = done;
   });
-  const take = r => {
-    if (r.data) writeB64(r.data);
+  const take = (r, replay = false) => {
+    if (r.data) writeB64(r.data, replay);
     if (typeof r.offset === "number") offset = r.offset;
     if (r.expired) { term.write("\r\n[세션 만료 — 다시 열기]\r\n"); alive = false; }
     else if (r.exited) { term.write(`\r\n[프로세스 종료 (${r.exitCode ?? ""})]\r\n`); alive = false; }
@@ -319,6 +330,7 @@ function openTerminal(el, name, readOnly) {
   };
   const sendInput = d => {
     if (readOnly || !d || !alive) return;
+    if (replaying > 0 && REPORT_RE.test(d)) return;
     pending += d;
     if (fallbackActive) nudge();
     else flushPending();
@@ -327,7 +339,7 @@ function openTerminal(el, name, readOnly) {
     if (fallbackActive || !alive) return;
     fallbackActive = true;
     const call = (op, extra = {}) => api("POST", basePath, { operation: op, ...dims(), offset, data: "", ...extra }, { noInvalidate: true });
-    try { take(await call("open")); } catch (e) { term.write("\r\n[연결 실패] " + e.message + "\r\n"); alive = false; return; }
+    try { take(await call("open"), true); } catch (e) { term.write("\r\n[연결 실패] " + e.message + "\r\n"); alive = false; return; }
     let idleDelay = 30;
     while (alive) {
       try {
@@ -368,7 +380,7 @@ function openTerminal(el, name, readOnly) {
       let f; try { f = JSON.parse(ev.data); } catch { return; }
       if (f.type === "ready") {
         ready = true; everReady = true; reconnectDelay = 500;
-        take(f);
+        take(f, true);
         const cur = dims();
         if ((cur.cols !== lastCols || cur.rows !== lastRows) && !readOnly) sendCmd("resize");
         lastCols = cur.cols; lastRows = cur.rows;
@@ -560,6 +572,19 @@ function gFit() {
   const k = Math.min(1.4, Math.max(0.3, Math.min(r.width / (maxX - minX), r.height / (maxY - minY))));
   GRAPH.view = { k, x: (r.width - (maxX - minX) * k) / 2 - minX * k, y: (r.height - (maxY - minY) * k) / 2 - minY * k }; gDraw();
 }
+function splitShellArgs(str) {
+  const out = []; let cur = "", q = "", escNext = false, hasTok = false;
+  for (const ch of String(str || "")) {
+    if (escNext) { cur += ch; escNext = false; hasTok = true; continue; }
+    if (ch === "\\" && q !== "'") { escNext = true; hasTok = true; continue; }
+    if (q) { if (ch === q) q = ""; else cur += ch; continue; }
+    if (ch === "'" || ch === '"') { q = ch; hasTok = true; continue; }
+    if (/\s/.test(ch)) { if (hasTok) { out.push(cur); cur = ""; hasTok = false; } continue; }
+    cur += ch; hasTok = true;
+  }
+  if (hasTok) out.push(cur);
+  return out;
+}
 function gBindInspector() {
   const d = GRAPH.def, s = GRAPH.sel, on = (id, ev, fn) => { const el = $(id); if (el) el[ev] = fn; };
   if (s?.type === "node") {
@@ -567,7 +592,7 @@ function gBindInspector() {
     on("#gi-name", "onchange", e => gRename(n.name, e.target.value.trim()));
     on("#gi-kind", "onchange", e => gEdit(() => { n.kind = e.target.value; }));
     on("#gi-retry", "onchange", e => gEdit(() => { const v = e.target.value; if (v === "") delete n.max_retries; else n.max_retries = Math.max(0, parseInt(v, 10) || 0); }));
-    on("#gi-cmd", "onchange", e => gEdit(() => { const v = e.target.value.trim(); if (!v) delete n.command; else { try { n.command = v.startsWith("[") ? JSON.parse(v) : v.split(/\s+/); } catch { toast("JSON 배열 형식이 아닙니다", true); } } }));
+    on("#gi-cmd", "onchange", e => gEdit(() => { const v = e.target.value.trim(); if (!v) delete n.command; else { try { n.command = v.startsWith("[") ? JSON.parse(v) : splitShellArgs(v); } catch { toast("JSON 배열 형식이 아닙니다", true); } } }));
     on("#gi-rep", "onchange", e => { try { const v = e.target.value.trim(); gEdit(() => { if (v) n.reports = JSON.parse(v); else delete n.reports; }); } catch { toast("reports는 JSON이어야 합니다", true); } });
     on("#gi-rev", "onchange", e => gEdit(() => { n.reversibility = e.target.value; }));
     on("#gi-entry", "onclick", () => gEdit(d => { d.entry = n.name; }));
@@ -619,11 +644,13 @@ function gBindCanvas() {
     $("#g-world").setAttribute("transform", `translate(${v.x},${v.y}) scale(${v.k})`); $("#g-zoom").textContent = Math.round(k * 100) + "%"; };
 }
 document.addEventListener("keydown", e => {
-  if (TAB !== "graphs" || !GRAPH.def || GRAPH.json || e.target.closest("input,textarea,select")) return;
-  const mod = e.ctrlKey || e.metaKey;
-  if ((e.key === "Delete" || e.key === "Backspace") && GRAPH.sel) { e.preventDefault(); gDeleteSel(); }
-  else if (mod && e.key.toLowerCase() === "z" && !e.shiftKey) { e.preventDefault(); $("#g-undo").click(); }
-  else if (mod && (e.key.toLowerCase() === "y" || (e.key.toLowerCase() === "z" && e.shiftKey))) { e.preventDefault(); $("#g-redo").click(); }
+  if (TAB !== "graphs" || !GRAPH.def || e.isComposing) return;
+  const mod = e.ctrlKey || e.metaKey, code = e.code || "";
+  if (mod && code === "KeyS") { e.preventDefault(); $("#g-pub")?.click(); return; }
+  if (GRAPH.json || e.target.closest("input,textarea,select")) return;
+  if ((code === "Delete" || code === "Backspace") && GRAPH.sel) { e.preventDefault(); gDeleteSel(); }
+  else if (mod && code === "KeyZ" && !e.shiftKey) { e.preventDefault(); $("#g-undo").click(); }
+  else if (mod && (code === "KeyY" || (code === "KeyZ" && e.shiftKey))) { e.preventDefault(); $("#g-redo").click(); }
   else if (e.key === "Escape") { GRAPH.sel = null; gDraw(); }
 });
 
@@ -643,7 +670,28 @@ const SPEC_DEF = {
               columns_and_ddl_json: { long: 1 }, adoption_status: { enum: SPEC_ST }, target_phase: { enum: SPEC_PH } },
     blank: () => ({ storage_engine: "POSTGRES_RDS", table_or_key_name: "", role_content: "", columns_and_ddl_json: "{}", adoption_status: "ACCEPT_NOW", target_phase: "MVP" }) },
 };
-const SPEC = { ws: "", typ: "SRS", q: "", status: "", rows: { SRS: [], ARC: [], SCH: [] }, trace: [], dirty: new Set(), isNew: new Set(), open: new Set(), sel: new Set() };
+const SPEC = { ws: "", typ: "SRS", q: "", status: "", rows: { SRS: [], ARC: [], SCH: [] }, trace: [], dirty: new Set(), isNew: new Set(), open: new Set(), sel: new Set(), undo: [], redo: [], jumpId: "" };
+let specUndoKey = "", specUndoAt = 0;
+function specStateJson() {
+  return JSON.stringify({ typ: SPEC.typ, rows: SPEC.rows, dirty: [...SPEC.dirty], isNew: [...SPEC.isNew] });
+}
+function specSnapshot(key) {
+  const now = Date.now();
+  if (key && specUndoKey === key && now - specUndoAt < 1000) return;
+  SPEC.undo.push(specStateJson());
+  if (SPEC.undo.length > 50) SPEC.undo.shift();
+  SPEC.redo = [];
+  specUndoKey = key || "";
+  specUndoAt = now;
+}
+function specApplySnap(raw) {
+  const s = JSON.parse(raw);
+  SPEC.typ = s.typ || SPEC.typ;
+  SPEC.rows = s.rows;
+  SPEC.dirty = new Set(s.dirty || []);
+  SPEC.isNew = new Set(s.isNew || []);
+  specUndoKey = "";
+}
 async function saveSpecs() {
   const S = SPEC, by = { SRS: [], ARC: [], SCH: [] };
   for (const key of S.dirty) {
@@ -656,10 +704,10 @@ async function saveSpecs() {
     by[t].push(row);
   }
   for (const t of ["SRS", "ARC", "SCH"]) if (by[t].length) await api("PUT", `/workspaces/${WS}/specs/${t}`, by[t]);
-  const n = S.dirty.size; S.dirty.clear(); S.ws = ""; toast(`${n}개 행 저장됨 — 새 스냅샷 (사전 검사 필요)`); render();
+  const n = S.dirty.size; S.dirty.clear(); S.ws = ""; S.undo = []; S.redo = []; toast(`${n}개 행 저장됨 — 새 스냅샷 (사전 검사 필요)`); render();
 }
-document.addEventListener("keydown", e => { if (TAB === "specs" && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); if (SPEC.dirty.size) run(saveSpecs)(); } });
-window.addEventListener("beforeunload", e => { if (SPEC.dirty.size || GRAPH.dirty) { e.preventDefault(); e.returnValue = ""; } });
+document.addEventListener("keydown", e => { if (TAB === "specs" && !e.isComposing && (e.ctrlKey || e.metaKey) && e.code === "KeyS") { e.preventDefault(); if (SPEC.dirty.size) run(saveSpecs)(); } });
+window.addEventListener("beforeunload", e => { if (SPEC.dirty.size || GRAPH.dirty || (IDE.dirty && IDE.dirty.size) || MA.dirty || UXC.dirty) { e.preventDefault(); e.returnValue = ""; } });
 
 // ---------------- IDE: read-only view of what agents changed in /workspace/repos ----------------
 const IDE = { pane: store.get("agdd.idepane") || "files", ws: "", repo: store.get("agdd.repo") || "", tree: null, open: [], active: "", mode: "file", files: {}, commit: "", editor: null };
@@ -687,7 +735,7 @@ function loadMonaco() {
       }
       resolve(m);
     }, reject); };
-    s.onerror = () => reject(new Error("Monaco 로드 실패")); document.head.appendChild(s);
+    s.onerror = () => { monacoReady = null; reject(new Error("Monaco 로드 실패")); }; document.head.appendChild(s);
   });
   return monacoReady;
 }
@@ -758,7 +806,7 @@ async function ideLoadRepo(fresh) {
   if (IDE.repo) IDE.tree = await ideApi(`/repos/${encodeURIComponent(IDE.repo)}/tree`, fresh);
   await ideShow();
 }
-document.addEventListener("keydown", e => { if (TAB === "ide" && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p" && $("#ide-filter")) { e.preventDefault(); $("#ide-filter").focus(); } });
+document.addEventListener("keydown", e => { if (TAB === "ide" && !e.isComposing && (e.ctrlKey || e.metaKey) && e.code === "KeyP" && $("#ide-filter")) { e.preventDefault(); $("#ide-filter").focus(); } });
 function ideBind() {
   $("#ide-tree").onclick = run(async e => { const b = e.target.closest("[data-f]"); if (b) await ideOpen(b.dataset.f); });
   $("#ide-log").onclick = run(async e => { const b = e.target.closest("[data-c]"); if (!b) return;
@@ -844,8 +892,8 @@ const VIEWS = {
         <select id="tname"><option value="main">main</option><option value="t2">t2</option><option value="t3">t3</option></select>
         <button class="g" id="topen">열기</button><span class="muted">자동화 세션 관전:</span><input id="watch" placeholder="agdd-xxxxxxxx" size="16"><button class="g" id="twatch">관전</button>
         <span class="muted">빠른 명령:</span>
-        <button class="g" data-cmd="cd /workspace/repos 2>/dev/null || mkdir -p /workspace/repos && cd /workspace/repos; ls -la\r">repos</button>
-        <button class="g" data-cmd="apt update\r">apt update</button>
+        <button class="g" data-cmd="cd /workspace/repos 2>/dev/null || mkdir -p /workspace/repos && cd /workspace/repos; ls -la">repos</button>
+        <button class="g" data-cmd="apt update">apt update</button>
         <button class="g" id="demo">데모 저장소 만들기</button></div>
         <div id="term" class="term"></div></div>`);
     const start = (name, ro) => { if (TERM) TERM.stop(); $("#term").innerHTML = ""; TERM = openTerminal($("#term"), name, ro); };
@@ -853,13 +901,13 @@ const VIEWS = {
       start("main");
       $("#topen").onclick = () => start($("#tname").value);
       $("#twatch").onclick = () => start($("#watch").value.trim(), true);
-      document.querySelectorAll("button[data-cmd]").forEach(b => b.onclick = () => TERM?.type(b.dataset.cmd.replace(/\\r/g, "\r")));
-      $("#demo").onclick = run(async () => { toast("데모 저장소 생성 중…"); const r = await api("POST", `/workspaces/${WS}/vm/demo-repo`, {}); toast(`생성됨: ${r.path}`); });
+      document.querySelectorAll("button[data-cmd]").forEach(b => b.onclick = () => TERM?.type(b.dataset.cmd + "\r"));
+      $("#demo").onclick = run(async () => { if (!confirm("/workspace/repos/demo 저장소를 생성할까요? (기존 demo 폴더가 있으면 덮어씁니다)")) return; toast("데모 저장소 생성 중…"); const r = await api("POST", `/workspaces/${WS}/vm/demo-repo`, {}); toast(`생성됨: ${r.path}`); });
       $("#applyvm").onclick = run(async () => {
         if ($("#tpl").value !== rt.resourceTemplate) await api("PUT", `/workspaces/${WS}/vm/resources`, { template: $("#tpl").value, revision: rt.revision ?? 0 });
         if (Number($("#disk").value) !== rt.diskGiB) { const s2 = await api("GET", `/workspaces/${WS}/vm`); await api("PUT", `/workspaces/${WS}/vm/resources`, { sizeGiB: Number($("#disk").value), revision: s2.runtime.revision ?? 0 }); }
         toast("적용됨"); render(); });
-      $("#resetvm").onclick = run(async () => { await api("POST", `/workspaces/${WS}/vm/reset`, {}); toast("초기화됨"); });
+      $("#resetvm").onclick = run(async () => { if (!confirm("VM 메모리를 초기화(재시작)할까요? 실행 중인 터미널 프로세스가 종료됩니다.")) return; await api("POST", `/workspaces/${WS}/vm/reset`, {}); toast("초기화됨"); });
     }
   },
   async agents() {
@@ -868,7 +916,8 @@ const VIEWS = {
     let clis = peek(`/workspaces/${WS}/vm/clis`), cliErr = "";
     if (clis === undefined) { clis = null; api("GET", `/workspaces/${WS}/vm/clis`).then(() => { if (TAB === "agents") render(); }).catch(e => { if (TAB === "agents") toast(e.message, true); }); }
     const opt = (list, cur) => list.map(v => `<option ${v === cur ? "selected" : ""}>${esc(v)}</option>`).join("");
-    V(`<h2>CLI 에이전트</h2><p class="sub">AGDD의 모든 모델 단계(사전 검사, 모호성, 라우팅, Dev, 의미 검증, Watchdog, HITL 카드)는 이 워크스페이스 VM 안에서 선택한 CLI로 실행됩니다. 기본 엔진: <b>${esc(cfg.engine_default)}</b></p>
+    V(`<div class="row" style="justify-content:space-between;margin-bottom:8px"><div><h2>CLI 에이전트</h2><p class="sub" style="margin:0">AGDD의 모든 모델 단계(사전 검사, 모호성, 라우팅, Dev, 의미 검증, Watchdog, HITL 카드)는 이 워크스페이스 VM 안에서 선택한 CLI로 실행됩니다. 기본 엔진: <b>${esc(cfg.engine_default)}</b></p></div>
+        <button class="g" id="refresh-clis">설치 상태 새로고침</button></div>
       <div class="grid2">${Object.entries(cfg.clis).map(([k, c]) => `<div class="card"><h3>${esc(k)}</h3>
         ${cliErr ? `<p class="bad">${esc(cliErr)}</p>` : clis === null ? `<p class="muted">VM에서 설치 상태 확인 중…</p>` : clis[k]?.installed ? `<p class="ok">설치됨 · <span class="mono">${esc(clis[k].version)}</span></p>` : `<p class="warn">미설치</p>`}
         <div class="row"><button class="g" data-install="${esc(k)}">VM 터미널에서 설치</button><button class="g" data-login="${esc(k)}">로그인</button></div>
@@ -891,6 +940,16 @@ const VIEWS = {
       <div id="agout"></div>`);
     const setModels = () => { $("#models").innerHTML = (cfg.clis[$("#cli").value]?.models || []).map(m => `<option value="${esc(m)}">`).join(""); };
     setModels(); $("#cli").onchange = setModels;
+    $("#refresh-clis").onclick = run(async () => {
+      $("#refresh-clis").disabled = true;
+      try {
+        CACHE.delete(`/workspaces/${WS}/vm/clis`);
+        const fresh = await api("GET", `/workspaces/${WS}/vm/clis?refresh=1`, undefined, { fresh: true });
+        CACHE.set(`/workspaces/${WS}/vm/clis`, { t: Date.now(), v: fresh });
+        toast("CLI 설치 상태 새로고침됨");
+        render();
+      } finally { if ($("#refresh-clis")) $("#refresh-clis").disabled = false; }
+    });
     $("#saveag").onclick = run(async () => { await api("PUT", `/workspaces/${WS}/agent-settings`, { cli: $("#cli").value, model: $("#model").value.trim(), effort: $("#effort").value, session: $("#session").value.trim() || "per-run", permission: $("#perm").value, cheap_model: $("#cmodel").value.trim(), cheap_effort: $("#ceffort").value, default_repo: $("#drepo").value.trim() || "workspace", ux_auto_canvas: $("#uxauto").checked, instructions: $("#inst").value }); toast("저장됨 (VM 인메모리 DB 동기화 예약됨)"); });
     $("#ag-to-collab").onclick = () => { TAB = "collab"; store.set("agdd.tab", "collab"); render(); };
     const toTerm = cmd => { TAB = "vm"; store.set("agdd.tab", "vm"); render().then(() => TERM?.type(cmd + "\r")); };
@@ -916,9 +975,16 @@ const VIEWS = {
     if (S.ws !== WS) {
       const s = await api("GET", `/workspaces/${WS}/specs`);
       if (stale("specs")) return;
-      S.ws = WS; S.dirty = new Set(); S.isNew = new Set(); S.sel = new Set();
+      S.ws = WS; S.dirty = new Set(); S.isNew = new Set(); S.sel = new Set(); S.undo = []; S.redo = [];
       for (const k of ["SRS", "ARC", "SCH"]) { S.rows[k] = (s[k.toLowerCase()] || []).map(r => ({ ...r })); }
       S.trace = s.trace || [];
+    }
+    if (S.jumpId) {
+      const j = S.jumpId; S.jumpId = "";
+      if (/^ARC-/i.test(j) || S.rows.ARC.some(r => r.arch_id === j)) S.typ = "ARC";
+      else if (/^SCH-/i.test(j) || S.rows.SCH.some(r => r.schema_id === j)) S.typ = "SCH";
+      else S.typ = "SRS";
+      S.q = j; S.status = "";
     }
     const def = SPEC_DEF[S.typ], pk = def.pk;
     const rowKey = r => S.typ + ":" + r.__k;
@@ -957,6 +1023,7 @@ const VIEWS = {
         </div>
         <div class="row" style="margin-top:10px; justify-content:space-between">
           <div class="row"><button class="g" id="sp-add">+ 행 추가</button>
+            <button class="g" id="sp-undo" title="실행 취소" ${S.undo.length ? "" : "disabled"}>↶</button><button class="g" id="sp-redo" title="다시 실행" ${S.redo.length ? "" : "disabled"}>↷</button>
             ${S.sel.size ? `<span class="muted">${S.sel.size}개 선택</span><select id="sp-bulk"><option value="">선택 행 상태 변경…</option>${SPEC_ST.map(s => `<option>${s}</option>`).join("")}</select><button class="g bad" id="sp-bulkdel">선택 삭제</button>` : ""}</div>
           <div class="row">${S.dirty.size ? `<span class="warn">저장 안 된 변경 ${S.dirty.size}건</span><button class="g" id="sp-revert">되돌리기</button>` : `<span class="muted">모든 변경 저장됨</span>`}
             <button class="b" id="sp-save" ${S.dirty.size ? "" : "disabled"}>변경 저장</button></div>
@@ -972,20 +1039,23 @@ const VIEWS = {
           <button class="g" id="tr-add">링크 추가</button></div>
         <div class="tbl"><table><tr><th>source</th><th>relation</th><th>target</th><th></th></tr>${S.trace.map((t, i) => `<tr><td><span class="chip">${esc(t.source_type)}</span> <span class="mono">${esc(t.source_id)}</span></td><td>${esc(t.relation_type)}</td><td><span class="chip">${esc(t.target_type)}</span> <span class="mono">${esc(t.target_id)}</span></td><td><button class="icon bad" data-tdel="${i}">✕</button></td></tr>`).join("")}</table></div></div>`);
     const find = key => S.rows[key.split(":")[0]].find(r => r.__k === key.slice(key.indexOf(":") + 1));
-    $("#view").oninput = e => { const el = e.target.closest(".sp-in"); if (!el) return; const r = find(el.dataset.k); r[el.dataset.c] = el.value;
+    $("#view").oninput = e => { const el = e.target.closest(".sp-in"); if (!el) return; specSnapshot(`ed:${el.dataset.k}:${el.dataset.c}`); const r = find(el.dataset.k); r[el.dataset.c] = el.value;
       document.querySelectorAll(".sp-in").forEach(o => { if (o !== el && o.dataset.k === el.dataset.k && o.dataset.c === el.dataset.c) { o.value = el.value; o.classList.toggle("missing", !el.value.trim()); } });
-      el.classList.toggle("missing", !el.value.trim() && el.tagName === "INPUT"); if (!S.dirty.has(el.dataset.k)) { S.dirty.add(el.dataset.k); el.classList.add("dirty"); updateSaveBar(); } };
-    $("#view").onchange = e => { const el = e.target; if (el.matches("select.sp-in")) { $("#view").oninput(e); render(); } };
-    const updateSaveBar = () => { const b = $("#sp-save"); if (b) { b.disabled = !S.dirty.size; } };
+      el.classList.toggle("missing", !el.value.trim() && el.tagName === "INPUT"); if (!S.dirty.has(el.dataset.k)) { S.dirty.add(el.dataset.k); el.classList.add("dirty"); } updateSaveBar(); };
+    $("#view").onchange = e => { const el = e.target; if (el.matches("select.sp-in")) { $("#view").oninput(e); const sy = scrollY; render().then(() => scrollTo(0, sy)); } };
+    const updateSaveBar = () => { const b = $("#sp-save"); if (b) { b.disabled = !S.dirty.size; } if ($("#sp-undo")) $("#sp-undo").disabled = !S.undo.length; if ($("#sp-redo")) $("#sp-redo").disabled = !S.redo.length; };
     $("#sp-typ").onclick = e => { const b = e.target.closest("[data-t]"); if (b) { S.typ = b.dataset.t; S.sel.clear(); render(); } };
     $("#sp-st").onclick = e => { const b = e.target.closest("[data-s]"); if (b) { S.status = b.dataset.s; render(); } };
     let qt; $("#sp-q").oninput = () => { clearTimeout(qt); qt = setTimeout(() => { S.q = $("#sp-q").value; render().then(() => { const i = $("#sp-q"); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }); }, 200); };
     $("#sp-add").onclick = () => {
+      specSnapshot();
       const n = S.rows[S.typ].length + 1, prefix = { SRS: "REQ", ARC: "ARC", SCH: "SCH" }[S.typ];
       let id; for (let i = n; ; i++) { id = `${prefix}-${String(i).padStart(3, "0")}`; if (!ids(S.typ).includes(id)) break; }
       const r = { __k: "new" + Date.now(), ...SPEC_DEF[S.typ].blank(), [pk]: id }; S.rows[S.typ].unshift(r);
       const key = S.typ + ":" + r.__k; S.isNew.add(key); S.dirty.add(key); S.open.add(key); S.status = ""; S.q = ""; render();
     };
+    $("#sp-undo").onclick = () => { if (!S.undo.length) return; S.redo.push(specStateJson()); specApplySnap(S.undo.pop()); render(); };
+    $("#sp-redo").onclick = () => { if (!S.redo.length) return; S.undo.push(specStateJson()); specApplySnap(S.redo.pop()); render(); };
     $("#view").onclick = run(async e => {
       const o = e.target.closest("[data-open]"); if (o) { S.open.has(o.dataset.open) ? S.open.delete(o.dataset.open) : S.open.add(o.dataset.open); return render(); }
       const sel = e.target.closest("[data-sel]"); if (sel) { sel.checked ? S.sel.add(sel.dataset.sel) : S.sel.delete(sel.dataset.sel); return render(); }
@@ -994,20 +1064,22 @@ const VIEWS = {
     });
     const delRows = async keys => {
       if (!confirm(`${keys.length}개 행을 삭제할까요? 연결된 추적성 링크도 함께 삭제됩니다.`)) return;
+      let serverDel = false;
       for (const key of keys) {
         const r = find(key); if (!r) continue; const t = key.split(":")[0];
-        if (!S.isNew.has(key)) await api("DELETE", `/workspaces/${WS}/specs/${t}/${encodeURIComponent(r[SPEC_DEF[t].pk])}`);
+        if (!S.isNew.has(key)) { await api("DELETE", `/workspaces/${WS}/specs/${t}/${encodeURIComponent(r[SPEC_DEF[t].pk])}`); serverDel = true; }
         S.rows[t] = S.rows[t].filter(x => x !== r); S.dirty.delete(key); S.isNew.delete(key); S.sel.delete(key);
         S.trace = S.trace.filter(x => !((x.source_type === t && x.source_id === r[SPEC_DEF[t].pk]) || (x.target_type === t && x.target_id === r[SPEC_DEF[t].pk])));
       }
+      if (serverDel) { S.undo = []; S.redo = []; }
       toast(`${keys.length}개 행 삭제됨`); render();
     };
     $("#sp-all").onchange = e => { shown.forEach(r => e.target.checked ? S.sel.add(rowKey(r)) : S.sel.delete(rowKey(r))); render(); };
     if ($("#sp-bulk")) {
-      $("#sp-bulk").onchange = () => { const v = $("#sp-bulk").value; if (!v) return; S.sel.forEach(k => { find(k).adoption_status = v; S.dirty.add(k); }); toast(`${S.sel.size}개 행 → ${v} (저장 필요)`); render(); };
+      $("#sp-bulk").onchange = () => { const v = $("#sp-bulk").value; if (!v) return; specSnapshot(); S.sel.forEach(k => { find(k).adoption_status = v; S.dirty.add(k); }); toast(`${S.sel.size}개 행 → ${v} (저장 필요)`); render(); };
       $("#sp-bulkdel").onclick = run(() => delRows([...S.sel]));
     }
-    if ($("#sp-revert")) $("#sp-revert").onclick = () => { S.dirty.clear(); S.ws = ""; render(); };
+    if ($("#sp-revert")) $("#sp-revert").onclick = () => { S.dirty.clear(); S.ws = ""; S.undo = []; S.redo = []; render(); };
     $("#sp-save").onclick = run(saveSpecs);
     $("#sp-seed").onclick = run(async () => { if (S.dirty.size && !confirm("저장 안 된 변경이 사라집니다. 계속할까요?")) return; await api("POST", `/workspaces/${WS}/seed-example`, {}); S.ws = ""; S.dirty.clear(); toast("예시 명세를 불러왔습니다"); render(); });
     $("#sp-gate").onclick = () => { TAB = "gate"; store.set("agdd.tab", TAB); render(); };
@@ -1029,10 +1101,15 @@ const VIEWS = {
       $("#go").disabled = true; $("#out").innerHTML = `<p class="muted">검사 중…</p>`;
       try {
         const r = await api("POST", `/workspaces/${WS}/preflight`, { semantic: $("#sem").checked, ambiguity: $("#amb").checked });
-        $("#out").innerHTML = `<div class="card"><b class="${r.passed ? "ok" : "bad"}">${r.passed ? "통과 — 실행 가능" : "차단 — CRITICAL 충돌"}</b> · 스냅샷 ${esc(r.snapshot_id)}</div>` +
-          r.conflicts.map(c => `<div class="card"><span class="chip ${c.severity === "CRITICAL" ? "bad" : "warn"}">${esc(c.severity)}</span> <b>${esc(c.conflict_type)}</b> <span class="mono">${esc(c.involved_ids.join(", "))}</span> <span class="muted">${esc(c.check_stage)}</span><p>${esc(c.explanation)}</p><ol>${c.resolution_options.options.map((o, i) => `<li>${esc(o)}${i === c.resolution_options.recommended ? " <span class='chip'>권장</span>" : ""}</li>`).join("")}</ol></div>`).join("") +
-          (r.ambiguity_questions.length ? `<div class="card"><h3>미결정 항목 (권장 기본값으로 진행됨)</h3>${r.ambiguity_questions.map(q => `<p><span class="chip">${esc(q.category)}</span> <span class="mono">${esc(q.spec_id)}</span> ${esc(q.question)}<br>${q.options.map((o, i) => i === q.recommended ? `<b>${esc(o)}</b>` : esc(o)).join(" / ")}</p>`).join("")}</div>` : "") +
+        $("#out").innerHTML = `<div class="card row" style="justify-content:space-between"><span><b class="${r.passed ? "ok" : "bad"}">${r.passed ? "통과 — 실행 가능" : "차단 — CRITICAL 충돌"}</b> · 스냅샷 ${esc(r.snapshot_id)}</span>
+          ${r.passed ? `<span class="row"><button class="g" id="g-to-runs">실행 탭으로 →</button><button class="b" id="g-to-collab">협업으로 →</button></span>` : `<button class="g" id="g-to-specs">명세 수정하기 →</button>`}</div>` +
+          r.conflicts.map(c => `<div class="card"><span class="chip ${c.severity === "CRITICAL" ? "bad" : "warn"}">${esc(c.severity)}</span> <b>${esc(c.conflict_type)}</b> ${c.involved_ids.map(id => `<button type="button" class="chip link-chip mono" data-jump-spec="${esc(id)}">${esc(id)}</button>`).join(" ")} <span class="muted">${esc(c.check_stage)}</span><p>${esc(c.explanation)}</p><ol>${c.resolution_options.options.map((o, i) => `<li>${esc(o)}${i === c.resolution_options.recommended ? " <span class='chip'>권장</span>" : ""}</li>`).join("")}</ol></div>`).join("") +
+          (r.ambiguity_questions.length ? `<div class="card"><h3>미결정 항목 (권장 기본값으로 진행됨)</h3>${r.ambiguity_questions.map(q => `<p><span class="chip">${esc(q.category)}</span> <button type="button" class="chip link-chip mono" data-jump-spec="${esc(q.spec_id)}">${esc(q.spec_id)}</button> ${esc(q.question)}<br>${q.options.map((o, i) => i === q.recommended ? `<b>${esc(o)}</b>` : esc(o)).join(" / ")}</p>`).join("")}</div>` : "") +
           (r.scope ? `<div class="card"><h3>Executable Scope</h3><pre>${esc(JSON.stringify(r.scope.requirements.map(x => x.req_id)))} + ARC ${esc(JSON.stringify(r.scope.architecture.map(x => x.arch_id)))} + SCH ${esc(JSON.stringify(r.scope.schemas.map(x => x.schema_id)))}</pre></div>` : "");
+        document.querySelectorAll("[data-jump-spec]").forEach(b => b.onclick = () => { SPEC.jumpId = b.dataset.jumpSpec; TAB = "specs"; store.set("agdd.tab", TAB); render(); });
+        if ($("#g-to-runs")) $("#g-to-runs").onclick = () => { TAB = "runs"; store.set("agdd.tab", TAB); render(); };
+        if ($("#g-to-collab")) $("#g-to-collab").onclick = () => { TAB = "collab"; store.set("agdd.tab", TAB); render(); };
+        if ($("#g-to-specs")) $("#g-to-specs").onclick = () => { TAB = "specs"; store.set("agdd.tab", TAB); render(); };
       } finally { $("#go").disabled = false; }
     });
   },
@@ -1095,30 +1172,61 @@ const VIEWS = {
     if (GRAPH.fit) { GRAPH.fit = false; requestAnimationFrame(gFit); }
   },
   async runs() {
-    const [gs, rs] = await Promise.all([api("GET", `/workspaces/${WS}/graphs`), api("GET", `/workspaces/${WS}/runs`)]);
+    const [gs, rs, gate] = await Promise.all([api("GET", `/workspaces/${WS}/graphs`), api("GET", `/workspaces/${WS}/runs`, undefined, { fresh: true }), api("GET", `/workspaces/${WS}/conflicts`, undefined, { fresh: true })]);
+    const warnNoGraph = !gs.length ? `<div class="card row" style="border-color:var(--warn);justify-content:space-between"><span>게시된 그래프가 없습니다. 먼저 그래프를 게시하세요.</span><button class="g" id="r-to-graphs">그래프로 이동 →</button></div>` : "";
+    const warnNoGate = gs.length && !gate.conflict_passed ? `<div class="card row" style="border-color:var(--warn);justify-content:space-between"><span>최신 명세 스냅샷(v${esc(gate.version ?? "-")})이 사전 검사를 통과하지 않았습니다.</span><button class="g" id="r-to-gate">사전 검사 실행 →</button></div>` : "";
     V(`<h2>실행</h2><p class="sub">VM 엔진: 저장소는 VM의 <span class="mono">/workspace/repos/&lt;repo_key&gt;</span>에 git 저장소로 있어야 합니다(VM 터미널에서 clone 또는 데모 저장소). 요청이 작으면 Fast-Track으로 우회합니다. 실행 상세에서 자동화 터미널 이름(agdd-로 시작)을 VM 탭에서 관전할 수 있습니다.</p>
+      ${warnNoGraph}${warnNoGate}
       <div class="card"><div class="row"><select id="gid">${gs.map(g => `<option value="${esc(g.graph_id)}" ${g.graph_id === store.get("agdd.rungraph") ? "selected" : ""}>${esc(g.graph_id.slice(0, 8))} v${g.version} (${esc(g.definition_json.entry)})</option>`).join("")}</select>
-      <input id="repo" placeholder="repo_key (예: demo)" value="${esc(store.get("agdd.repo") || "demo")}"></div>
+      <input id="repo" placeholder="repo_key (예: workspace)" value="${esc(store.get("agdd.repo") || "workspace")}"></div>
       <div class="row" style="margin-top:8px"><span class="muted">이번 실행만:</span>
         <select id="r_engine"><option value="">엔진 기본</option><option value="vm-cli">VM CLI</option><option value="gateway">Gateway</option></select>
         <select id="r_cli"><option value="">CLI 기본</option><option>claude</option><option>codex</option><option>agy</option></select>
         <input id="r_model" placeholder="모델" size="12"><select id="r_effort"><option value="">추론 기본</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select>
         <input id="r_session" placeholder="세션 (new/per-run/ID)" size="18"></div>
       <textarea id="req" style="min-height:90px;margin-top:8px" placeholder="변경 요청 (예: calc.py의 add 함수 버그를 고치고 테스트를 통과시켜라)"></textarea>
-      <div class="row" style="margin-top:8px"><button class="b" id="start" ${gs.length ? "" : "disabled"}>실행 시작</button></div></div>
+      <div class="row" style="margin-top:8px"><button class="b" id="start" ${gs.length ? "" : "disabled"}>실행 시작</button><button class="g" id="r-refresh">목록 새로고침</button></div></div>
       <div class="card"><h3>최근 실행</h3><div class="tbl"><table><tr><th>run</th><th>mode</th><th>node</th><th>status</th><th>updated</th></tr>${rs.map(r => `<tr><td><a href="#" data-run="${esc(r.run_id)}" class="mono">${esc(r.run_id.slice(0, 8))}</a></td><td>${esc(r.route_mode)}</td><td>${esc(r.current_node)}</td><td class="${statusCls(r.status)}">${esc(r.status)}</td><td class="muted">${esc(r.updated_at)}</td></tr>`).join("")}</table></div></div><div id="detail"></div>`);
+    if ($("#r-to-graphs")) $("#r-to-graphs").onclick = () => { TAB = "graphs"; store.set("agdd.tab", TAB); render(); };
+    if ($("#r-to-gate")) $("#r-to-gate").onclick = () => { TAB = "gate"; store.set("agdd.tab", TAB); render(); };
+    $("#r-refresh").onclick = () => VIEWS.runs();
     $("#start").onclick = run(async () => { store.set("agdd.repo", $("#repo").value); const agent = Object.fromEntries([["cli", $("#r_cli").value], ["model", $("#r_model").value.trim()], ["effort", $("#r_effort").value], ["session", $("#r_session").value.trim()]].filter(([, v]) => v));
       const r = await api("POST", `/workspaces/${WS}/runs`, { graph_id: $("#gid").value, request: $("#req").value, repo_key: $("#repo").value, agent, ...($("#r_engine").value ? { engine: $("#r_engine").value } : {}) }); toast(`${r.route_mode} 실행 시작`); await VIEWS.runs(); showRun(r.run_id); });
     document.querySelectorAll("a[data-run]").forEach(a => a.onclick = e => { e.preventDefault(); showRun(a.dataset.run); });
   },
   async hitl() {
-    const hs = await api("GET", `/workspaces/${WS}/hitl`);
+    const hs = await api("GET", `/workspaces/${WS}/hitl`, undefined, { fresh: true });
     V(`<h2>HITL 결정</h2><p class="sub">IRREVERSIBLE은 실행이 멈춰 있습니다. REVERSIBLE은 권장안으로 진행되었고 10:00/16:00 다이제스트로 사후 검토합니다.</p>` +
-      (hs.length ? hs.map(h => { const c = h.decision_card_json || {}; return `<div class="card"><span class="chip ${h.reversibility === "IRREVERSIBLE" ? "bad" : "warn"}">${esc(h.reversibility)}</span> <b>${esc(h.reason_code)}</b> <span class="mono muted">run ${esc(String(h.run_id).slice(0, 8))} · ${esc(c.module)}</span>
-        <ul>${(c.impact || []).map(i => `<li>${esc(i)}</li>`).join("")}</ul>
-        <ol>${(c.options || []).map((o, i) => `<li>${esc(o.label)} ${o.pros ? `<span class="ok">+ ${esc(o.pros)}</span>` : ""} ${o.cons ? `<span class="bad">− ${esc(o.cons)}</span>` : ""} ${i === c.recommended ? "<span class='chip'>권장</span>" : ""}</li>`).join("")}</ol>
-        <div class="row"><button class="b" data-d="${h.decision_id}" data-s="APPROVED">승인</button><button class="g" data-d="${h.decision_id}" data-s="REJECTED">거절</button></div></div>`; }).join("") : `<div class="card muted">대기 중인 결정이 없습니다.</div>`));
-    document.querySelectorAll("button[data-d]").forEach(b => b.onclick = run(async () => { await api("POST", `/hitl/${b.dataset.d}/decide`, { status: b.dataset.s }); toast("결정 저장"); render(); }));
+      (hs.length ? hs.map(h => {
+        const c = h.decision_card_json || {};
+        const isUx = h.reason_code === "UX_VISUAL_REQUEST";
+        const opts = c.options || [];
+        return `<div class="card"><span class="chip ${h.reversibility === "IRREVERSIBLE" ? "bad" : "warn"}">${esc(h.reversibility)}</span> <b>${esc(h.reason_code)}</b> <span class="mono muted">run ${esc(String(h.run_id).slice(0, 8))} · ${esc(c.module)}</span>
+          ${c.ux_request?.prompt ? `<p style="margin:6px 0">${esc(c.ux_request.prompt)}</p>` : ""}
+          <ul>${(c.impact || []).map(i => `<li>${esc(i)}</li>`).join("")}</ul>
+          ${opts.length ? `<ol>${opts.map((o, i) => `<li><label style="cursor:pointer"><input type="radio" name="opt-${h.decision_id}" value="${i}" ${i === c.recommended ? "checked" : ""}> ${esc(o.label)} ${o.pros ? `<span class="ok">+ ${esc(o.pros)}</span>` : ""} ${o.cons ? `<span class="bad">− ${esc(o.cons)}</span>` : ""} ${i === c.recommended ? "<span class='chip'>권장</span>" : ""}</label></li>`).join("")}</ol>` : ""}
+          <div class="row" style="margin-top:8px">
+            ${isUx ? `<button class="b" data-hitl-ux="${h.decision_id}">🎨 2D UX 캔버스에서 구성하기 →</button>` : ""}
+            <input id="h-note-${h.decision_id}" placeholder="코멘트/근거 (선택)" style="flex:1;min-width:160px">
+            <button class="${isUx ? "g" : "b"}" data-d="${h.decision_id}" data-s="APPROVED">승인</button><button class="g bad" data-d="${h.decision_id}" data-s="REJECTED">거절</button>
+          </div></div>`;
+      }).join("") : `<div class="card muted">대기 중인 결정이 없습니다.</div>`));
+    document.querySelectorAll("[data-hitl-ux]").forEach(b => b.onclick = () => {
+      const h = hs.find(x => String(x.decision_id) === b.dataset.hitlUx);
+      const ur = h?.decision_card_json?.ux_request || { view_key: "home", prompt: "" };
+      window.AGDD.openTab("ux", { uxView: ur.view_key || "home", uxDecisionId: h?.decision_id ?? null, uxPending: ur });
+    });
+    document.querySelectorAll("button[data-d]").forEach(b => b.onclick = run(async () => {
+      const did = b.dataset.d;
+      const selOpt = document.querySelector(`input[name="opt-${did}"]:checked`);
+      const comment = ($(`#h-note-${did}`)?.value || "").trim();
+      await api("POST", `/hitl/${did}/decide`, {
+        status: b.dataset.s,
+        ...(selOpt ? { chosen_option: Number(selOpt.value) } : {}),
+        ...(comment ? { comment } : {}),
+      });
+      toast("결정 저장"); render();
+    }));
   },
   async ux() {
     V(`<h2>UX 오버라이드</h2><p class="sub">잠금된 항목은 에이전트가 수정할 수 없고, 수정하려는 diff는 Audit에서 차단됩니다. 허용 키: layout, tokens, visibility, order, size, spacing, variant, props.</p>
@@ -1131,34 +1239,113 @@ const VIEWS = {
   },
   async research() {
     V(`<h2>즉시 리서치</h2><p class="sub">사내 이름·경로·비밀값·PII를 제거한 질의로 과거 사례 → arXiv / Semantic Scholar / 공식 문서를 검색해 1,000토큰 이내 Insight Brief를 만듭니다.</p>
-      <div class="card"><textarea id="prob" style="min-height:120px" placeholder="막힌 문제 / 에러 메시지를 붙여넣으세요"></textarea><div class="row" style="margin-top:8px"><button class="b" id="go">리서치</button></div></div><div id="out"></div>`);
-    $("#go").onclick = run(async () => { $("#go").disabled = true; $("#out").innerHTML = `<p class="muted">검색 중… (최대 2~3분)</p>`;
-      try { const r = await api("POST", `/workspaces/${WS}/research`, { problem: $("#prob").value });
-        $("#out").innerHTML = `<div class="card"><p class="muted">외부 질의: <span class="mono">${esc(r.query)}</span> ${r.reused ? "<span class='chip'>과거 사례 재사용</span>" : ""}</p><pre>${esc(r.insight_brief_md)}</pre>${(r.errors || []).length ? `<p class="warn">일부 검색 실패: ${esc(r.errors.join(", "))}</p>` : ""}</div>`;
-      } finally { $("#go").disabled = false; } });
+      <div class="card"><textarea id="prob" style="min-height:120px" placeholder="막힌 문제 / 에러 메시지를 붙여넣으세요"></textarea><div class="row" style="margin-top:8px"><button class="b" id="go">리서치</button><button class="g bad" id="r-abort" hidden>검색 중단</button></div></div><div id="out"></div><div id="r-hist"></div>`);
+    const loadHistory = async () => {
+      const h = await api("GET", `/workspaces/${WS}/research/history`, undefined, { fresh: true }).catch(() => ({ items: [] }));
+      if (stale("research") || !$("#r-hist")) return;
+      const items = h.items || [];
+      $("#r-hist").innerHTML = items.length ? `<div class="card"><h3>최근 리서치 이력 (${items.length})</h3>${items.map(it => `<details style="margin-bottom:8px"><summary><span class="mono">${esc(it.query || it.problem || "리서치")}</span> ${it.reused ? `<span class="chip">재사용</span>` : ""} <span class="muted" style="font-size:11px">${esc(String(it.created_at || "").slice(0, 16).replace("T", " "))}</span></summary><pre style="margin-top:6px;max-height:240px">${esc(it.insight_brief_md || "")}</pre></details>`).join("")}</div>` : "";
+    };
+    loadHistory();
+    $("#r-abort").onclick = () => { if (RES_CTL) { RES_CTL.abort(); RES_CTL = null; toast("리서치 요청을 중단했습니다"); } };
+    $("#go").onclick = run(async () => {
+      if (!$("#prob").value.trim()) return toast("문제/에러 내용을 입력하세요", true);
+      if (RES_CTL) RES_CTL.abort();
+      const ctl = new AbortController(); RES_CTL = ctl;
+      $("#go").disabled = true; $("#r-abort").hidden = false; $("#out").innerHTML = `<p class="muted">검색 중… (최대 2~3분)</p>`;
+      try {
+        const resp = await fetch(BASE + `/workspaces/${WS}/research`, { method: "POST", headers: { ...authHeaders(), "content-type": "application/json" }, body: JSON.stringify({ problem: $("#prob").value }), signal: ctl.signal });
+        const r = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(r.error || `HTTP ${resp.status}`);
+        $("#out").innerHTML = `<div class="card"><div class="row" style="justify-content:space-between;margin-bottom:8px"><span class="muted">외부 질의: <span class="mono">${esc(r.query)}</span> ${r.reused ? "<span class='chip'>과거 사례 재사용</span>" : ""}</span>
+          <span class="row"><button class="g" id="r-copy">복사</button><button class="g" id="r-to-collab">협업으로 전달 →</button></span></div><pre>${esc(r.insight_brief_md)}</pre>${(r.errors || []).length ? `<p class="warn">일부 검색 실패: ${esc(r.errors.join(", "))}</p>` : ""}</div>`;
+        $("#r-copy").onclick = () => navigator.clipboard?.writeText(r.insight_brief_md || "").then(() => toast("클립보드에 복사됨")).catch(() => {});
+        $("#r-to-collab").onclick = () => { window.AGDD.openTab("collab", { collabMode: "chat" }); setTimeout(() => { if ($("#c-input")) $("#c-input").value = `[리서치 요약: ${r.query || ""}]\n${r.insight_brief_md || ""}`; }, 150); };
+        loadHistory();
+      } catch (e) {
+        if (e.name === "AbortError") { $("#out").innerHTML = `<p class="muted">검색이 중단되었습니다.</p>`; } else throw e;
+      } finally { if (RES_CTL === ctl) RES_CTL = null; if ($("#go")) $("#go").disabled = false; if ($("#r-abort")) $("#r-abort").hidden = true; }
+    });
   },
   async dash() {
-    const d = await api("GET", `/workspaces/${WS}/dashboard`);
+    const [d, memRes] = await Promise.all([
+      api("GET", `/workspaces/${WS}/dashboard`),
+      api("GET", `/workspaces/${WS}/members`).catch(() => ({ members: [] })),
+    ]);
+    if (stale("dash")) return;
     const b = d.budget;
+    const members = memRes.members || [];
     V(`<h2>대시보드 · 예산</h2><p class="sub">예산 80% 도달 시 저가 모델로 자동 전환, 100% 도달 시 모델 호출이 차단됩니다.</p>
-      <div class="card row">${b ? `<span>${esc(b.period_ym)}: <b>$${Number(b.spent_usd).toFixed(4)}</b> / $${Number(b.limit_usd).toFixed(2)} (${(100 * b.spent_usd / b.limit_usd).toFixed(1)}%)</span>` : "<span class='muted'>예산 미설정 (무제한)</span>"}
+      <div class="card row">${b ? `<span>${esc(b.period_ym)}: <b>$${Number(b.spent_usd).toFixed(4)}</b> / $${Number(b.limit_usd).toFixed(2)} (${Number(b.limit_usd) > 0 ? (100 * b.spent_usd / b.limit_usd).toFixed(1) : "100.0"}%)</span>` : "<span class='muted'>예산 미설정 (무제한)</span>"}
       <input id="lim" type="number" min="0" step="1" placeholder="월 한도 USD" style="width:140px"><button class="g" id="setb">설정 (OWNER)</button></div>
       <div class="card"><h3>실행 상태</h3>${d.runs.map(r => `<span class="chip ${statusCls(r.status)}">${esc(r.status)} ${r.n}</span> `).join("") || "<span class='muted'>없음</span>"}</div>
-      <div class="card"><h3>최근 7일 모델 사용량</h3><div class="tbl"><table><tr><th>model</th><th>prompt</th><th>cached</th><th>cache hit</th><th>thinking</th><th>cost</th></tr>${d.tokens.map(t => `<tr><td>${esc(t.model_name)}</td><td>${t.p}</td><td>${t.cached}</td><td>${t.p ? (100 * t.cached / t.p).toFixed(0) + "%" : "-"}</td><td>${t.thinking}</td><td>$${Number(t.cost).toFixed(4)}</td></tr>`).join("")}</table></div></div>`);
-    $("#setb").onclick = run(async () => { await api("PUT", `/workspaces/${WS}/budget`, { limit_usd: Number($("#lim").value) }); toast("예산 설정됨"); render(); });
+      <div class="card"><h3>최근 7일 모델 사용량</h3><div class="tbl"><table><tr><th>model</th><th>prompt</th><th>cached</th><th>cache hit</th><th>thinking</th><th>cost</th></tr>${d.tokens.map(t => `<tr><td>${esc(t.model_name)}</td><td>${t.p}</td><td>${t.cached}</td><td>${t.p ? (100 * t.cached / t.p).toFixed(0) + "%" : "-"}</td><td>${t.thinking}</td><td>$${Number(t.cost).toFixed(4)}</td></tr>`).join("")}</table></div></div>
+      <div class="card"><h3>워크스페이스 멤버 (${members.length})</h3>
+        <div class="row" style="margin-bottom:10px">
+          <input id="m-uid" class="mono" placeholder="사용자 UUID" size="38">
+          <select id="m-role"><option>EDITOR</option><option>APPROVER</option><option>VIEWER</option><option>OWNER</option></select>
+          <button class="g" id="m-add">추가 / 역할 변경 (OWNER)</button>
+        </div>
+        <div class="tbl"><table><tr><th>user</th><th>role</th><th></th></tr>${members.map(m => `<tr><td><span class="mono">${esc(m.user_id)}</span> ${m.email ? `<span class="muted">(${esc(m.email)})</span>` : ""}</td><td><span class="chip">${esc(m.role)}</span></td><td><button class="icon bad" data-rm-mem="${esc(m.user_id)}" title="멤버 제거">✕</button></td></tr>`).join("") || `<tr><td colspan="3" class="muted">멤버 정보 없음</td></tr>`}</table></div>
+      </div>`);
+    $("#setb").onclick = run(async () => {
+      const raw = $("#lim").value.trim(), v = Number(raw);
+      if (!raw || !Number.isFinite(v) || v < 0) return toast("0 이상의 월 한도(USD)를 입력하세요", true);
+      await api("PUT", `/workspaces/${WS}/budget`, { limit_usd: v }); toast("예산 설정됨"); render();
+    });
+    $("#m-add").onclick = run(async () => {
+      const uid = $("#m-uid").value.trim(), role = $("#m-role").value;
+      if (!uid) return toast("사용자 UUID를 입력하세요", true);
+      await api("PUT", `/workspaces/${WS}/members`, { user_id: uid, role }); toast("멤버 역할 저장됨"); render();
+    });
+    document.querySelectorAll("[data-rm-mem]").forEach(btn => btn.onclick = run(async () => {
+      if (!confirm(`${btn.dataset.rmMem} 멤버를 제거할까요?`)) return;
+      await api("DELETE", `/workspaces/${WS}/members/${encodeURIComponent(btn.dataset.rmMem)}`);
+      toast("멤버 제거됨"); render();
+    }));
   },
 };
 
-async function showRun(id) {
-  const r = await api("GET", `/runs/${id}`);
+function renderRunBody(r) {
   const h = r.handoff_json || {};
-  $("#detail").innerHTML = `<div class="card"><h3>run <span class="mono">${esc(id)}</span> <span class="${statusCls(r.status)}">${esc(r.status)}</span> @ ${esc(r.current_node)}</h3>
-    <p class="muted">엔진 ${esc(h.engine || "gateway")} ${h.agent && Object.keys(h.agent).length ? "· " + esc(JSON.stringify(h.agent)) : ""} ${h.cli_session ? `· CLI 세션 <span class="mono">${esc(h.cli_session)}</span>` : ""} · 자동화 터미널 <span class="mono">agdd-${esc(id.slice(0, 8))}</span></p>
+  return `<p class="muted">엔진 ${esc(h.engine || "gateway")} ${h.agent && Object.keys(h.agent).length ? "· " + esc(JSON.stringify(h.agent)) : ""} ${h.cli_session ? `· CLI 세션 <span class="mono">${esc(h.cli_session)}</span>` : ""} · 자동화 터미널 <span class="mono">agdd-${esc(String(r.run_id).slice(0, 8))}</span></p>
     ${h.dev_summary ? `<p><b>Dev 요약:</b> ${esc(h.dev_summary)}</p>` : ""}${h.feedback ? `<p class="bad"><b>피드백:</b></p><pre>${esc(h.feedback)}</pre>` : ""}
     ${h.last_patch ? `<details><summary>변경 diff (${esc((h.changed_files || []).join(", "))})</summary><pre>${esc(h.last_patch)}</pre></details>` : ""}
     ${h.insight_brief ? `<details><summary>Insight Brief</summary><pre>${esc(h.insight_brief)}</pre></details>` : ""}
-    <h4>노드 실행·비용</h4><div class="tbl"><table><tr><th>node</th><th>model</th><th>prompt</th><th>cached</th><th>out</th><th>thinking</th><th>$</th><th>ms</th></tr>${r.executions.map(e => `<tr><td>${esc(e.node_name)}</td><td>${esc(e.model_name)}</td><td>${e.prompt_tokens}</td><td>${e.cached_tokens}</td><td>${e.output_tokens}</td><td>${e.thinking_tokens}</td><td>${Number(e.cost_usd).toFixed(5)}</td><td>${e.duration_ms}</td></tr>`).join("")}</table></div>
+    <h4>노드 실행·비용</h4><div class="tbl"><table><tr><th>node</th><th>model</th><th>prompt</th><th>cached</th><th>out</th><th>thinking</th><th>$</th><th>ms</th></tr>${(r.executions || []).map(e => `<tr><td>${esc(e.node_name)}</td><td>${esc(e.model_name)}</td><td>${e.prompt_tokens}</td><td>${e.cached_tokens}</td><td>${e.output_tokens}</td><td>${e.thinking_tokens}</td><td>${Number(e.cost_usd).toFixed(5)}</td><td>${e.duration_ms}</td></tr>`).join("")}</table></div>`;
+}
+
+async function showRun(id) {
+  clearTimeout(RUN_POLL); RUN_POLL = null;
+  const r = await api("GET", `/runs/${id}`, undefined, { fresh: true });
+  const active = ["PENDING", "RUNNING", "WAITING_HITL"].includes(r.status);
+  $("#detail").innerHTML = `<div class="card"><div class="row" style="justify-content:space-between;margin-bottom:6px">
+      <h3 style="margin:0">run <span class="mono">${esc(id)}</span> <span id="run-st" class="${statusCls(r.status)}">${esc(r.status)}</span> @ <span id="run-nd">${esc(r.current_node)}</span></h3>
+      <button class="g bad" id="run-cancel" ${active ? "" : "hidden"}>■ 실행 중지</button>
+    </div>
+    <div id="run-meta">${renderRunBody(r)}</div>
     <h4>실시간 로그</h4><pre id="logs"></pre></div>`;
+  $("#run-cancel").onclick = run(async () => {
+    if (!confirm("이 실행을 중지할까요?")) return;
+    await api("POST", `/runs/${id}/cancel`, {});
+    toast("실행이 중지되었습니다");
+    showRun(id);
+  });
+  const pollRun = async () => {
+    if (TAB !== "runs" || !$("#run-meta")) return;
+    try {
+      const next = await api("GET", `/runs/${id}`, undefined, { fresh: true });
+      if (TAB !== "runs" || !$("#run-meta")) return;
+      $("#run-st").className = statusCls(next.status);
+      $("#run-st").textContent = next.status;
+      $("#run-nd").textContent = next.current_node;
+      const stillActive = ["PENDING", "RUNNING", "WAITING_HITL"].includes(next.status);
+      if ($("#run-cancel")) $("#run-cancel").hidden = !stillActive;
+      $("#run-meta").innerHTML = renderRunBody(next);
+      if (stillActive) RUN_POLL = setTimeout(pollRun, 3000);
+    } catch {}
+  };
+  if (active) RUN_POLL = setTimeout(pollRun, 3000);
   if (ES) ES.close();
   // EventSource cannot send headers, so the log stream is read with fetch + ReadableStream.
   const ctl = new AbortController(); ES = { close: () => ctl.abort() };

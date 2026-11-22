@@ -63,6 +63,19 @@ class AgentSettings:
         self.ux_auto_canvas = bool(self.ux_auto_canvas)
 
 
+MAX_CLI_IMAGES = 12
+
+
+@dataclass
+class MediaFile:
+    """A file in the VM handed to a CLI turn. ``kind`` is the delivery type (image | pdf | text | video | audio |
+    file); ``native`` marks originals a multimodal-native CLI should receive as-is (derived files such as
+    extracted frames or transcripts are not native)."""
+    path: str
+    kind: str
+    native: bool = True
+
+
 class CliError(RuntimeError):
     """The CLI call itself failed (not logged in, quota, crash): never treat as an empty/clean answer."""
 
@@ -90,11 +103,15 @@ class CliProfile:
     def version_cmd(self):
         return f"{self.binary} --version"
 
-    def structured_cmd(self, prompt_file, schema_file, model, effort):
+    def structured_cmd(self, prompt_file, schema_file, model, effort, files=()):
         raise NotImplementedError
 
-    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission, mcp=True):
+    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission, mcp=True, files=()):
         raise NotImplementedError
+
+    def prompt_suffix(self, files) -> str:
+        """Text appended to the prompt so the CLI attaches ``files`` (MediaFile list) natively, if it can."""
+        return ""
 
     def parse(self, output: str) -> AgentResult:
         raise NotImplementedError
@@ -145,18 +162,25 @@ class Claude(CliProfile):
         return ((f" --model {shlex.quote(model)}" if model else "") + f" --effort {effort}"
                 " --exclude-dynamic-system-prompt-sections")
 
-    def structured_cmd(self, prompt_file, schema_file, model, effort):
-        # pure JSON transforms: no built-in tools and no MCP servers -> no tool schemas in the prompt
+    @staticmethod
+    def _dirs(files) -> str:
+        dirs = sorted({f.path.rsplit("/", 1)[0] for f in files if "/" in f.path})
+        return "".join(f" --add-dir {sh_quote(d)}" for d in dirs)
+
+    def structured_cmd(self, prompt_file, schema_file, model, effort, files=()):
+        # pure JSON transforms: no built-in tools and no MCP servers -> no tool schemas in the prompt. With media
+        # attached only the read-only Read tool is enabled: it views images and PDFs natively.
+        tools = (f" --tools Read --allowedTools Read{self._dirs(files)}" if files else " --tools \"\"")
         return (f"claude -p --output-format json --no-session-persistence --permission-mode dontAsk"
-                f" --tools \"\" --strict-mcp-config"
+                f"{tools} --strict-mcp-config"
                 f"{self._common(model, effort)} --json-schema \"$(cat {sh_quote(schema_file)})\" < {sh_quote(prompt_file)}")
 
-    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission, mcp=True):
+    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission, mcp=True, files=()):
         perm = "--permission-mode bypassPermissions" if permission == "sandbox" else "--permission-mode acceptEdits"
         sess = f" --resume {shlex.quote(session)}" if session else ""
         no_mcp = "" if mcp else " --strict-mcp-config"  # graph node allowed_mcp is empty -> load no MCP servers
         return (f"cd {sh_quote(cwd)} && claude -p --output-format stream-json --verbose {perm}"
-                f"{self._common(model, effort)}{no_mcp}{sess} < {sh_quote(prompt_file)}")
+                f"{self._common(model, effort)}{self._dirs(files)}{no_mcp}{sess} < {sh_quote(prompt_file)}")
 
     def parse(self, output):
         result, rate = None, None
@@ -208,22 +232,28 @@ class Codex(CliProfile):
         eff = {"xhigh": "xhigh", "max": "xhigh"}.get(effort, effort)
         return (f" -m {shlex.quote(model)}" if model else "") + f" -c model_reasoning_effort={eff}"
 
-    def structured_cmd(self, prompt_file, schema_file, model, effort):
+    @staticmethod
+    def _images(files) -> str:
+        # --image=<file> (one value per flag) so the trailing "-" (prompt on stdin) is never taken as an image
+        imgs = [f.path for f in files if f.kind == "image"][:MAX_CLI_IMAGES]
+        return "".join(f" --image={sh_quote(p)}" for p in imgs)
+
+    def structured_cmd(self, prompt_file, schema_file, model, effort, files=()):
         out = f"{prompt_file}.last"
         emit = ("python3 -c 'import json,sys;print(json.dumps({\"agdd_last_message\": open(sys.argv[1]).read()}))' "
                 f"{sh_quote(out)} 2>/dev/null")
         return (f"codex exec --json --ephemeral --skip-git-repo-check -s read-only -c 'mcp_servers={{}}'{self._common(model, effort)} "
-                f"--output-schema {sh_quote(schema_file)} -o {sh_quote(out)} - < {sh_quote(prompt_file)}; "
+                f"{self._images(files)} --output-schema {sh_quote(schema_file)} -o {sh_quote(out)} - < {sh_quote(prompt_file)}; "
                 f"rc=$?; {emit}; exit $rc")
 
-    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission, mcp=True):
+    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission, mcp=True, files=()):
         sandbox = "--dangerously-bypass-approvals-and-sandbox" if permission == "sandbox" else "-s workspace-write"
         if not mcp:
             sandbox += " -c 'mcp_servers={}'"
         if session:
             return (f"cd {sh_quote(cwd)} && codex exec resume {shlex.quote(session)} --json {sandbox}"
-                    f"{self._common(model, effort)} - < {sh_quote(prompt_file)}")
-        return (f"cd {sh_quote(cwd)} && codex exec --json {sandbox}{self._common(model, effort)} "
+                    f"{self._common(model, effort)}{self._images(files)} - < {sh_quote(prompt_file)}")
+        return (f"cd {sh_quote(cwd)} && codex exec --json {sandbox}{self._common(model, effort)}{self._images(files)} "
                 f"- < {sh_quote(prompt_file)}")
 
     def parse(self, output):
@@ -275,11 +305,16 @@ class Antigravity(CliProfile):
     def _common(self, model, effort):
         return (f" --model {shlex.quote(model)}" if model else "") + f" --effort {effort}"
 
-    def structured_cmd(self, prompt_file, schema_file, model, effort):
+    def structured_cmd(self, prompt_file, schema_file, model, effort, files=()):
         return (f"agy -p \"$(cat {sh_quote(prompt_file)})\" --output-format json"
                 f"{self._common(model, effort)} --json-schema \"$(cat {sh_quote(schema_file)})\"")
 
-    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission, mcp=True):
+    def prompt_suffix(self, files) -> str:
+        # Gemini-family CLIs inline @path references as multimodal parts (image, video, audio, PDF)
+        originals = [f.path for f in files if f.native][:MAX_CLI_IMAGES]
+        return ("\n\n첨부 파일: " + " ".join(f"@{p}" for p in originals)) if originals else ""
+
+    def agent_cmd(self, prompt_file, cwd, model, effort, session, permission, mcp=True, files=()):
         perm = " --dangerously-skip-permissions" if permission == "sandbox" else ""
         sess = f" --conversation {shlex.quote(session)}" if session else ""
         return (f"cd {sh_quote(cwd)} && agy -p \"$(cat {sh_quote(prompt_file)})\" --output-format json"
@@ -340,21 +375,22 @@ class VmAgent:
     def installed(self) -> bool:
         return self.shell.run(f"command -v {self.p.binary} >/dev/null", timeout=30).exit_code == 0
 
-    def structured(self, prompt: str, schema: dict, timeout: float = 900) -> tuple[dict, AgentResult]:
+    def structured(self, prompt: str, schema: dict, timeout: float = 900, files=()) -> tuple[dict, AgentResult]:
         from .semantic_cache import cache_lookup, cache_store
         ckey = (f"vm{self.shell.canvas_id}", self.p.name, self.cheap_model(), self.s.cheap_effort)
         hit = cache_lookup(ckey, prompt, schema)
         if hit is not None:  # identical question (e.g. pre-flight on unchanged specs): no model call
             return hit, AgentResult(ok=True, text="", model="cache")
         self.gate("structured")
-        base = self._files(prompt + "\n\n반드시 JSON 객체 하나만 출력하세요.", schema)
+        base = self._files(prompt + self.p.prompt_suffix(files) + "\n\n반드시 JSON 객체 하나만 출력하세요.", schema)
         from .infra import parse_json
         models = [self.cheap_model()]
         if not self.s.cheap_model and self.s.model != models[0]:
             models.append(self.s.model)  # implicit cheap default unavailable on this account -> main model
         try:
             for i, model in enumerate(models):
-                cmd = self.p.structured_cmd(base + ".prompt", base + ".schema.json", model, self.s.cheap_effort)
+                cmd = self.p.structured_cmd(base + ".prompt", base + ".schema.json", model, self.s.cheap_effort,
+                                            files)
                 r = self.shell.run(cmd, timeout=timeout)
                 res = self.p.parse(r.output)
                 data = parse_json(res.text) if res.text else {}
@@ -369,10 +405,10 @@ class VmAgent:
             self.shell.run(f"rm -f {base}.*", timeout=30)
 
     def agent(self, task: str, cwd: str, session: str | None, timeout: float = 3600, on_progress=None,
-              mcp: bool = True) -> AgentResult:
+              mcp: bool = True, files=()) -> AgentResult:
         model = self.cheap_model() if self.gate("agent") == "FALLBACK" else self.s.model
-        base = self._files(task)
-        cmd = self.p.agent_cmd(base + ".prompt", cwd, model, self.s.effort, session, self.s.permission, mcp)
+        base = self._files(task + self.p.prompt_suffix(files))
+        cmd = self.p.agent_cmd(base + ".prompt", cwd, model, self.s.effort, session, self.s.permission, mcp, files)
         r = self.shell.run(cmd, timeout=timeout, on_progress=on_progress)
         self.shell.run(f"rm -f {base}.*", timeout=30)
         res = self.p.parse(r.output)

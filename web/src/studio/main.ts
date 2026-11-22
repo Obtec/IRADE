@@ -74,7 +74,13 @@ let toastTimer: ReturnType<typeof setTimeout>;
 let vmCellSyncTimer: ReturnType<typeof setTimeout> | undefined;
 let syncingFromVm = false;
 const lastVmCellHashes = new Map<string, string>();
+const vmCellPaths = new Map<string, string>();
+const importedVmUntrackedKeys = new Set<string>();
 let vmSyncInFlight = false;
+let vmSyncState: 'idle' | 'syncing' | 'synced' | 'offline' = 'idle';
+let vmSyncError = '';
+let pendingVmUntracked: Array<{ path: string; kind: CellKind; text: string; sha256: string }> = [];
+let lastDeletedCell: { kind: CellKind; text: string; afterId?: string; title: string } | undefined;
 interface ExecutionOutput {
   execOrder?: number;
   running?: boolean;
@@ -188,6 +194,45 @@ function notify(message: string, error = false): void {
   clearTimeout(toastTimer); const toast = $('#toast');
   toast.textContent = message; toast.classList.toggle('error', error); toast.hidden = false;
   toastTimer = setTimeout(() => { toast.hidden = true; }, error ? 10000 : 4500);
+}
+function notifyWithUndo(message: string, undoLabel: string, onUndo: () => Promise<void> | void): void {
+  clearTimeout(toastTimer); const toast = $('#toast');
+  toast.classList.remove('error');
+  toast.innerHTML = `<span class="toast-msg">${escape(message)}</span><button type="button" class="toast-action">${escape(undoLabel)}</button>`;
+  toast.hidden = false;
+  toast.querySelector<HTMLButtonElement>('.toast-action')?.addEventListener('click', () => {
+    clearTimeout(toastTimer);
+    toast.hidden = true;
+    void Promise.resolve(onUndo()).catch(report);
+  }, { once: true });
+  toastTimer = setTimeout(() => { toast.hidden = true; }, 8000);
+}
+function renderVmSyncBadge(): void {
+  const badge = document.querySelector<HTMLButtonElement>('#vm-sync-badge');
+  if (!badge) { return; }
+  if (!workspace || demo || vmSyncState === 'idle') {
+    badge.hidden = true;
+    return;
+  }
+  badge.hidden = false;
+  badge.classList.remove('syncing', 'synced', 'offline', 'has-untracked');
+  if (pendingVmUntracked.length) {
+    badge.classList.add('has-untracked');
+    badge.textContent = `VM +${pendingVmUntracked.length}`;
+    badge.title = `VM cells/ 폴더에 새 파일 ${pendingVmUntracked.length}개 — 클릭해 동기화`;
+  } else if (vmSyncState === 'syncing') {
+    badge.classList.add('syncing');
+    badge.textContent = 'VM 동기화 중…';
+    badge.title = 'VM /workspace/cells와 동기화하는 중입니다.';
+  } else if (vmSyncState === 'synced') {
+    badge.classList.add('synced');
+    badge.textContent = 'VM 동기화됨';
+    badge.title = 'VM /workspace/cells와 동기화됨 (클릭해 지금 다시 동기화)';
+  } else {
+    badge.classList.add('offline');
+    badge.textContent = 'VM 대기';
+    badge.title = vmSyncError ? `VM 동기화 대기 (${vmSyncError}) — 클릭해 재시도` : 'AGDD VM 동기화 미연결 — 클릭해 재시도';
+  }
 }
 const errorLabels: Record<string, string> = {
   TOKEN_EXPIRED: '로그인이 만료되었습니다. 다시 로그인하세요.',
@@ -378,6 +423,12 @@ function clearModels(): void {
   chatDemoSpeaker.clear();
   chatLastSnapshot.clear();
   chatFeedActivePeers.clear();
+  vmCellPaths.clear();
+  importedVmUntrackedKeys.clear();
+  pendingVmUntracked = [];
+  vmSyncState = 'idle';
+  vmSyncError = '';
+  renderVmSyncBadge();
   for (const model of models.values()) { model.dispose(); }
   models.clear();
   const notebookCells = document.querySelector<HTMLElement>('#notebook-cells');
@@ -801,6 +852,8 @@ function updateCellCardMeta(id: string): void {
   }
   syncCellExecBadge(id);
   const canAddBelow = workspace ? workspace.client.canWrite : true;
+  const dupBtn = card.querySelector<HTMLButtonElement>(`[data-cell-duplicate="${CSS.escape(id)}"]`);
+  if (dupBtn) { dupBtn.disabled = !canAddBelow; }
   card.querySelectorAll<HTMLButtonElement>('[data-insert-kind]').forEach(btn => {
     btn.disabled = !canAddBelow;
   });
@@ -1066,7 +1119,30 @@ async function submitAgentChatMessage(cellId: string, forceNoAi = false): Promis
   if (!aiEnabled) { return; }
 
   if (!workspace || !connected) {
-    notify('AI 자동 응답은 Workspace에 연결한 뒤 사용할 수 있습니다.');
+    if (chatPendingAi.has(cellId)) {
+      notify('로컬 어시스턴트가 응답을 작성 중입니다.');
+      return;
+    }
+    chatPendingAi.set(cellId, '로컬 어시스턴트가 응답을 작성 중입니다…');
+    renderAgentChat(cellId, { scrollToBottom: true });
+    try {
+      const localRes = await runLocalAssistantTurn(text, cell);
+      chatPendingAi.delete(cellId);
+      const latestCell = cells.find(c => c.id === cellId) || cell;
+      const withAnswer = appendAgentMessage(latestCell.text, {
+        role: 'assistant',
+        uid: 'irade-agent',
+        author: 'IRADE AI',
+        model: '로컬 어시스턴트',
+        ts: Date.now(),
+        body: localRes.answer,
+      });
+      commitAgentCellText(cellId, withAnswer);
+      renderAgentChat(cellId, { scrollToBottom: true });
+    } catch (error) {
+      chatPendingAi.delete(cellId);
+      report(error);
+    }
     return;
   }
   if (chatPendingAi.has(cellId)) {
@@ -1688,7 +1764,7 @@ function renderNotebook(): void {
         `<button type="button" class="nb-insert-chip" data-insert-kind="${kind}" data-insert-target="${escape(cell.id)}" ${canAddBelow ? '' : 'disabled'}><span class="${cellTypes[kind].color}">${cellTypes[kind].icon}</span>${escape(cellTypes[kind].short)}</button>`,
       ).join('');
 
-      card.innerHTML = `<header class="nb-cell-header"><span class="nb-cell-index">${indexLabel}</span>${hasExecOrder ? `<span class="nb-exec-order idle" data-exec-order="${escape(cell.id)}" title="아직 실행되지 않음">[ · ]</span>` : ''}<span class="nb-cell-kind"><span class="${type.color}">${type.icon}</span>${type.short}</span><button type="button" class="nb-cell-id-chip" data-cell-copy-id="${escape(cell.id)}" title="Canvas Workspace Item ID: ${escape(cell.id)} (클릭해 복사)">#${escape(shortItemId(cell.id))}</button><span class="nb-cell-title">${escape(cell.title)}</span><span class="nb-cell-presence-group" data-nb-presence="${escape(cell.id)}"></span><button type="button" class="nb-cell-perm-btn ${cell.locked ? 'locked' : ''}" data-cell-perm="${escape(cell.id)}" title="Canvas 객체 권한 및 잠금 설정">${cell.locked ? '🔒 ' : ''}${escape(permissionSummary(cell))}</button><div class="nb-cell-tools"><button class="icon-button" data-cell-move-up="${escape(cell.id)}" title="위로 이동" aria-label="위로 이동" ${index <= 0 || !canWrite ? 'disabled' : ''}>↑</button><button class="icon-button" data-cell-move-down="${escape(cell.id)}" title="아래로 이동" aria-label="아래로 이동" ${index >= cells.length - 1 || !canWrite ? 'disabled' : ''}>↓</button>${canRun ? `<button class="nb-run-btn" data-cell-run="${escape(cell.id)}" ${canExecute ? '' : 'disabled'} title="${canExecute ? '실행/검증 (Shift+Enter)' : '이 셀 그룹에 실행 권한이 없습니다.'}">${runLabel}</button>` : ''}${cell.kind === 'html' ? `<button class="nb-run-btn" data-cell-render="${escape(cell.id)}" title="HTML 렌더링 (Shift+Enter)">▶ 렌더링</button>` : ''}${cell.kind === 'agent' ? `<button class="button tiny" data-cell-agent="${escape(cell.id)}">✦ AI 설정</button>` : ''}${canPreview ? `<button class="button tiny" data-cell-preview="${escape(cell.id)}">${previewLabel}</button>` : ''}<button class="icon-button" data-cell-export="${escape(cell.id)}" title="셀 내보내기" aria-label="셀 내보내기">⤓</button><button class="icon-button danger" data-cell-delete="${escape(cell.id)}" title="셀 삭제" aria-label="셀 삭제" ${canWrite ? '' : 'disabled'}>×</button></div></header><div class="nb-cell-body">${bodyHtml}</div><footer class="nb-cell-footer"><span>${type.label}${footerHint} · ID ${escape(shortItemId(cell.id))}</span><span data-nb-cursor="${escape(cell.id)}">${cell.kind === 'agent' ? '대화 0개' : 'Ln 1, Col 1'}</span></footer><div class="nb-cell-insert-zone" data-insert-after="${escape(cell.id)}" style="--insert-prox:0" role="group" aria-label="아래에 새 셀 추가"><div class="nb-cell-insert-line"></div><div class="nb-cell-insert-bar"><span class="nb-insert-prefix">＋ 아래에 추가</span>${insertButtonsHtml}</div></div>`;
+      card.innerHTML = `<header class="nb-cell-header"><span class="nb-cell-index">${indexLabel}</span>${hasExecOrder ? `<span class="nb-exec-order idle" data-exec-order="${escape(cell.id)}" title="아직 실행되지 않음">[ · ]</span>` : ''}<span class="nb-cell-kind"><span class="${type.color}">${type.icon}</span>${type.short}</span><button type="button" class="nb-cell-id-chip" data-cell-copy-id="${escape(cell.id)}" title="Canvas Workspace Item ID: ${escape(cell.id)} (클릭해 복사)">#${escape(shortItemId(cell.id))}</button><span class="nb-cell-title">${escape(cell.title)}</span><span class="nb-cell-presence-group" data-nb-presence="${escape(cell.id)}"></span><button type="button" class="nb-cell-perm-btn ${cell.locked ? 'locked' : ''}" data-cell-perm="${escape(cell.id)}" title="Canvas 객체 권한 및 잠금 설정">${cell.locked ? '🔒 ' : ''}${escape(permissionSummary(cell))}</button><div class="nb-cell-tools"><button class="icon-button" data-cell-move-up="${escape(cell.id)}" title="위로 이동" aria-label="위로 이동" ${index <= 0 || !canWrite ? 'disabled' : ''}>↑</button><button class="icon-button" data-cell-move-down="${escape(cell.id)}" title="아래로 이동" aria-label="아래로 이동" ${index >= cells.length - 1 || !canWrite ? 'disabled' : ''}>↓</button>${canRun ? `<button class="nb-run-btn" data-cell-run="${escape(cell.id)}" ${canExecute ? '' : 'disabled'} title="${canExecute ? '실행/검증 (Shift+Enter)' : '이 셀 그룹에 실행 권한이 없습니다.'}">${runLabel}</button>` : ''}${cell.kind === 'html' ? `<button class="nb-run-btn" data-cell-render="${escape(cell.id)}" title="HTML 렌더링 (Shift+Enter)">▶ 렌더링</button>` : ''}${cell.kind === 'agent' ? `<button class="button tiny" data-cell-agent="${escape(cell.id)}">✦ AI 설정</button>` : ''}${canPreview ? `<button class="button tiny" data-cell-preview="${escape(cell.id)}">${previewLabel}</button>` : ''}<button class="icon-button" data-cell-duplicate="${escape(cell.id)}" title="셀 복제" aria-label="셀 복제" ${canAddBelow ? '' : 'disabled'}>⧉</button><button class="icon-button" data-cell-export="${escape(cell.id)}" title="셀 내보내기" aria-label="셀 내보내기">⤓</button><button class="icon-button danger" data-cell-delete="${escape(cell.id)}" title="셀 삭제" aria-label="셀 삭제" ${canWrite ? '' : 'disabled'}>×</button></div></header><div class="nb-cell-body">${bodyHtml}</div><footer class="nb-cell-footer"><span>${type.label}${footerHint} · ID ${escape(shortItemId(cell.id))}</span><span data-nb-cursor="${escape(cell.id)}">${cell.kind === 'agent' ? '대화 0개' : 'Ln 1, Col 1'}</span></footer><div class="nb-cell-insert-zone" data-insert-after="${escape(cell.id)}" style="--insert-prox:0" role="group" aria-label="아래에 새 셀 추가"><div class="nb-cell-insert-line"></div><div class="nb-cell-insert-bar"><span class="nb-insert-prefix">＋ 아래에 추가</span>${insertButtonsHtml}</div></div>`;
       container.insertBefore(card, container.children[visibleIdx] || null);
 
       if (cell.kind === 'agent') {
@@ -1919,6 +1995,9 @@ function renderNotebook(): void {
         agentPanel.onSelectionChanged();
         agentPanel.open();
       });
+      card.querySelector(`[data-cell-duplicate="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
+        e.stopPropagation(); void duplicateCell(cell.id).catch(report);
+      });
       card.querySelector(`[data-cell-export="${CSS.escape(cell.id)}"]`)?.addEventListener('click', e => {
         e.stopPropagation(); selected = cell.id; exportCell();
       });
@@ -2107,26 +2186,27 @@ async function startDemo(): Promise<void> {
   openNotebook(); agentPanel.onWorkspaceChanged(); log('로컬 체험 workspace를 열었습니다.'); notify('로컬 체험입니다. 공동 편집하려면 공유 Workspace를 연결하세요.');
 }
 let addingCell = false;
-async function addCell(kind?: CellKind, afterId?: string): Promise<void> {
+async function addCell(kind?: CellKind, afterId?: string, initialText?: string, skipVmSync = false): Promise<Cell | undefined> {
   if (!workspace && !demo) {
-    showModal('연구 공간을 선택하세요', '<p class="modal-copy">공유 Workspace에서 실시간으로 협업하거나 로컬 체험으로 셀을 살펴보세요.</p><div class="choice-list"><button class="choice" data-action="open"><span class="type-icon mint">↔</span><span><strong>공유 workspace 열기</strong><small>ORCID로 로그인하고 공동 편집</small></span><span class="choice-arrow">↗</span></button><button class="choice" data-action="demo"><span class="type-icon blue">λ</span><span><strong>로컬 체험 시작</strong><small>계정 없이 현재 탭에서 셀 편집 체험</small></span><span class="choice-arrow">→</span></button></div>'); return;
+    showModal('연구 공간을 선택하세요', '<p class="modal-copy">공유 Workspace에서 실시간으로 협업하거나 로컬 체험으로 셀을 살펴보세요.</p><div class="choice-list"><button class="choice" data-action="open"><span class="type-icon mint">↔</span><span><strong>공유 workspace 열기</strong><small>ORCID로 로그인하고 공동 편집</small></span><span class="choice-arrow">↗</span></button><button class="choice" data-action="demo"><span class="type-icon blue">λ</span><span><strong>로컬 체험 시작</strong><small>계정 없이 현재 탭에서 셀 편집 체험</small></span><span class="choice-arrow">→</span></button></div>'); return undefined;
   }
-  if (workspace && !workspace.client.canWrite) { notify('이 workspace는 읽기 전용입니다.', true); return; }
+  if (workspace && !workspace.client.canWrite) { notify('이 workspace는 읽기 전용입니다.', true); return undefined; }
   if (!kind) {
     showModal('새로운 연구 셀', '<p class="modal-copy">다음 아이디어에 맞는 셀을 선택하세요.</p><div class="choice-list">' + (Object.keys(cellTypes) as CellKind[]).map(kind => `<button class="choice" data-add-kind="${kind}"><span class="type-icon ${cellTypes[kind].color}">${cellTypes[kind].icon}</span><span><strong>${cellTypes[kind].label}</strong><small>${cellTypes[kind].description}</small></span><span class="choice-arrow">＋</span></button>`).join('') + '</div>');
-    document.querySelectorAll<HTMLButtonElement>('[data-add-kind]').forEach(button => button.addEventListener('click', () => { modal.close(); void addCell(button.dataset.addKind as CellKind, afterId).catch(report); })); return;
+    document.querySelectorAll<HTMLButtonElement>('[data-add-kind]').forEach(button => button.addEventListener('click', () => { modal.close(); void addCell(button.dataset.addKind as CellKind, afterId).catch(report); })); return undefined;
   }
-  if (addingCell) { return; }
+  if (addingCell) { return undefined; }
+  const textToUse = initialText ?? starters[kind];
   let cell: Cell;
   if (workspace) {
     addingCell = true;
-    const buttons = document.querySelectorAll<HTMLButtonElement>('[data-quick-add], [data-action="add"], [data-insert-kind]');
+    const buttons = document.querySelectorAll<HTMLButtonElement>('[data-quick-add], [data-action="add"], [data-insert-kind], [data-cell-duplicate]');
     buttons.forEach(button => { button.disabled = true; });
     $('#cell-save').textContent = '새 셀 생성 중…';
     try {
-      cell = await workspace.add(kind, starters[kind], afterId ? { afterId } : undefined);
+      cell = await workspace.add(kind, textToUse, afterId ? { afterId } : undefined);
       cells = workspace.cells;
-      scheduleVmCellSync();
+      if (!skipVmSync) { scheduleVmCellSync(); }
     } finally {
       addingCell = false;
       buttons.forEach(button => { button.disabled = !workspace?.client.canWrite; });
@@ -2134,7 +2214,7 @@ async function addCell(kind?: CellKind, afterId?: string): Promise<void> {
     }
   } else {
     const insertIdx = afterId ? cells.findIndex(item => item.id === afterId) : -1;
-    cell = { id: `demo-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`, kind, path: '', text: starters[kind], title: cellTitle(kind, starters[kind]), permission: ['local'], frameOrder: 0, locked: false, canWrite: true, canExecute: true };
+    cell = { id: `demo-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`, kind, path: '', text: textToUse, title: cellTitle(kind, textToUse), permission: ['local'], frameOrder: 0, locked: false, canWrite: true, canExecute: true };
     if (insertIdx >= 0 && insertIdx < cells.length - 1) {
       cells.splice(insertIdx + 1, 0, cell);
     } else {
@@ -2148,6 +2228,22 @@ async function addCell(kind?: CellKind, afterId?: string): Promise<void> {
     document.querySelectorAll('.rail-button').forEach(button => button.classList.toggle('active', button.getAttribute('data-action') === 'workspace'));
   }
   log(`${cellTypes[kind].label} 셀을${afterId ? ' 바로 아래에' : ''} 만들었습니다.`); selectCell(cell.id, afterId ? 'nearest' : 'end');
+  return cell;
+}
+async function duplicateCell(cellId: string): Promise<void> {
+  const orig = cells.find(item => item.id === cellId);
+  if (!orig) { return; }
+  const sourceText = models.get(cellId)?.getValue() ?? orig.text;
+  const dup = await addCell(orig.kind, cellId, sourceText);
+  if (dup) { notify('셀을 복제했습니다.'); }
+}
+async function restoreLastDeletedCell(): Promise<void> {
+  const snap = lastDeletedCell;
+  if (!snap) { return; }
+  lastDeletedCell = undefined;
+  const anchor = snap.afterId && cells.some(c => c.id === snap.afterId) ? snap.afterId : undefined;
+  await addCell(snap.kind, anchor, snap.text);
+  log(`삭제된 “${snap.title}” 셀을 복원했습니다.`);
 }
 function search(): void {
   showModal('Workspace 빠른 이동', '<input class="search-input" id="cell-search" type="search" aria-label="셀 검색" placeholder="셀 제목, 종류, 내용 검색…"><div class="choice-list" id="search-results"></div>');
@@ -2165,6 +2261,10 @@ async function deleteCell(): Promise<void> {
   $('#cancel-delete').addEventListener('click', () => modal.close());
   $('#confirm-delete').addEventListener('click', event => {
     (event.currentTarget as HTMLButtonElement).disabled = true; void (async () => {
+      const idx = cells.findIndex(item => item.id === cell.id);
+      const prevAfterId = idx > 0 ? cells[idx - 1].id : undefined;
+      const backupText = models.get(cell.id)?.getValue() ?? cell.text;
+      lastDeletedCell = { kind: cell.kind, text: backupText, afterId: prevAfterId, title: cell.title };
       if (activePresenceCellId === cell.id) { setPresenceFocus(undefined); }
       if (workspace) { deletingCellId = cell.id; try { await workspace.delete(cell.id); cells = workspace.cells; scheduleVmCellSync(); } finally { deletingCellId = undefined; } } else { cells = cells.filter(item => item.id !== cell.id); persistScratch(); }
       const ed = cellEditors.get(cell.id);
@@ -2181,12 +2281,14 @@ async function deleteCell(): Promise<void> {
       chatDemoSpeaker.delete(cell.id);
       chatLastSnapshot.delete(cell.id);
       chatFeedActivePeers.delete(cell.id);
+      vmCellPaths.delete(cell.id);
       models.get(cell.id)?.dispose(); models.delete(cell.id);
       if (selected === cell.id) { selected = cells[0]?.id; }
       renderList(); renderInspector();
       agentPanel.onSelectionChanged();
       if (viewMode === 'notebook') { renderNotebook(); }
       modal.close(); log('셀을 삭제했습니다.');
+      notifyWithUndo(`“${cell.title}” 셀을 삭제했습니다.`, '되돌리기', restoreLastDeletedCell);
     })().catch(error => { report(error); (event.target as HTMLButtonElement).disabled = false; });
   });
 }
@@ -2449,12 +2551,13 @@ document.addEventListener('click', event => {
   }
 });
 document.addEventListener('keydown', event => {
-  if (modal.open) { return; }
+  if (modal.open || event.isComposing) { return; }
   const mod = event.ctrlKey || event.metaKey;
-  if (mod && event.key.toLowerCase() === 'k') { event.preventDefault(); search(); }
-  else if (mod && event.key.toLowerCase() === 's') { event.preventDefault(); void (workspace ? workspace.flush().then(() => notify('모든 변경을 저장했습니다.')) : Promise.resolve(persistScratch())).catch(report); }
-  else if (mod && event.shiftKey && event.key.toLowerCase() === 'f') { event.preventDefault(); document.body.classList.toggle('focus'); }
-  else if (event.altKey && event.key.toLowerCase() === 'n') { event.preventDefault(); void addCell().catch(report); }
+  const code = event.code || '';
+  if (mod && code === 'KeyK') { event.preventDefault(); search(); }
+  else if (mod && code === 'KeyS') { event.preventDefault(); void (workspace ? workspace.flush().then(() => notify('모든 변경을 저장했습니다.')) : Promise.resolve(persistScratch())).catch(report); }
+  else if (mod && event.shiftKey && code === 'KeyF') { event.preventDefault(); document.body.classList.toggle('focus'); }
+  else if (event.altKey && code === 'KeyN') { event.preventDefault(); void addCell().catch(report); }
 });
 window.addEventListener('beforeunload', event => { if (workspace?.pending) { event.preventDefault(); event.returnValue = ''; } });
 
@@ -2494,33 +2597,54 @@ async function pushCellsToVm(force = true): Promise<void> {
   const id = workspace.client.config.canvasId;
   if (!Number.isSafeInteger(id) || id <= 0) { return; }
   vmSyncInFlight = true;
+  vmSyncState = 'syncing';
+  vmSyncError = '';
+  renderVmSyncBadge();
   try {
     const resp = await fetch(`${origin}/agdd/api/workspaces/irade-${id}/vm/cells/sync`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        cells: workspace.cells.map(c => ({ id: c.id, kind: c.kind, title: c.title, text: c.text, frameOrder: c.frameOrder })),
+        cells: workspace.cells.map(c => ({
+          id: c.id,
+          kind: c.kind,
+          title: c.title,
+          text: c.text,
+          frameOrder: c.frameOrder,
+          ...(vmCellPaths.has(c.id) ? { path: vmCellPaths.get(c.id) } : {}),
+        })),
         delete_missing: true,
         force,
       }),
       signal: AbortSignal.timeout(15000),
     });
-    if (!resp.ok) { return; }
+    if (!resp.ok) {
+      vmSyncState = 'offline';
+      vmSyncError = `HTTP ${resp.status}`;
+      return;
+    }
     const data = await resp.json() as {
-      manifest?: Record<string, { sha256?: string }>;
+      manifest?: Record<string, { path?: string; sha256?: string }>;
       external_changes?: Array<{ id: string; text: string; sha256?: string }>;
     };
     if (data.manifest) {
       for (const [cid, info] of Object.entries(data.manifest)) {
         if (info?.sha256) { lastVmCellHashes.set(cid, info.sha256); }
+        if (info?.path) { vmCellPaths.set(cid, info.path); }
       }
     }
+    vmSyncState = 'synced';
     if (data.external_changes?.length) {
       await applyVmExternalChanges(data.external_changes);
     }
-  } catch { /* VM or AGDD API may be offline in standalone Studio tests */ }
-  finally { vmSyncInFlight = false; }
+  } catch (err) {
+    vmSyncState = 'offline';
+    vmSyncError = err instanceof Error ? err.message : 'offline';
+  } finally {
+    vmSyncInFlight = false;
+    renderVmSyncBadge();
+  }
 }
 
 async function pullCellsFromVm(): Promise<void> {
@@ -2532,8 +2656,21 @@ async function pullCellsFromVm(): Promise<void> {
       credentials: 'same-origin',
       signal: AbortSignal.timeout(10000),
     });
-    if (!resp.ok) { return; }
-    const data = await resp.json() as { cells?: Array<{ id: string; text: string; sha256?: string }> };
+    if (!resp.ok) {
+      vmSyncState = 'offline';
+      vmSyncError = `HTTP ${resp.status}`;
+      renderVmSyncBadge();
+      return;
+    }
+    const data = await resp.json() as {
+      cells?: Array<{ id: string; path?: string; text: string; sha256?: string }>;
+      untracked?: Array<{ path: string; kind: CellKind; text: string; sha256: string }>;
+    };
+    vmSyncState = 'synced';
+    vmSyncError = '';
+    for (const item of data.cells || []) {
+      if (item.path) { vmCellPaths.set(item.id, item.path); }
+    }
     const updates = (data.cells || []).filter(item => {
       const local = cells.find(c => c.id === item.id);
       return local && local.text !== item.text && item.sha256 !== lastVmCellHashes.get(item.id);
@@ -2541,8 +2678,49 @@ async function pullCellsFromVm(): Promise<void> {
     if (updates.length) {
       await applyVmExternalChanges(updates);
     }
-  } catch { /* ignore when VM offline */ }
+    const trackedPaths = new Set(vmCellPaths.values());
+    const freshUntracked = (data.untracked || []).filter(u =>
+      u.path && !trackedPaths.has(u.path) && !importedVmUntrackedKeys.has(`${u.path}:${u.sha256}`),
+    );
+    if (freshUntracked.length && workspace.client.canWrite) {
+      let imported = 0;
+      for (const u of freshUntracked) {
+        const key = `${u.path}:${u.sha256}`;
+        importedVmUntrackedKeys.add(key);
+        const created = await addCell(u.kind, undefined, u.text, true);
+        if (created) {
+          vmCellPaths.set(created.id, u.path);
+          lastVmCellHashes.set(created.id, u.sha256);
+          imported += 1;
+        }
+      }
+      pendingVmUntracked = [];
+      if (imported > 0) {
+        await pushCellsToVm(false);
+        notify(`VM cells/ 폴더의 새 파일 ${imported}개를 셀로 가져왔습니다.`);
+      }
+    } else {
+      pendingVmUntracked = freshUntracked;
+    }
+    renderVmSyncBadge();
+  } catch (err) {
+    vmSyncState = 'offline';
+    vmSyncError = err instanceof Error ? err.message : 'offline';
+    renderVmSyncBadge();
+  }
 }
+
+document.querySelector('#vm-sync-badge')?.addEventListener('click', () => {
+  void (async () => {
+    await pullCellsFromVm();
+    await pushCellsToVm(true);
+    if (vmSyncState === 'synced') {
+      notify('VM /workspace/cells와 동기화했습니다.');
+    } else {
+      notify('AGDD VM 동기화 서버에 연결할 수 없습니다.', true);
+    }
+  })().catch(report);
+});
 
 function scheduleVmCellSync(delayMs = 500): void {
   if (!workspace || !token || demo || syncingFromVm) { return; }

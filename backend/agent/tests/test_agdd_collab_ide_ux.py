@@ -8,6 +8,7 @@ import os
 import sqlite3
 import sys
 import threading
+import time
 import types
 import urllib.error
 import urllib.request
@@ -105,8 +106,9 @@ def _unwrap(val):
 
 
 class _Cursor:
-    def __init__(self, rows=None):
+    def __init__(self, rows=None, rowcount=None):
         self._rows = list(rows or [])
+        self.rowcount = rowcount if rowcount is not None else len(self._rows)
 
     def fetchone(self):
         return copy.deepcopy(self._rows[0]) if self._rows else None
@@ -143,6 +145,11 @@ class FakeState:
         self.jobs: list[dict] = []
         self.collab_messages: list[dict] = []
         self.next_msg_id = 1
+        self.budgets: dict[tuple[str, str], dict] = {}
+        self.members: dict[str, dict] = {
+            USER_ID: {"user_id": USER_ID, "email": f"{USER_ID}@agdd.local", "role": "OWNER"}
+        }
+        self.resolved_facts: list[dict] = []
 
     def add_snapshot(self, snap: dict, passed: bool = False) -> int:
         sid = self.next_snap_id
@@ -245,6 +252,60 @@ class FakePgConn:
         if "SELECT run_id, current_node, status, handoff_json FROM workflow_runs WHERE run_id=%s" in q:
             r = self.s.runs.get(str(params[0]))
             return _Cursor([r] if r else [])
+        if "SELECT g.workspace_id FROM workflow_runs r JOIN graph_definitions g" in q:
+            r = self.s.runs.get(str(params[0]))
+            return _Cursor([{"workspace_id": self.s.ws_id}] if r else [])
+        if "UPDATE workflow_runs SET status='HALTED'" in q:
+            r = self.s.runs.get(str(params[1]))
+            if r and r.get("status") in ("PENDING", "RUNNING", "WAITING_HITL"):
+                r["status"] = "HALTED"
+                r["handoff_json"] = {**(r.get("handoff_json") or {}), **copy.deepcopy(_unwrap(params[0]))}
+                r["version"] = r.get("version", 1) + 1
+                return _Cursor([{"run_id": r["run_id"]}])
+            return _Cursor([])
+        if "UPDATE job_queue SET status='FAILED'" in q:
+            rid = str(params[0])
+            for j in self.s.jobs:
+                if str(j.get("run_id")) == rid and j.get("status", "PENDING") == "PENDING":
+                    j["status"] = "FAILED"
+            return _Cursor([])
+        if "UPDATE hitl_decisions SET status='REJECTED', decided_by=%s" in q:
+            by, rid = params[0], str(params[1])
+            for h in self.s.hitl.values():
+                if str(h.get("run_id")) == rid and h.get("status") == "PENDING":
+                    h["status"] = "REJECTED"
+                    h["decided_by"] = by
+            return _Cursor([])
+        if "SELECT run_id FROM hitl_decisions WHERE decision_id=%s" in q:
+            h = self.s.hitl.get(int(params[0]))
+            return _Cursor([{"run_id": h["run_id"]}] if h else [])
+        if "UPDATE hitl_decisions SET status=%s, decided_by=%s" in q:
+            status, user, card_patch, did = params[0], params[1], _unwrap(params[2]), int(params[3])
+            h = self.s.hitl.get(did)
+            if h and h.get("status") == "PENDING":
+                h["status"] = status
+                h["decided_by"] = user
+                h["decision_card_json"] = {**(h.get("decision_card_json") or {}), **copy.deepcopy(card_patch)}
+                return _Cursor([{"run_id": h["run_id"]}])
+            return _Cursor([])
+        if "SELECT count(*) AS n FROM hitl_decisions WHERE run_id=%s" in q:
+            rid = str(params[0])
+            cnt = sum(
+                1 for h in self.s.hitl.values()
+                if str(h.get("run_id")) == rid and h.get("status") == "PENDING" and h.get("reversibility") == "IRREVERSIBLE"
+            )
+            return _Cursor([{"n": cnt}])
+        if "SELECT current_node, status FROM workflow_runs WHERE run_id=%s" in q:
+            r = self.s.runs.get(str(params[0]))
+            return _Cursor([r] if r else [])
+        if "UPDATE workflow_runs SET status=%s, version=version+1" in q:
+            new_status, patch, rid = params[0], _unwrap(params[1]), str(params[2])
+            r = self.s.runs.get(rid)
+            if r:
+                r["status"] = new_status
+                r["handoff_json"] = {**(r.get("handoff_json") or {}), **copy.deepcopy(patch)}
+                r["version"] = r.get("version", 1) + 1
+            return _Cursor([])
         if "UPDATE workflow_runs SET status='RUNNING', handoff_json=%s" in q:
             rid = str(params[1])
             r = self.s.runs[rid]
@@ -252,6 +313,53 @@ class FakePgConn:
             r["handoff_json"] = copy.deepcopy(_unwrap(params[0]))
             r["version"] += 1
             return _Cursor([])
+        if "INSERT INTO workspace_budgets" in q:
+            ws_k, period_k, lim = str(params[0]), str(params[1]), float(params[2])
+            self.s.budgets[(ws_k, period_k)] = {
+                "workspace_id": ws_k,
+                "period_ym": period_k,
+                "limit_usd": lim,
+                "spent_usd": 0.0,
+            }
+            return _Cursor([])
+        if "SELECT * FROM workspace_budgets" in q:
+            ws_k = str(params[0])
+            rows = [v for (w, _), v in sorted(self.s.budgets.items(), reverse=True) if w == ws_k]
+            return _Cursor(rows[:1])
+        if "INSERT INTO resolved_facts" in q:
+            ws_k, fkey, fval = str(params[0]), str(params[1]), str(params[2])
+            self.s.resolved_facts = [
+                f for f in self.s.resolved_facts
+                if not (f["workspace_id"] == ws_k and f["repo_key"] == "_research" and f["fact_key"] == fkey)
+            ]
+            self.s.resolved_facts.append({
+                "workspace_id": ws_k,
+                "repo_key": "_research",
+                "fact_key": fkey,
+                "fact_value": fval,
+            })
+            return _Cursor([])
+        if "FROM resolved_facts WHERE workspace_id=%s AND repo_key='_research'" in q:
+            ws_k = str(params[0])
+            rows = [f for f in reversed(self.s.resolved_facts) if f["workspace_id"] == ws_k and f["repo_key"] == "_research"]
+            return _Cursor(rows[:20])
+        if "SELECT m.user_id, u.email, m.role FROM workspace_members" in q:
+            rank = {"OWNER": 0, "APPROVER": 1, "EDITOR": 2, "VIEWER": 3}
+            rows = sorted(self.s.members.values(), key=lambda m: (rank.get(m["role"], 9), m["user_id"]))
+            return _Cursor(rows)
+        if "SELECT role FROM workspace_members WHERE workspace_id=%s AND user_id=%s" in q:
+            m = self.s.members.get(str(params[1]))
+            return _Cursor([{"role": m["role"]}] if m else [])
+        if "SELECT count(*) AS n FROM workspace_members WHERE workspace_id=%s AND role='OWNER'" in q:
+            n = sum(1 for m in self.s.members.values() if m["role"] == "OWNER")
+            return _Cursor([{"n": n}])
+        if "INSERT INTO workspace_members VALUES" in q:
+            uid, role = str(params[1]), str(params[2])
+            self.s.members[uid] = {"user_id": uid, "email": f"{uid}@agdd.local", "role": role}
+            return _Cursor([])
+        if "DELETE FROM workspace_members WHERE workspace_id=%s AND user_id=%s" in q:
+            removed = self.s.members.pop(str(params[1]), None) is not None
+            return _Cursor([], rowcount=1 if removed else 0)
         return _Cursor([])
 
 
@@ -668,6 +776,50 @@ def test_http_ide_cells_specs_ux_and_collab(tmp_path, monkeypatch):
             assert by_sel["#hero"]["variant"] == "split"
             assert by_sel["#hero"]["tokens"]["accent"] == "#2563eb"
             assert by_sel["#card"]["variant"] == "metric"
+
+            # :canvas metadata + table props round-trip (and :canvas is never locked for audit_patch)
+            tbl_data = {
+                "columns": ["코드", "모듈", "상태"],
+                "rows": [["A-1", "인증", "완료"], ["A-2", "테이블", "진행중"]],
+                "badgeCol": 2,
+                "showToolbar": True,
+                "showHeader": True,
+            }
+            code, _, canvas_sub = _http_req(base, "POST", f"/workspaces/{ws}/ux/home/submit-to-agent", {
+                "viewport": {"width": 1440, "height": 900},
+                "launch_run": False,
+                "elements": {
+                    ":canvas": {
+                        "locked": True,
+                        "config": {
+                            "size": {"w": 1440, "h": 900},
+                            "layout": {"columns": 12},
+                            "spacing": {"padding": 24, "gap": 16},
+                            "tokens": {"bg": "#ffffff", "accent": "#2563eb", "radius": 12},
+                            "props": {"kind": "canvas", "gridSize": 16, "showColumns": True, "theme": "dark"},
+                        },
+                    },
+                    "#data-tbl": {
+                        "locked": True,
+                        "config": {
+                            "layout": {"x": 48, "y": 64, "z": 1},
+                            "size": {"w": 640, "h": 280},
+                            "variant": "striped",
+                            "props": {"kind": "table", "label": "작업 목록", "table": tbl_data},
+                        },
+                    },
+                },
+            })
+            assert code == 200 and canvas_sub["ok"] is True
+            code, _, full_after = _http_req(base, "GET", f"/workspaces/{ws}/ux/home?full=1")
+            assert code == 200
+            by_row = {r["component_selector"]: r for r in full_after["items"]}
+            assert by_row[":canvas"]["locked_by_user"] is False
+            assert ":canvas" not in full_after["summary"]["locked_selectors"]
+            assert full_after["summary"]["canvas"]["props"]["gridSize"] == 16
+            by_el2 = {e["selector"]: e for e in full_after["summary"]["elements"]}
+            assert by_el2["#data-tbl"]["props"]["table"]["columns"] == ["코드", "모듈", "상태"]
+            assert by_el2["#data-tbl"]["props"]["table"]["rows"] == [["A-1", "인증", "완료"], ["A-2", "테이블", "진행중"]]
         finally:
             srv.shutdown()
             srv.server_close()
@@ -692,6 +844,40 @@ def test_2d_spatial_summary_worker_dev_pause_verify_exit5_and_audit_lock(tmp_pat
     assert ("above", "#main", "#footer") in rels
     assert summary["connections"] == [{"from": "#nav", "to": "#main"}]
     assert summary["locked_selectors"] == ["#nav"]
+
+    # 1b) summarize_2d_layout handles :canvas metadata & preserves table/custom props
+    summary_with_canvas = ux_workbench.summarize_2d_layout(
+        {
+            ":canvas": {
+                "size": {"w": 1440, "h": 900},
+                "layout": {"columns": 12},
+                "spacing": {"padding": 24, "gap": 16},
+                "tokens": {"bg": "#f8fafc", "accent": "#2563eb", "radius": 12},
+                "props": {"kind": "canvas", "gridSize": 16, "showColumns": True, "theme": "light"},
+            },
+            "#tbl-1": {
+                "layout": {"x": 32, "y": 32, "z": 1},
+                "size": {"w": 600, "h": 280},
+                "props": {
+                    "kind": "table",
+                    "label": "Users",
+                    "table": {
+                        "columns": ["ID", "Name", "Role"],
+                        "rows": [["1", "Kim", "Admin"], ["2", "Lee", "Editor"]],
+                        "badgeCol": 2,
+                    },
+                },
+            },
+        },
+        locked_selectors={":canvas", "#tbl-1"},
+        viewport=None,
+    )
+    assert summary_with_canvas["viewport"] == {"width": 1440, "height": 900}
+    assert summary_with_canvas["locked_selectors"] == ["#tbl-1"]
+    assert [e["selector"] for e in summary_with_canvas["elements"]] == ["#tbl-1"]
+    assert summary_with_canvas["elements"][0]["props"]["table"]["columns"] == ["ID", "Name", "Role"]
+    assert summary_with_canvas["canvas"]["props"]["gridSize"] == 16
+    assert not any(r["source"] == ":canvas" or r["target"] == ":canvas" for r in summary_with_canvas["spatial_relations"])
 
     # 2) worker_vm.node_dev pause on UX_VISUAL_REQUEST + node_verify pytest exit 5 + node_audit locked UX diff
     ws = str(uuid.uuid4())
@@ -861,3 +1047,230 @@ def test_vm_service_maybe_expand_disk_and_idempotence(monkeypatch):
         vm_service._shells.clear()
         vm_service._canvas_cache.clear()
         vm_service._expanded_cids.clear()
+
+
+def test_audit_fixes_api_and_vm_sync(tmp_path, monkeypatch):
+    ws = str(uuid.uuid4())
+    state = FakeState(ws_id=ws, canvas_id=13)
+    state.add_snapshot(_sample_snapshot(), passed=True)
+    vm_sync._VM_SCRIPTS_READY.clear()
+    api._IDE_READY.clear()
+    api._CLI_CACHE.clear()
+
+    monkeypatch.setenv("API_TOKEN", "test-api-token")
+    invalidated: list[str] = []
+    monkeypatch.setattr(infra, "cache_invalidate", lambda *keys: invalidated.extend(str(k) for k in keys))
+
+    with _fake_rt(tmp_path, monkeypatch, 13) as (rt, vm_home):
+        _patch_state(monkeypatch, state, runtime_srv=rt)
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), api.Handler)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        base = f"http://127.0.0.1:{srv.server_port}"
+        try:
+            # 1. Malformed JSON returns 400 JSON (not masked by broad Exception handler)
+            bad_req = urllib.request.Request(
+                f"{base}/workspaces/{ws}/collab/send",
+                data=b"{bad-json",
+                method="POST",
+                headers={
+                    "authorization": f"Bearer {os.environ['API_TOKEN']}",
+                    "x-user-id": USER_ID,
+                    "content-type": "application/json",
+                },
+            )
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(bad_req, timeout=10)
+            assert exc_info.value.code == 400
+            bad_body = json.loads(exc_info.value.read().decode("utf-8"))
+            assert "error" in bad_body
+
+            # 2. Budget validation (rejects empty/negative/bool/NaN) + dash cache invalidation
+            for bad_limit in ("", -5, True, "abc"):
+                code, _, _ = _http_req(base, "PUT", f"/workspaces/{ws}/budget", {"limit_usd": bad_limit})
+                assert code == 422
+            code, _, b_res = _http_req(base, "PUT", f"/workspaces/{ws}/budget", {"limit_usd": 42.5, "period_ym": "2026-11"})
+            assert code == 200 and b_res["ok"] is True
+            assert state.budgets[(ws, "2026-11")]["limit_usd"] == 42.5
+            assert f"agdd:dash:{ws}" in invalidated
+
+            # 3. CLI cache ?refresh=1 bypasses _CLI_CACHE
+            stale = {"claude": {"installed": False, "version": "stale"}}
+            api._CLI_CACHE[ws] = (time.monotonic(), stale)
+            code, _, cached_res = _http_req(base, "GET", f"/workspaces/{ws}/vm/clis")
+            assert code == 200 and cached_res == stale
+            code, _, fresh_res = _http_req(base, "GET", f"/workspaces/{ws}/vm/clis?refresh=1")
+            assert code == 200 and fresh_res != stale and "claude" in fresh_res
+            assert api._CLI_CACHE[ws][1] == fresh_res
+
+            # 4. Run cancel halts WAITING_HITL run, marks pending jobs/HITL closed, invalidates caches
+            run_cancel_id = str(uuid.uuid4())
+            state.runs[run_cancel_id] = {
+                "run_id": run_cancel_id,
+                "graph_id": str(uuid.uuid4()),
+                "graph_version": 1,
+                "status": "WAITING_HITL",
+                "current_node": "dev",
+                "handoff_json": {},
+                "version": 1,
+            }
+            state.jobs.append({"run_id": run_cancel_id, "node_name": "dev", "status": "PENDING"})
+            state.hitl[1] = {"decision_id": 1, "run_id": run_cancel_id, "status": "PENDING", "reversibility": "IRREVERSIBLE"}
+            invalidated.clear()
+            code, _, c_res = _http_req(base, "POST", f"/runs/{run_cancel_id}/cancel", {})
+            assert code == 200 and c_res == {"ok": True, "halted": True}
+            assert state.runs[run_cancel_id]["status"] == "HALTED"
+            assert state.jobs[-1]["status"] == "FAILED"
+            assert state.hitl[1]["status"] == "REJECTED"
+            assert f"agdd:run:{run_cancel_id}" in invalidated and f"agdd:dash:{ws}" in invalidated
+
+            # 5. HITL decide persists chosen_option and comment into resolution & handoff
+            run_hitl_id = str(uuid.uuid4())
+            state.runs[run_hitl_id] = {
+                "run_id": run_hitl_id,
+                "graph_id": str(uuid.uuid4()),
+                "graph_version": 1,
+                "status": "WAITING_HITL",
+                "current_node": "dev",
+                "handoff_json": {},
+                "version": 1,
+            }
+            state.hitl[2] = {
+                "decision_id": 2,
+                "run_id": run_hitl_id,
+                "status": "PENDING",
+                "reversibility": "IRREVERSIBLE",
+                "decision_card_json": {"summary": "Choose strategy"},
+            }
+            code, _, d_res = _http_req(base, "POST", "/hitl/2/decide", {
+                "status": "APPROVED",
+                "chosen_option": 1,
+                "comment": "Use option B",
+            })
+            expected_res = {"status": "APPROVED", "chosen_option": 1, "comment": "Use option B"}
+            assert code == 200 and d_res["resolution"] == expected_res
+            assert state.hitl[2]["status"] == "APPROVED"
+            assert state.hitl[2]["decision_card_json"]["resolution"] == expected_res
+            assert state.runs[run_hitl_id]["status"] == "RUNNING"
+            assert state.runs[run_hitl_id]["handoff_json"]["hitl_resolution"] == expected_res
+
+            # 6. IDE git commit & revert to HEAD
+            code, _, _ = _http_req(base, "POST", f"/workspaces/{ws}/ide/repos", {"repo": "workspace"})
+            assert code == 200
+            code, _, _ = _http_req(base, "PUT", f"/workspaces/{ws}/ide/repos/workspace/files/app.py", {"content": "v1\n"})
+            assert code == 200
+            code, _, com_res = _http_req(base, "POST", f"/workspaces/{ws}/ide/repos/workspace/commit", {"message": "init v1"})
+            assert code == 200 and com_res["ok"] is True and len(com_res["sha"]) >= 7
+            code, _, _ = _http_req(base, "PUT", f"/workspaces/{ws}/ide/repos/workspace/files/app.py", {"content": "v2\n"})
+            assert code == 200
+            code, _, rev_res = _http_req(base, "POST", f"/workspaces/{ws}/ide/repos/workspace/revert", {"path": "app.py"})
+            assert code == 200 and rev_res["ok"] is True
+            code, _, f_res = _http_req(base, "GET", f"/workspaces/{ws}/ide/repos/workspace/files/app.py")
+            assert code == 200 and f_res["content"] == "v1\n"
+
+            # 7. VM cell sync adopts explicit cells/... path directly without duplicates
+            code, _, sync_res = _http_req(base, "POST", f"/workspaces/{ws}/vm/cells/sync", {
+                "cells": [{
+                    "id": "c_new",
+                    "kind": "python",
+                    "title": "Agent Cell",
+                    "path": "cells/agent_added.py",
+                    "text": "a = 1\n",
+                    "frameOrder": 1,
+                }],
+                "delete_missing": True,
+                "force": True,
+            })
+            assert code == 200 and sync_res["manifest"]["c_new"]["path"] == "cells/agent_added.py"
+            cells_files = sorted(
+                p.name
+                for p in (vm_home / "repos" / "workspace" / "cells").iterdir()
+                if not p.name.startswith(".")
+            )
+            assert cells_files == ["agent_added.py"]
+
+            # 8a. Research saves history + maps URLError cleanly to 502 JSON
+            monkeypatch.setenv("RESEARCH_URL", "http://research-mock")
+            orig_urlopen = urllib.request.urlopen
+            research_fail = {"down": False}
+
+            class _FakeResp:
+                def __init__(self, payload: dict):
+                    self._raw = json.dumps(payload).encode("utf-8")
+
+                def read(self):
+                    return self._raw
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            def _mock_urlopen(req, *a, **k):
+                url = req.full_url if hasattr(req, "full_url") else str(req)
+                if url.startswith("http://research-mock"):
+                    if research_fail["down"]:
+                        raise urllib.error.URLError("down")
+                    return _FakeResp({
+                        "research_id": 77,
+                        "query": "test q",
+                        "reused": False,
+                        "insight_brief_md": "# Brief",
+                        "errors": [],
+                    })
+                return orig_urlopen(req, *a, **k)
+
+            monkeypatch.setattr(urllib.request, "urlopen", _mock_urlopen)
+            code, _, r_res = _http_req(base, "POST", f"/workspaces/{ws}/research", {"problem": "Check caching"})
+            assert code == 200 and r_res["research_id"] == 77
+            code, _, hist_res = _http_req(base, "GET", f"/workspaces/{ws}/research/history")
+            assert code == 200 and len(hist_res["items"]) == 1
+            assert hist_res["items"][0]["research_id"] == 77 and hist_res["items"][0]["problem"] == "Check caching"
+
+            research_fail["down"] = True
+            code, _, err_res = _http_req(base, "POST", f"/workspaces/{ws}/research", {"problem": "Should 502"})
+            assert code == 502 and "error" in err_res
+
+            # 8b. Workspace members CRUD + 409 last-OWNER guard
+            code, _, m_list = _http_req(base, "GET", f"/workspaces/{ws}/members")
+            assert code == 200 and len(m_list["members"]) == 1 and m_list["members"][0]["user_id"] == USER_ID
+            code, _, _ = _http_req(base, "DELETE", f"/workspaces/{ws}/members/{USER_ID}")
+            assert code == 409
+
+            uid2 = str(uuid.uuid4())
+            code, _, _ = _http_req(base, "PUT", f"/workspaces/{ws}/members", {"user_id": uid2, "role": "EDITOR"})
+            assert code == 200
+            code, _, m_list2 = _http_req(base, "GET", f"/workspaces/{ws}/members")
+            assert code == 200 and {m["user_id"] for m in m_list2["members"]} == {USER_ID, uid2}
+            code, _, del_res = _http_req(base, "DELETE", f"/workspaces/{ws}/members/{uid2}")
+            assert code == 200 and del_res["deleted"] is True
+            code, _, m_list3 = _http_req(base, "GET", f"/workspaces/{ws}/members")
+            assert code == 200 and [m["user_id"] for m in m_list3["members"]] == [USER_ID]
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            vm_sync._VM_SCRIPTS_READY.clear()
+            api._IDE_READY.clear()
+            api._CLI_CACHE.clear()
+
+
+
+def test_vendor_urls_localized_only_for_bundled_packages(tmp_path, monkeypatch):
+    from irade_agent.agdd import api as agdd_api
+    monkeypatch.setenv("AGDD_VENDOR_DIR", str(tmp_path))
+    html = (b'<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>'
+            b'const MONACO_BASE = "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min";')
+    assert agdd_api.localize_vendor_urls(html) == html  # nothing fetched -> CDN stays
+
+    pkg = tmp_path / "@xterm/xterm@5.5.0"
+    (pkg / "lib").mkdir(parents=True)
+    (pkg / "lib/xterm.js").write_text("// xterm")
+    (pkg / ".complete").write_text("ok")
+    out = agdd_api.localize_vendor_urls(html)
+    assert b'src="static/vendor/@xterm/xterm@5.5.0/lib/xterm.js"' in out
+    assert b"https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min" in out
+
+    assert agdd_api._vendor_file("@xterm/xterm@5.5.0/lib/xterm.js") == (pkg / "lib/xterm.js").resolve()
+    for bad in ("../secret.js", "@xterm/xterm@5.5.0/../../x.js", "@xterm/xterm@5.5.0/.complete", "@xterm//x.js"):
+        assert agdd_api._vendor_file(bad) is None

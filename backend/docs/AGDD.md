@@ -52,6 +52,16 @@ docker compose -f docker-compose.agdd.yml --env-file agdd.env --profile phase3 r
    - `demo` is a small buggy module whose tests fail until `add` is fixed and `mean([])` raises.
    - Reset it with `git -C backend/agdd-workspace/demo checkout -- .`.
 
+### Offline browser libraries
+
+The console's terminal (xterm) and editor (Monaco) normally load from jsDelivr. The `agdd-api` image bundles pinned copies at build time, verified against SHA-512 integrity values. For a local checkout, fetch them once:
+
+```bash
+cd backend/agent && python -m irade_agent.agdd.fetch_vendor   # -> irade_agent/agdd/static/vendor/ (gitignored)
+```
+
+When a package is present, the API rewrites its CDN URLs in `console.html` to `static/vendor/<pkg>@<ver>/`; missing packages keep using the CDN. `AGDD_VENDOR_DIR` overrides the location. Build with `--build-arg AGDD_BUNDLE_VENDOR=0` to skip bundling.
+
 ## Workspace VMs and CLI agents
 
 Each workspace gets its own Cloud Hypervisor VM from the Project Agora runtime ([hypervisor-for-agora](../../../hypervisor-for-agora/README.md)). With the `vm-cli` engine, every AGDD step runs inside that VM.
@@ -136,25 +146,58 @@ To test without real VMs, `tests/fake_runtime.py` emulates the manager's termina
 
 Console tab **멀티 에이전트**: design a team as a node graph and run it. Engine: `agdd/multi_agent.py`
 (pure, unit tested); persistence + VM wiring: `agdd/multi_agent_service.py`; UI: `static/multi_agent.js`.
+The canvas is resizable (drag bar under it, height remembered) and has a full-screen mode (⛶, Esc closes).
 
-- **Nodes**: `input` (the request), `data` (spec scope, UX 2D layout, repo files, notebook cells, collab
-  history, fixed text; resolved once at run start), `agent`, `output`.
-- **Agent settings**: role, default system prompt, input template (`{{auto}}`, `{{request}}`, `{{data}}`,
-  `{{agents}}`, `{{feedback}}`, `{{messages}}`, `{{blackboard}}`, `{{input:<id>}}`), accepted input kinds
-  (request/data/agent/feedback/message), wait-for-all vs. react-to-any, `think` (JSON answer) or `code`
-  (autonomous run in the repo), CLI/model/effort overrides, `max_runs`, who it may message.
-- **Edges**: `always`, `approve`, `revise`. A `revise` edge back to an earlier agent is a review loop; the
-  target gets the reviewer's output as feedback and runs again.
+- **Nodes**: `input` (the request + optional default attachments), `data` (attached files, spec scope, UX 2D
+  layout, repo files, notebook cells, collab history, fixed text; resolved once at run start), `agent`, `output`.
+- **Agent settings**: role, default system prompt, input template (`{{auto}}`, `{{request}}`, `{{attachments}}`,
+  `{{data}}`, `{{agents}}`, `{{subtasks}}`, `{{feedback}}`, `{{messages}}`, `{{blackboard}}`, `{{state}}`,
+  `{{state:<key>}}`, `{{input:<id>}}`), accepted input kinds (request/data/agent/feedback/message), accepted
+  media `modalities` (text/image/video/audio/pdf/file; `[]` = no media), wait-for-all vs. react-to-any,
+  `think` (JSON answer) or `code` (autonomous run in the repo), CLI/model/effort overrides, `max_runs`, who it
+  may message, `output_key` (shared state), `guardrail`.
+- **Edges** (`when`):
+  - `always`, `approve`, `revise` — a `revise` edge back to an earlier agent is a review / evaluator-optimizer
+    loop; the target gets the reviewer's output as feedback and runs again.
+  - `handoff` — fires only when the agent picks that target in `handoff` (code mode: `<<HANDOFF:id>>`); the
+    conversation and its attachments move to the target and the agent's other edges do not fire.
+  - `spawn` — orchestrator → worker. The orchestrator returns `tasks: [{agent, task}]` (code mode:
+    `<<TASK:id>>…<</TASK>>`, max 8 per turn); each task runs on the worker in parallel (own VM PTY) and the batch
+    comes back to the orchestrator as one `subtask` input. A turn with tasks is intermediate: the orchestrator's
+    edges fire with its final (task-free) answer. Workers only take spawn/input/data edges and have no outgoing
+    edges (their result always returns to the orchestrator).
+- **Shared state**: an agent with `output_key` writes its answer to `state[key]`; prompts, templates and system
+  prompts read it with `{{state:key}}`. The final state is in `result_json.state`.
+- **Guardrails**: a `guardrail` agent answers `tripwire` / `tripwire_reason` (code mode: `<<TRIPWIRE:reason>>`).
+  A tripped guardrail halts the run with status `BLOCKED` (`result_json.blocked`).
+- **Pattern templates** (toolbar select, `PRESET_INFO`): Anthropic orchestrator-workers (lead + sub-agents +
+  citation), evaluator-optimizer, voting, sectioning; OpenAI Agents SDK triage with handoffs and input/output
+  guardrails; Google ADK sequential pipeline with `output_key` state, Parallel/Loop equivalents; plus review loop,
+  debate and a multimodal analysis team.
 - **Collaboration**: agents send direct messages to teammates (`messages` in think mode,
   `<<TO:id>>…<</TO>>` in code mode). A message re-activates the recipient, so agents ask and answer each other.
-  Runs are bounded by per-agent `max_runs` and the team's `max_steps`.
-- **Execution**: a background thread in agdd-api. Each agent gets its own VM PTY (`agdd-ma-<id>`), so
-  independent agents run in parallel (`parallelism`); code-mode agents share the repo and run one at a time.
-  Without a VM, think agents use the LLM gateway and code agents fail with a clear error. A run left
-  `RUNNING` by an API restart is marked `FAILED` when it is next read.
+  Runs are bounded by per-agent `max_runs` and the team's `max_steps` (worker tasks count as steps).
+- **Multimodal inputs**: files (images, video, audio, PDF, text/code, other) are uploaded in 4 MiB chunks
+  (stays under the gateway's 8 MiB body limit; max 50 MB per file, 2 GB per workspace) and can be attached to a
+  run, to an input node (default attachments) or to a `files` data node. Items keep their attachments as they
+  flow through edges and handoffs; each agent only receives its `modalities`. At run start every attachment is
+  streamed into the VM once (`~/.agdd/attachments/<sha256>/`, cached) and `agdd_media.py` derives PDF text +
+  page images (poppler), video key frames + audio track (ffmpeg) and transcripts (only if `whisper` is installed);
+  missing tools are apt-installed best effort (`AGDD_MEDIA_INSTALL=0` disables that). Delivery per CLI: Claude
+  Code gets the read-only `Read` tool + `--add-dir` (images, PDFs, frames), Codex gets `--image=` for images and
+  frames, Gemini-family `agy` gets `@path` references to the originals (video/audio included). Without a VM,
+  images are sent to the gateway as image parts (`AGDD_VISION_MODEL`) and text files as inline excerpts.
+- **Execution**: a background thread in agdd-api. Each agent gets its own VM PTY (`agdd-ma-<id>`, workers
+  `agdd-ma-<id>-t<n>`), so independent agents run in parallel (`parallelism`); code-mode agents share the repo
+  and run one at a time. Without a VM, think agents use the LLM gateway and code agents fail with a clear error.
+  A run left `RUNNING` by an API restart is marked `FAILED` when it is next read.
 - **API**: `GET/POST /workspaces/{ws}/teams`, `POST …/teams/validate`, `DELETE …/teams/{id}`,
-  `POST/GET …/team-runs`, `GET …/team-runs/{id}?after=<seq>` (events), `POST …/team-runs/{id}/cancel`.
-- **Tables**: `agent_teams`, `agent_team_runs`, `agent_team_events`.
+  `POST/GET …/team-runs` (start body: `team_id`, `graph`, `request`, `attachments: [ids]`),
+  `GET …/team-runs/{id}?after=<seq>` (events), `POST …/team-runs/{id}/cancel`;
+  attachments: `GET/POST …/team-attachments` (init: `name`, `mime`, `size`), `POST …/team-attachments/{id}/chunks/{n}`
+  (`data`: base64), `POST …/team-attachments/{id}/complete`, `GET …/team-attachments/{id}/raw`, `DELETE …/team-attachments/{id}`.
+- **Tables**: `agent_teams`, `agent_team_runs` (+ `attachments`), `agent_team_events`, `agent_team_attachments`,
+  `agent_team_attachment_chunks`.
 
 ## Provider notes (EXAONE)
 

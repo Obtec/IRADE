@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -26,6 +28,35 @@ _TERM_TICKETS = ws_terminal.TerminalTicketStore()
 _TERM_WS_SLOTS = threading.BoundedSemaphore(64)
 _TERM_WS_RX = re.compile(r"^/workspaces/(?P<ws>[^/]+)/vm/terminal/(?P<name>[A-Za-z0-9_-]{1,64})/ws$")
 _STATIC_RX = re.compile(r"^/static/(?P<fname>[A-Za-z0-9_.-]+\.(?:js|css))$")
+_VENDOR_RX = re.compile(r"^/static/vendor/(?P<rel>[A-Za-z0-9@._/-]+)$")
+_VENDOR_TYPES = {".js": "application/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+                 ".ttf": "font/ttf", ".woff": "font/woff", ".woff2": "font/woff2"}
+_CDN_NPM = "https://cdn.jsdelivr.net/npm/"
+
+
+def localize_vendor_urls(html: bytes, vendor_root: Path | None = None) -> bytes:
+    """Point jsDelivr URLs at static/vendor/ for every package bundled locally (offline use).
+
+    Packages that were not fetched (see ``fetch_vendor``) keep loading from the CDN.
+    """
+    from .fetch_vendor import PACKAGES, vendor_dir
+    root = vendor_root or vendor_dir()
+    for name, ver, *_ in PACKAGES:
+        if (root / f"{name}@{ver}" / ".complete").is_file():
+            html = html.replace(f"{_CDN_NPM}{name}@{ver}/".encode(), f"static/vendor/{name}@{ver}/".encode())
+    return html
+
+
+def _vendor_file(rel: str) -> Path | None:
+    from .fetch_vendor import vendor_dir
+    parts = rel.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        return None
+    root = vendor_dir().resolve()
+    fpath = (root / rel).resolve()
+    if not fpath.is_relative_to(root) or fpath.suffix not in _VENDOR_TYPES or not fpath.is_file():
+        return None
+    return fpath
 
 
 def route(method, pattern, min_role=None):
@@ -163,8 +194,10 @@ def put_agent_settings(ctx, ws, body):
 def vm_clis(ctx, ws, body):
     _require_vm()
     from .cli_agents import PROFILES
+    q_ref = ((ctx.get("query") or {}).get("refresh") or [""])[0].lower() in ("1", "true", "yes")
+    refresh = q_ref or bool((body or {}).get("refresh"))
     hit = _CLI_CACHE.get(ws)
-    if hit and time.monotonic() - hit[0] < 600 and not body.get("refresh"):
+    if hit and time.monotonic() - hit[0] < 600 and not refresh:
         return hit[1]
     sh = vm_service.shell(ws, "agdd-api")
     # Version probes start node runtimes (seconds each), so run them in parallel.
@@ -394,6 +427,36 @@ elif op == "commit":
     if not all(c in "0123456789abcdef" for c in sha) or not 7 <= len(sha) <= 40: raise SystemExit("bad sha")
     patch = git(repo, "show", "--stat", "--patch", "--format=%H%n%an <%ae>%n%ad%n%n%B", sha)[:120_000] if has_git_repo(repo) else ""
     print(json.dumps({"sha": sha, "patch": patch}))
+elif op == "git_commit":
+    if not has_git_repo(repo):
+        raise SystemExit("not a git repository")
+    msg = str(a.get("message") or "").strip()[:200]
+    if not msg:
+        raise SystemExit("commit message required")
+    add_r = subprocess.run(["git", "-C", repo, "add", "-A"], capture_output=True, text=True, errors="replace")
+    if add_r.returncode != 0:
+        raise SystemExit((add_r.stderr or add_r.stdout or "git add failed")[-500:])
+    diff_r = subprocess.run(["git", "-C", repo, "diff", "--cached", "--quiet"], capture_output=True)
+    if diff_r.returncode == 0:
+        print(json.dumps({"ok": False, "error": "커밋할 변경 사항이 없습니다"}))
+    else:
+        com_r = subprocess.run(["git", "-C", repo, "-c", "user.name=agdd", "-c", "user.email=agdd@localhost",
+                                "commit", "-qm", msg], capture_output=True, text=True, errors="replace")
+        if com_r.returncode != 0:
+            raise SystemExit((com_r.stderr or com_r.stdout or "git commit failed")[-500:])
+        sha = git(repo, "rev-parse", "HEAD").strip()
+        print(json.dumps({"ok": True, "sha": sha, "subject": msg}))
+elif op == "git_revert":
+    if not has_git_repo(repo):
+        raise SystemExit("not a git repository")
+    path, full = safe_path(repo, a["path"])
+    has_head = subprocess.run(["git", "-C", repo, "cat-file", "-e", "HEAD:" + path], capture_output=True)
+    if has_head.returncode != 0:
+        raise SystemExit("file not in HEAD")
+    chk = subprocess.run(["git", "-C", repo, "checkout", "HEAD", "--", path], capture_output=True, text=True, errors="replace")
+    if chk.returncode != 0:
+        raise SystemExit((chk.stderr or chk.stdout or "git checkout failed")[-500:])
+    print(json.dumps({"ok": True, "path": path}))
 elif op == "diff":
     print(json.dumps({"patch": git(repo, "diff", "HEAD")[:120_000] if has_git_repo(repo) else ""}))
 """
@@ -507,6 +570,22 @@ def ide_run_file(ctx, ws, body, repo):
     return _ide(ws, op="run", repo=repo, path=str(body.get("path") or ""))
 
 
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/ide/repos/(?P<repo>[^/]+)/commit", "EDITOR")
+def ide_commit_repo(ctx, ws, body, repo):
+    msg = str((body or {}).get("message") or "").strip()[:200]
+    if not msg:
+        raise HttpError(422, "commit message required")
+    return _ide(ws, op="git_commit", repo=repo, message=msg)
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/ide/repos/(?P<repo>[^/]+)/revert", "EDITOR")
+def ide_revert_file(ctx, ws, body, repo):
+    path = str((body or {}).get("path") or "").strip()
+    if not path:
+        raise HttpError(422, "path required")
+    return _ide(ws, op="git_revert", repo=repo, path=path)
+
+
 @route("POST", r"/workspaces/(?P<ws>[^/]+)/vm/cells/sync", "EDITOR")
 def vm_cells_sync(ctx, ws, body):
     _require_vm()
@@ -585,6 +664,19 @@ def create_workspace(ctx, _, body):
     return {"workspace_id": w["workspace_id"], "name": name, "role": "OWNER"}
 
 
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/members", "VIEWER")
+def list_members(ctx, ws, body):
+    with infra.pg(readonly=True) as c:
+        return {
+            "members": c.execute(
+                "SELECT m.user_id, u.email, m.role FROM workspace_members m "
+                "LEFT JOIN users u USING (user_id) WHERE m.workspace_id=%s "
+                "ORDER BY CASE m.role WHEN 'OWNER' THEN 0 WHEN 'APPROVER' THEN 1 WHEN 'EDITOR' THEN 2 ELSE 3 END, m.user_id",
+                (ws,),
+            ).fetchall()
+        }
+
+
 @route("PUT", r"/workspaces/(?P<ws>[^/]+)/members", "OWNER")
 def add_member(ctx, ws, body):
     if body.get("role") not in pgstore.ROLE_RANK or not re.fullmatch(r"[0-9a-f-]{36}", str(body.get("user_id"))):
@@ -595,6 +687,30 @@ def add_member(ctx, ws, body):
                   "DO UPDATE SET role=EXCLUDED.role", (ws, body["user_id"], body["role"]))
         c.commit()
     return {"ok": True}
+
+
+@route("DELETE", r"/workspaces/(?P<ws>[^/]+)/members/(?P<uid>[0-9a-f-]{36})", "OWNER")
+def remove_member(ctx, ws, body, uid):
+    with infra.pg() as c:
+        target = c.execute(
+            "SELECT role FROM workspace_members WHERE workspace_id=%s AND user_id=%s",
+            (ws, uid),
+        ).fetchone()
+        if not target:
+            raise HttpError(404, "member not found")
+        if target["role"] == "OWNER":
+            owners = c.execute(
+                "SELECT count(*) AS n FROM workspace_members WHERE workspace_id=%s AND role='OWNER'",
+                (ws,),
+            ).fetchone()["n"]
+            if int(owners) <= 1:
+                raise HttpError(409, "cannot remove the last OWNER")
+        n = c.execute(
+            "DELETE FROM workspace_members WHERE workspace_id=%s AND user_id=%s",
+            (ws, uid),
+        ).rowcount
+        c.commit()
+    return {"ok": True, "deleted": bool(n)}
 
 
 @route("POST", r"/workspaces/(?P<ws>[^/]+)/seed-example", "EDITOR")
@@ -835,6 +951,27 @@ def get_run(ctx, run, body):
     return r
 
 
+@route("POST", r"/runs/(?P<run>[0-9a-f-]+)/cancel")
+def cancel_run(ctx, run, body):
+    ws = _check_run_role(ctx, run, "EDITOR")
+    with infra.pg() as c:
+        row = c.execute(
+            "UPDATE workflow_runs SET status='HALTED', version=version+1, updated_at=now(), "
+            "handoff_json = coalesce(handoff_json, '{}'::jsonb) || %s::jsonb "
+            "WHERE run_id=%s AND status IN ('PENDING','RUNNING','WAITING_HITL') RETURNING run_id",
+            (Jsonb({"cancelled_by": ctx["user"]}), run),
+        ).fetchone()
+        c.execute("UPDATE job_queue SET status='FAILED' WHERE run_id=%s AND status='PENDING'", (run,))
+        c.execute(
+            "UPDATE hitl_decisions SET status='REJECTED', decided_by=%s, decided_at=now() "
+            "WHERE run_id=%s AND status='PENDING'",
+            (ctx["user"], run),
+        )
+        c.commit()
+    infra_safe(infra.cache_invalidate, f"agdd:run:{run}", f"agdd:dash:{ws}")
+    return {"ok": True, "halted": bool(row)}
+
+
 def _check_run_role(ctx, run, minimum):
     with infra.pg(readonly=True) as c:
         ws = c.execute("SELECT g.workspace_id FROM workflow_runs r JOIN graph_definitions g "
@@ -860,16 +997,32 @@ def list_hitl(ctx, ws, body):
 
 @route("POST", r"/hitl/(?P<did>\d+)/decide")
 def decide(ctx, did, body):
+    body = body or {}
     status = body.get("status")
     if status not in ("APPROVED", "REJECTED"):
         raise HttpError(422, "status must be APPROVED|REJECTED")
+    chosen_raw = body.get("chosen_option")
+    chosen_option = None
+    if chosen_raw is not None and not isinstance(chosen_raw, bool):
+        try:
+            chosen_option = int(chosen_raw)
+        except (TypeError, ValueError):
+            chosen_option = None
+    comment = str(body.get("comment") or "").strip()[:1000]
+    resolution = {"status": status}
+    if chosen_option is not None:
+        resolution["chosen_option"] = chosen_option
+    if comment:
+        resolution["comment"] = comment
     with infra.pg() as c:
         d = c.execute("SELECT run_id FROM hitl_decisions WHERE decision_id=%s", (did,)).fetchone()
         if not d:
             raise HttpError(404, "decision not found")
         _check_run_role(ctx, d["run_id"], "APPROVER")
-        r = c.execute("UPDATE hitl_decisions SET status=%s, decided_by=%s, decided_at=now() "
-                      "WHERE decision_id=%s AND status='PENDING' RETURNING run_id", (status, ctx["user"], did)).fetchone()
+        r = c.execute("UPDATE hitl_decisions SET status=%s, decided_by=%s, decided_at=now(), "
+                      "decision_card_json = coalesce(decision_card_json, '{}'::jsonb) || %s::jsonb "
+                      "WHERE decision_id=%s AND status='PENDING' RETURNING run_id",
+                      (status, ctx["user"], Jsonb({"resolution": resolution}), did)).fetchone()
         if not r:
             raise HttpError(409, "already decided")
         pending = c.execute("SELECT count(*) AS n FROM hitl_decisions WHERE run_id=%s AND status='PENDING' "
@@ -879,14 +1032,15 @@ def decide(ctx, did, body):
                             (r["run_id"],)).fetchone()
             if run["status"] == "WAITING_HITL":
                 new_status = "RUNNING" if status == "APPROVED" else "FAILED"
-                c.execute("UPDATE workflow_runs SET status=%s, version=version+1, updated_at=now() WHERE run_id=%s",
-                          (new_status, r["run_id"]))
+                c.execute("UPDATE workflow_runs SET status=%s, version=version+1, updated_at=now(), "
+                          "handoff_json = coalesce(handoff_json, '{}'::jsonb) || %s::jsonb WHERE run_id=%s",
+                          (new_status, Jsonb({"hitl_resolution": resolution}), r["run_id"]))
                 if status == "APPROVED":
                     c.execute(orchestrator.ENQUEUE_SQL, {"run_id": r["run_id"], "node_name": run["current_node"],
                                                          "priority": 1})
         c.commit()
     infra_safe(infra.cache_invalidate, f"agdd:run:{r['run_id']}")
-    return {"ok": True}
+    return {"ok": True, "resolution": resolution}
 
 
 # ---------------- collaborative CLI / AGDD chat ----------------
@@ -1191,6 +1345,9 @@ def _team_id(v):
 def teams_list(ctx, ws, body):
     from . import multi_agent
     return {"teams": multi_agent_service.list_teams(ws), "presets": {p: multi_agent.preset(p) for p in multi_agent.PRESETS},
+            "preset_info": multi_agent.PRESET_INFO, "attachments": multi_agent_service.list_attachments(ws),
+            "limits": {"chunk_bytes": multi_agent_service.CHUNK_BYTES,
+                       "max_attachment_bytes": multi_agent_service.MAX_ATTACHMENT_BYTES},
             "vm_enabled": vm_service.enabled()}
 
 
@@ -1225,7 +1382,8 @@ def team_run_start(ctx, ws, body):
     body = body or {}
     request = str(body.get("request") or "").strip()[:12000]
     try:
-        return multi_agent_service.start_run(ws, _team_id(body.get("team_id")), body.get("graph"), request, ctx["user"])
+        return multi_agent_service.start_run(ws, _team_id(body.get("team_id")), body.get("graph"), request, ctx["user"],
+                                             body.get("attachments") or [])
     except multi_agent_service.TeamGraphError as e:
         raise HttpError(422, str(e))
     except LookupError as e:
@@ -1254,6 +1412,62 @@ def team_run_get(ctx, ws, body, rid):
 @route("POST", r"/workspaces/(?P<ws>[^/]+)/team-runs/(?P<rid>[0-9a-f-]{36})/cancel", "EDITOR")
 def team_run_cancel(ctx, ws, body, rid):
     return {"ok": multi_agent_service.cancel_run(ws, _team_id(rid))}
+
+
+# Multimodal attachments (images, video, audio, PDF, text …): chunked upload keeps every request under the
+# gateway body limit; the raw endpoint serves previews with a sandboxing CSP.
+_INLINE_MIMES = {"image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf", "text/plain"}
+
+
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/team-attachments", "VIEWER")
+def team_attachments_list(ctx, ws, body):
+    return {"attachments": multi_agent_service.list_attachments(ws)}
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/team-attachments", "EDITOR")
+def team_attachment_create(ctx, ws, body):
+    body = body or {}
+    try:
+        return multi_agent_service.create_attachment(ws, body.get("name"), body.get("mime"), body.get("size"), ctx["user"])
+    except ValueError as e:
+        raise HttpError(422, str(e))
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/team-attachments/(?P<aid>[0-9a-f-]{36})/chunks/(?P<idx>[0-9]{1,5})", "EDITOR")
+def team_attachment_chunk(ctx, ws, body, aid, idx):
+    try:
+        return multi_agent_service.put_chunk(ws, _team_id(aid), int(idx), (body or {}).get("data"))
+    except LookupError as e:
+        raise HttpError(404, str(e))
+    except ValueError as e:
+        raise HttpError(422, str(e))
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/team-attachments/(?P<aid>[0-9a-f-]{36})/complete", "EDITOR")
+def team_attachment_complete(ctx, ws, body, aid):
+    try:
+        return multi_agent_service.complete_attachment(ws, _team_id(aid))
+    except LookupError as e:
+        raise HttpError(404, str(e))
+    except ValueError as e:
+        raise HttpError(422, str(e))
+
+
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/team-attachments/(?P<aid>[0-9a-f-]{36})/raw", "VIEWER")
+def team_attachment_raw(ctx, ws, body, aid):
+    meta = multi_agent_service.attachment_for_download(ws, _team_id(aid))
+    if meta is None:
+        raise HttpError(404, "attachment not found")
+    inline = meta["mime"] in _INLINE_MIMES or meta["mime"].split("/")[0] in ("video", "audio")
+    return RawResponse(meta["mime"] if inline else "application/octet-stream",
+                       multi_agent_service.iter_chunks(meta["id"]), meta["size"], meta["name"], inline)
+
+
+@route("DELETE", r"/workspaces/(?P<ws>[^/]+)/team-attachments/(?P<aid>[0-9a-f-]{36})", "EDITOR")
+def team_attachment_delete(ctx, ws, body, aid):
+    if not multi_agent_service.delete_attachment(ws, _team_id(aid)):
+        raise HttpError(404, "attachment not found")
+    return {"ok": True}
 
 
 # ---------------- UX workbench ----------------
@@ -1289,7 +1503,8 @@ def ux_put(ctx, ws, body, view):
     wb = Workbench(pgstore.PgOverrideStore())
     try:
         for sel, item in body.items():
-            wb.user_set(ws, view, sel, item["config"], ctx["user"], lock=item.get("locked", True))
+            is_meta = str(sel) == ux_workbench.CANVAS_META_SELECTOR
+            wb.user_set(ws, view, sel, item["config"], ctx["user"], lock=False if is_meta else item.get("locked", True))
     except ValueError as e:
         raise HttpError(422, str(e))
     vm_sync.sync_workspace_context_async(ws)
@@ -1324,7 +1539,8 @@ def ux_submit_to_agent(ctx, ws, body, view):
         for sel in body.get("removed") or []:
             wb.user_delete(ws, view, str(sel))
         for sel, item in elements.items():
-            wb.user_set(ws, view, str(sel), item["config"], ctx["user"], lock=item.get("locked", True))
+            is_meta = str(sel) == ux_workbench.CANVAS_META_SELECTOR
+            wb.user_set(ws, view, str(sel), item["config"], ctx["user"], lock=False if is_meta else item.get("locked", True))
     except ValueError as e:
         raise HttpError(422, str(e))
 
@@ -1403,15 +1619,76 @@ def ux_submit_to_agent(ctx, ws, body, view):
 
 
 # ---------------- research ----------------
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/research/history", "VIEWER")
+def research_history(ctx, ws, body):
+    with infra.pg(readonly=True) as c:
+        rows = c.execute(
+            "SELECT fact_key, fact_value FROM resolved_facts WHERE workspace_id=%s AND repo_key='_research' "
+            "ORDER BY fact_id DESC LIMIT 20",
+            (ws,),
+        ).fetchall()
+    items = []
+    for row in rows:
+        raw = row.get("fact_value") or ""
+        parsed = None
+        if isinstance(raw, str) and raw.lstrip().startswith("{"):
+            try:
+                parsed = json.loads(raw)
+            except ValueError:
+                parsed = None
+        if isinstance(parsed, dict):
+            items.append(parsed)
+        else:
+            items.append({
+                "research_id": row.get("fact_key"),
+                "problem": "",
+                "query": row.get("fact_key"),
+                "insight_brief_md": raw,
+                "reused": False,
+                "errors": [],
+            })
+    return {"items": items}
+
+
 @route("POST", r"/workspaces/(?P<ws>[^/]+)/research", "EDITOR")
 def research(ctx, ws, body):
+    problem = str((body or {}).get("problem") or "").strip()
+    if not problem:
+        raise HttpError(422, "problem required")
     req = urllib.request.Request(os.environ.get("RESEARCH_URL", "http://research:8092") + "/research",
-                                 data=json.dumps({"problem": body["problem"], "trigger_source": "HUMAN",
+                                 data=json.dumps({"problem": problem, "trigger_source": "HUMAN",
                                                   "run_id": body.get("run_id"), "workspace_id": ws}).encode(),
                                  headers={"content-type": "application/json",
                                           "authorization": f"Bearer {os.environ.get('INTERNAL_TOKEN', '')}"})
-    with urllib.request.urlopen(req, timeout=180) as r:
-        return json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req, timeout=180) as r:
+            out = json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raise HttpError(502 if e.code >= 500 else e.code, f"research service error ({e.code})")
+    except urllib.error.URLError as e:
+        raise HttpError(502, f"research service unavailable: {e.reason}")
+    try:
+        rid = out.get("research_id") or int(time.time() * 1000)
+        summary_entry = json.dumps({
+            "research_id": rid,
+            "problem": problem[:500],
+            "query": out.get("query") or "",
+            "reused": bool(out.get("reused")),
+            "insight_brief_md": str(out.get("insight_brief_md") or "")[:4000],
+            "errors": out.get("errors") or [],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }, ensure_ascii=False)
+        with infra.pg() as c:
+            c.execute(
+                "INSERT INTO resolved_facts (workspace_id, repo_key, fact_key, fact_value) "
+                "VALUES (%s,'_research',%s,%s) ON CONFLICT (workspace_id, repo_key, fact_key) "
+                "DO UPDATE SET fact_value=EXCLUDED.fact_value",
+                (ws, f"research:{rid}", summary_entry),
+            )
+            c.commit()
+    except Exception:
+        pass
+    return out
 
 
 # ---------------- dashboard ----------------
@@ -1436,12 +1713,23 @@ def dashboard(ctx, ws, body):
 
 @route("PUT", r"/workspaces/(?P<ws>[^/]+)/budget", "OWNER")
 def set_budget(ctx, ws, body):
+    body = body or {}
+    raw_limit = body.get("limit_usd")
+    if raw_limit is None or isinstance(raw_limit, bool) or (isinstance(raw_limit, str) and not raw_limit.strip()):
+        raise HttpError(422, "limit_usd must be a non-negative number")
+    try:
+        limit = float(raw_limit)
+    except (TypeError, ValueError):
+        raise HttpError(422, "limit_usd must be a non-negative number")
+    if not math.isfinite(limit) or limit < 0:
+        raise HttpError(422, "limit_usd must be a non-negative number")
     period = body.get("period_ym") or datetime.now(timezone.utc).strftime("%Y-%m")
     with infra.pg() as c:
         c.execute("INSERT INTO workspace_budgets (workspace_id, period_ym, limit_usd) VALUES (%s,%s,%s) "
                   "ON CONFLICT (workspace_id, period_ym) DO UPDATE SET limit_usd=EXCLUDED.limit_usd",
-                  (ws, period, body["limit_usd"]))
+                  (ws, period, limit))
         c.commit()
+    infra_safe(infra.cache_invalidate, f"agdd:dash:{ws}")
     return {"ok": True}
 
 
@@ -1453,9 +1741,30 @@ def infra_safe(fn, *args, fallback=None):
 
 
 # ---------------- HTTP plumbing ----------------
+class RawResponse:
+    """A binary route result (attachment download) streamed chunk by chunk instead of JSON."""
+
+    def __init__(self, content_type: str, chunks, length: int, filename: str = "", inline: bool = True):
+        self.content_type, self.chunks, self.length = content_type, chunks, int(length)
+        self.filename, self.inline = filename, inline
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
+
+    def _send_raw(self, res: RawResponse):
+        self.send_response(200)
+        self.send_header("content-type", res.content_type)
+        self.send_header("content-length", str(res.length))
+        disp = "inline" if res.inline else "attachment"
+        self.send_header("content-disposition", f"{disp}; filename*=UTF-8''{urllib.parse.quote(res.filename or 'file')}")
+        self.send_header("x-content-type-options", "nosniff")
+        self.send_header("content-security-policy", "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'")
+        self.send_header("cache-control", "private, max-age=3600")
+        self.end_headers()
+        for chunk in res.chunks:
+            self.wfile.write(chunk)
 
     def _send(self, code, obj):
         data = pgstore.dumps(obj).encode()
@@ -1504,13 +1813,26 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/healthz":
             return self._send(200, {"ok": True})
         if method == "GET" and path in ("/", "/console"):
-            data = (Path(__file__).parent / "static" / "console.html").read_bytes()
+            data = localize_vendor_urls((Path(__file__).parent / "static" / "console.html").read_bytes())
             self.send_response(200)
             self.send_header("content-type", "text/html; charset=utf-8")
             self.send_header("content-length", str(len(data)))
             self.send_header("content-security-policy", "default-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
                              "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src 'self' data: https://cdn.jsdelivr.net; "
                              "worker-src 'self' blob:; frame-src 'self' blob: data:; connect-src 'self' ws: wss: https://cdn.jsdelivr.net")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if method == "GET" and (mt_v := _VENDOR_RX.match(path)):
+            fpath = _vendor_file(mt_v.group("rel"))
+            if not fpath:
+                return self._send(404, {"error": "not found"})
+            data = fpath.read_bytes()
+            self.send_response(200)
+            self.send_header("content-type", _VENDOR_TYPES[fpath.suffix])
+            self.send_header("content-length", str(len(data)))
+            self.send_header("cache-control", "public, max-age=31536000, immutable")  # paths are version-pinned
+            self.send_header("x-content-type-options", "nosniff")
             self.end_headers()
             self.wfile.write(data)
             return
@@ -1569,12 +1891,15 @@ class Handler(BaseHTTPRequestHandler):
                             except PermissionError as e:
                                 raise HttpError(403, str(e))
                     ws_or_first = kw.pop("ws", None) or (kw.pop(next(iter(kw))) if kw else None)
-                    return self._send(200, fn(ctx, ws_or_first, body, **kw))
+                    out = fn(ctx, ws_or_first, body, **kw)
+                    return self._send_raw(out) if isinstance(out, RawResponse) else self._send(200, out)
             raise HttpError(404, "not found")
         except HttpError as e:
             self._send(e.code, {"error": str(e)})
         except LockedOverrideError as e:
             self._send(423, {"error": str(e)})
+        except (KeyError, ValueError, json.JSONDecodeError) as e:
+            self._send(400, {"error": repr(e)[:300]})
         except Exception as e:  # CLI / VM failures must surface, never pass silently
             from .cli_agents import CliError
             from .vm import RuntimeError_
@@ -1582,8 +1907,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(502, {"error": str(e)[:600]})
             else:
                 raise
-        except (KeyError, ValueError, json.JSONDecodeError) as e:
-            self._send(400, {"error": repr(e)[:300]})
 
     def _sse(self, run, ctx):
         _check_run_role(ctx, run, "VIEWER")

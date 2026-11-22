@@ -215,6 +215,50 @@ class VmShell:
             raise
 
     @_locked
+    def put_stream(self, path: str, chunks, size: int, sha256: str | None = None, timeout: float = 1800) -> None:
+        """Upload a large binary (attachments: video, audio, PDF …) without a round trip per 4 KB.
+
+        ``base64 -d`` reads the PTY directly while base64 lines (76 columns, well under the canonical-mode line
+        limit) are streamed in INPUT_CHUNK requests; Ctrl-D at the start of a line ends the input. The result is
+        verified by size (and sha256) before it is moved into place, so a dropped chunk can never leave a corrupt
+        file behind.
+        """
+        self.ensure()
+        tag = uuid.uuid4().hex[:12]
+        part = f"{self.tmp}/{tag}.part"
+        done = f"__AGDD_PUT_{tag}_"
+        self._send(f"base64 -d > {part}; echo \"{done}$?__\"\n")
+        carry = b""
+        deadline = time.monotonic() + timeout
+        try:
+            for chunk in chunks:
+                data = carry + bytes(chunk)
+                cut = len(data) - len(data) % 57          # 57 raw bytes == one 76-char base64 line
+                carry = data[cut:]
+                if cut:
+                    self._send(base64.encodebytes(data[:cut]).decode())
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"upload of {path} exceeded {timeout}s")
+            if carry:
+                self._send(base64.encodebytes(carry).decode())
+            self._send("\x04")
+            out = self._read_until(done, 120)
+        except Exception:
+            self._send("\x04\x03\n")
+            self._send(f"rm -f {part}\n")
+            raise
+        m = re.search(re.escape(done) + r"(\d+)__", out)
+        if not m or m.group(1) != "0":
+            self._send(f"rm -f {part}\n")
+            raise RuntimeError_(f"upload of {path} failed (base64 exit {m.group(1) if m else '?'})")
+        check = f"test \"$(stat -c %s {part})\" = \"{int(size)}\""
+        if sha256:
+            check += f" && test \"$(sha256sum {part} | cut -d' ' -f1)\" = {sh_quote(sha256)}"
+        self.run(f"{{ {check} && mkdir -p \"$(dirname {sh_quote(path)})\" && mv -f {part} {sh_quote(path)}; }} "
+                 f"|| {{ rm -f {part}; echo 'upload verification failed (size/sha256 mismatch)'; exit 1; }}",
+                 timeout=300, check=True)
+
+    @_locked
     def read_file(self, path: str, max_bytes: int = 4 * 1024 * 1024) -> bytes:
         r = self.run(f"stat -c %s {sh_quote(path)} 2>/dev/null || echo -1", timeout=30, capture=False)
         size = int((r.output.strip().splitlines() or ["-1"])[-1])

@@ -241,7 +241,7 @@ CREATE TABLE IF NOT EXISTS agent_team_runs (
     workspace_id uuid NOT NULL REFERENCES workspaces ON DELETE CASCADE,
     graph_json   jsonb NOT NULL,             -- snapshot of the graph that ran
     request      text NOT NULL DEFAULT '',
-    status       text NOT NULL CHECK (status IN ('RUNNING','SUCCEEDED','PARTIAL','FAILED','CANCELLED','STEP_LIMIT')),
+    status       text NOT NULL CHECK (status IN ('RUNNING','SUCCEEDED','PARTIAL','FAILED','CANCELLED','STEP_LIMIT','BLOCKED')),
     node_state   jsonb NOT NULL DEFAULT '{}',
     result_json  jsonb NOT NULL DEFAULT '{}',
     created_by   uuid REFERENCES users,
@@ -261,3 +261,31 @@ CREATE TABLE IF NOT EXISTS agent_team_events (
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_agent_team_events_run ON agent_team_events (team_run_id, seq);
+-- BLOCKED (guardrail tripwire) was added after the first release: refresh the CHECK on existing databases.
+ALTER TABLE agent_team_runs DROP CONSTRAINT IF EXISTS agent_team_runs_status_check;
+ALTER TABLE agent_team_runs ADD CONSTRAINT agent_team_runs_status_check
+    CHECK (status IN ('RUNNING','SUCCEEDED','PARTIAL','FAILED','CANCELLED','STEP_LIMIT','BLOCKED'));
+ALTER TABLE agent_team_runs ADD COLUMN IF NOT EXISTS attachments jsonb NOT NULL DEFAULT '[]';  -- run-level media
+-- Multimodal team inputs (images, video, audio, PDF, text …). Uploaded in <= 4 MiB chunks (nginx body limit),
+-- assembled lazily: the VM copy is streamed chunk by chunk and cached by sha256.
+CREATE TABLE IF NOT EXISTS agent_team_attachments (
+    attachment_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id  uuid NOT NULL REFERENCES workspaces ON DELETE CASCADE,
+    name          text NOT NULL,
+    mime          text NOT NULL,
+    modality      text NOT NULL CHECK (modality IN ('text','image','video','audio','pdf','file')),
+    size_bytes    bigint NOT NULL CHECK (size_bytes >= 0),
+    chunk_size    integer NOT NULL,
+    sha256        text,
+    status        text NOT NULL DEFAULT 'UPLOADING' CHECK (status IN ('UPLOADING','READY')),
+    excerpt       text,                      -- decoded text for text-like files (prompt context without a VM)
+    created_by    uuid REFERENCES users,
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_team_attachments_ws ON agent_team_attachments (workspace_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS agent_team_attachment_chunks (
+    attachment_id uuid NOT NULL REFERENCES agent_team_attachments ON DELETE CASCADE,
+    idx           integer NOT NULL,
+    data          bytea NOT NULL,
+    PRIMARY KEY (attachment_id, idx)
+);
