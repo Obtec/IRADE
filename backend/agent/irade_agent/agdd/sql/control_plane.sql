@@ -223,3 +223,41 @@ CREATE TABLE IF NOT EXISTS collab_messages (
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_collab_ws ON collab_messages (workspace_id, msg_id DESC);
+
+-- ---------------- Multi-agent teams (canvas-orchestrated) ----------------
+CREATE TABLE IF NOT EXISTS agent_teams (
+    team_id      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id uuid NOT NULL REFERENCES workspaces ON DELETE CASCADE,
+    name         text NOT NULL,
+    graph_json   jsonb NOT NULL,             -- validated by multi_agent.validate_team_graph
+    updated_by   uuid REFERENCES users,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_teams_ws ON agent_teams (workspace_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS agent_team_runs (
+    team_run_id  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    team_id      uuid REFERENCES agent_teams ON DELETE SET NULL,
+    workspace_id uuid NOT NULL REFERENCES workspaces ON DELETE CASCADE,
+    graph_json   jsonb NOT NULL,             -- snapshot of the graph that ran
+    request      text NOT NULL DEFAULT '',
+    status       text NOT NULL CHECK (status IN ('RUNNING','SUCCEEDED','PARTIAL','FAILED','CANCELLED','STEP_LIMIT')),
+    node_state   jsonb NOT NULL DEFAULT '{}',
+    result_json  jsonb NOT NULL DEFAULT '{}',
+    created_by   uuid REFERENCES users,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_team_runs_ws ON agent_team_runs (workspace_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS agent_team_events (
+    event_id     bigserial PRIMARY KEY,
+    team_run_id  uuid NOT NULL REFERENCES agent_team_runs ON DELETE CASCADE,
+    seq          integer NOT NULL,
+    type         text NOT NULL,
+    node         text,
+    target       text,
+    content      text NOT NULL DEFAULT '',
+    meta_json    jsonb NOT NULL DEFAULT '{}',
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_agent_team_events_run ON agent_team_events (team_run_id, seq);

@@ -13,7 +13,8 @@ from .vm import CANVAS_BASE, RuntimeClient, VmShell
 REPOS_DIR = "/workspace/repos"
 _shells: dict[tuple, VmShell] = {}
 _canvas_cache: dict[str, int] = {}
-_lock = threading.Lock()
+_expanded_cids: set[int] = set()
+_lock = threading.RLock()
 
 
 def enabled() -> bool:
@@ -46,9 +47,54 @@ def shell(workspace_id, name: str = "agdd") -> VmShell:
     key = (str(workspace_id), name)
     with _lock:
         sh = _shells.get(key)
+        if sh is not None:
+            return sh
+    cid = canvas_for(workspace_id)
+    with _lock:
+        sh = _shells.get(key)
         if sh is None:
-            sh = _shells[key] = VmShell(RuntimeClient(), canvas_for(workspace_id), name)
+            sh = _shells[key] = VmShell(RuntimeClient(), cid, name)
         return sh
+
+
+def maybe_expand_disk(workspace_id, min_gib: int = 12) -> bool:
+    """If the VM disk is below ``min_gib`` and a larger tier exists, expand it once and reset cached PTYs."""
+    cid = canvas_for(workspace_id)
+    with _lock:
+        if cid in _expanded_cids:
+            return False
+    rc = RuntimeClient()
+    st = rc.settings(cid)
+    cur = int(st.get("diskGiB") or 0)
+    if cur >= min_gib:
+        with _lock:
+            _expanded_cids.add(cid)
+        return False
+    sizes = sorted(int(x) for x in (st.get("diskSizesGiB") or []) if isinstance(x, (int, float)) and int(x) >= min_gib)
+    if not sizes:
+        return False
+    with _lock:
+        if cid in _expanded_cids:
+            return False
+        _expanded_cids.add(cid)
+    try:
+        res = rc.set_disk(cid, sizes[0], int(st.get("revision") or 0))
+    except Exception:
+        with _lock:
+            _expanded_cids.discard(cid)
+        raise
+    if res.get("error"):
+        with _lock:
+            _expanded_cids.discard(cid)
+        return False
+    ws_prefix = str(workspace_id)
+    evicted = []
+    with _lock:
+        for k in [k for k in _shells if k[0] == ws_prefix]:
+            evicted.append(_shells.pop(k))
+    for sh in evicted:
+        sh.opened = False
+    return True
 
 
 def load_settings(workspace_id, override: dict | None = None) -> AgentSettings:

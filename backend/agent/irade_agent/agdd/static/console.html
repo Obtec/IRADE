@@ -80,16 +80,6 @@
   .collab-card-ux { margin-top:8px; padding:10px; border-radius:8px; border:1px solid var(--warn); background:color-mix(in srgb,var(--warn) 8%,var(--panel)); }
   .collab-conflict { margin-top:6px; padding:8px; border-radius:6px; border:1px solid var(--line); background:var(--bg); font-size:12.5px; }
   .link-chip { cursor:pointer; border:1px solid var(--line); }
-  .uxc-stage { position:relative; overflow:auto; background:var(--bg); padding:12px; }
-  .uxc-board { position:relative; background-color:var(--panel); background-image:radial-gradient(var(--line) 1px, transparent 1px); background-size:16px 16px; border:1px solid var(--line); border-radius:8px; box-shadow:0 2px 10px rgba(0,0,0,.08); overflow:hidden; user-select:none; }
-  .uxc-arrows { position:absolute; inset:0; pointer-events:none; }
-  .uxc-box { position:absolute; border:2px solid var(--accent); background:color-mix(in srgb,var(--panel) 88%, var(--accent) 12%); padding:6px 8px; cursor:move; display:flex; flex-direction:column; gap:3px; overflow:hidden; }
-  .uxc-box.on { box-shadow:0 0 0 2px var(--accent); }
-  .uxc-box-head { display:flex; justify-content:space-between; gap:6px; font-size:10.5px; color:var(--muted); }
-  .uxc-box-body { font-size:12.5px; line-height:1.3; overflow:hidden; }
-  .uxc-box-body small { display:block; color:var(--muted); font-size:11px; margin-top:2px; }
-  .uxc-box-dim { margin-top:auto; font-size:10px; color:var(--muted); }
-  .uxc-resize { position:absolute; right:0; bottom:0; width:14px; height:14px; cursor:nwse-resize; background:linear-gradient(135deg,transparent 50%,var(--accent) 50%); opacity:.75; }
   @media (max-width: 1100px) { .ide { grid-template-columns: 200px minmax(0,1fr); } .ide-col.log, .collab-grid, .ide-split { grid-template-columns: 1fr; } }
   .st-M { color:var(--warn); } .st-A, .st-U { color:var(--ok); } .st-D { color:var(--bad); }
   .ide-tabs { display:flex; overflow-x:auto; border-bottom:1px solid var(--line); background:var(--bg); min-height:36px; }
@@ -141,6 +131,7 @@
   .seg button { padding:5px 10px; }
   @media (max-width: 760px) { main { grid-template-columns: 1fr; } nav { display:flex; overflow-x:auto; border-right:0; border-bottom:1px solid var(--line); } nav button { white-space:nowrap; } section { padding:16px; } }
 </style>
+<link rel="stylesheet" href="static/ux_canvas.css">
 </head>
 <body>
 <header>
@@ -248,11 +239,11 @@ async function loadWs() {
   $("#ws").value = WS; store.set("agdd.ws", WS); syncUrl(); prefetch(); render();
 }
 
-const TABS = { ide: "IDE · 코드 & 셀", collab: "협업 · CLI/대화", vm: "VM · 터미널", agents: "CLI 에이전트", specs: "명세 테이블", gate: "사전 검사", graphs: "그래프", runs: "실행", hitl: "HITL 결정", ux: "UX 2D 캔버스", research: "리서치", dash: "대시보드·예산" };
+const TABS = { ide: "IDE · 코드 & 셀", collab: "협업 · CLI/대화", vm: "VM · 터미널", agents: "CLI 에이전트", team: "멀티 에이전트", specs: "명세 테이블", gate: "사전 검사", graphs: "그래프", runs: "실행", hitl: "HITL 결정", ux: "UX 2D 캔버스", research: "리서치", dash: "대시보드·예산" };
 function nav() { $("#nav").innerHTML = Object.entries(TABS).map(([k, v]) => `<button data-t="${k}" class="${k === TAB ? "on" : ""}">${v}</button>`).join(""); $("#nav").querySelectorAll("button").forEach(b => b.onclick = () => { TAB = b.dataset.t; store.set("agdd.tab", TAB); render(); }); }
 const V = html => $("#view").innerHTML = html;
 const statusCls = s => ({ ACCEPT_NOW: "ok", SUCCEEDED: "ok", APPROVED: "ok", DEFER: "warn", HOLD: "warn", WAITING_HITL: "warn", RUNNING: "warn", PENDING: "warn", REJECT: "bad", FAILED: "bad", ESCALATED: "bad", HALTED: "bad", REJECTED: "bad" }[s] || "");
-const COLLAB = {}, UXC = {};
+const COLLAB = {}, UXC = {}, MA = {};
 
 const render = run(async () => {
   if (TAB !== "ide" && IDE.editor) { IDE.editor.dispose(); IDE.editor = null; }
@@ -260,7 +251,7 @@ const render = run(async () => {
   if (TAB !== "collab" && COLLAB.stop) COLLAB.stop();
   const vw = $("#view"); vw.oninput = vw.onchange = vw.onclick = null;
   $("#studio-host").hidden = true;
-  $("#view").classList.toggle("wide", ["ide", "collab", "graphs", "specs", "ux"].includes(TAB));
+  $("#view").classList.toggle("wide", ["ide", "collab", "graphs", "specs", "ux", "team"].includes(TAB));
   nav(); if (ES) { ES.close(); ES = null; } if (TERM) { TERM.stop(); TERM = null; }
   if (!WS) return V(`<h2>시작하기</h2><p class="sub">${GATEWAY ? "IRADE 계정으로 로그인되었습니다. 상단에서 Studio와 같은 workspace를 선택하거나 새로 만드세요." : "상단에 API 토큰(agdd.env의 AGDD_API_TOKEN)을 넣고 저장한 뒤 워크스페이스를 만드세요. 사용자 ID는 이 브라우저에서 자동 생성됩니다."}</p>`);
   if (TAB !== LAST_TAB && TAB === "specs" && !SPEC.dirty.size) SPEC.ws = "";  // refresh when entering the tab
@@ -1184,7 +1175,7 @@ $("#collab-link").onclick = () => { TAB = "collab"; store.set("agdd.tab", TAB); 
 window.AGDD = {
   $, esc, api, iradeId, peek, CACHE, store, toast, run, stale, V,
   authHeaders, openTerminal, loadMonaco, langOf, darkMode, statusCls, fitStudio, render,
-  VIEWS, IDE, COLLAB, UXC,
+  VIEWS, IDE, COLLAB, UXC, MA,
   getWS: () => WS, getTAB: () => TAB, getBASE: () => BASE,
   openTab(tab, opts = {}) {
     TAB = tab; store.set("agdd.tab", tab);
@@ -1204,6 +1195,7 @@ window.AGDD = {
 <script src="static/ide.js"></script>
 <script src="static/collab.js"></script>
 <script src="static/ux_canvas.js"></script>
+<script src="static/multi_agent.js"></script>
 <script>
 if (GATEWAY) {
   $("#token").style.display = $("#user").style.display = $("#save").style.display = "none";

@@ -199,11 +199,20 @@ class VmShell:
         raw = content.encode() if isinstance(content, str) else content
         b64 = base64.b64encode(raw).decode()
         tmp = f"{self.tmp}/{uuid.uuid4().hex}.b64"
-        self.run(f": > {tmp}", timeout=30)
-        for i in range(0, len(b64), 4000):
-            self.run(f"printf %s '{b64[i:i + 4000]}' >> {tmp}", timeout=30)
-        self.run(f"mkdir -p \"$(dirname {sh_quote(path)})\" && base64 -d {tmp} > {sh_quote(path)} && rm -f {tmp}",
-                 timeout=30, check=True)
+        self.run(f": > {tmp}", timeout=30, check=True)
+        try:
+            for i in range(0, len(b64), 4000):
+                self.run(f"printf %s '{b64[i:i + 4000]}' >> {tmp}", timeout=30, check=True)
+            self.run(
+                f"mkdir -p \"$(dirname {sh_quote(path)})\" && base64 -d {tmp} > {sh_quote(path)} "
+                f"&& test \"$(stat -c %s {sh_quote(path)})\" = \"{len(raw)}\" && rm -f {tmp} "
+                f"|| (rc=$?; rm -f {tmp} {sh_quote(path)}; exit $rc)",
+                timeout=30,
+                check=True,
+            )
+        except Exception:
+            self._send(f"rm -f {tmp}\n")
+            raise
 
     @_locked
     def read_file(self, path: str, max_bytes: int = 4 * 1024 * 1024) -> bytes:
@@ -254,7 +263,8 @@ class VmShell:
         text = self.read_file(out_file).decode(errors="replace")
         self._send(f"rm -f {out_file}\n")
         if check and code != 0:
-            raise RuntimeError_(f"command failed ({code}): {text[-800:]}")
+            detail = text[-800:].strip() or "empty output (check VM disk space / No space left on device)"
+            raise RuntimeError_(f"command failed ({code}): {detail}")
         return CommandResult(code, text)
 
     def run_inline(self, command: str, timeout: float = 120) -> CommandResult:

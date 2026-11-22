@@ -132,6 +132,30 @@ The override grants `agdd-api` and `worker` the same manager-socket access the S
 
 To test without real VMs, `tests/fake_runtime.py` emulates the manager's terminal protocol with local PTYs.
 
+## Multi-agent teams (canvas)
+
+Console tab **멀티 에이전트**: design a team as a node graph and run it. Engine: `agdd/multi_agent.py`
+(pure, unit tested); persistence + VM wiring: `agdd/multi_agent_service.py`; UI: `static/multi_agent.js`.
+
+- **Nodes**: `input` (the request), `data` (spec scope, UX 2D layout, repo files, notebook cells, collab
+  history, fixed text; resolved once at run start), `agent`, `output`.
+- **Agent settings**: role, default system prompt, input template (`{{auto}}`, `{{request}}`, `{{data}}`,
+  `{{agents}}`, `{{feedback}}`, `{{messages}}`, `{{blackboard}}`, `{{input:<id>}}`), accepted input kinds
+  (request/data/agent/feedback/message), wait-for-all vs. react-to-any, `think` (JSON answer) or `code`
+  (autonomous run in the repo), CLI/model/effort overrides, `max_runs`, who it may message.
+- **Edges**: `always`, `approve`, `revise`. A `revise` edge back to an earlier agent is a review loop; the
+  target gets the reviewer's output as feedback and runs again.
+- **Collaboration**: agents send direct messages to teammates (`messages` in think mode,
+  `<<TO:id>>…<</TO>>` in code mode). A message re-activates the recipient, so agents ask and answer each other.
+  Runs are bounded by per-agent `max_runs` and the team's `max_steps`.
+- **Execution**: a background thread in agdd-api. Each agent gets its own VM PTY (`agdd-ma-<id>`), so
+  independent agents run in parallel (`parallelism`); code-mode agents share the repo and run one at a time.
+  Without a VM, think agents use the LLM gateway and code agents fail with a clear error. A run left
+  `RUNNING` by an API restart is marked `FAILED` when it is next read.
+- **API**: `GET/POST /workspaces/{ws}/teams`, `POST …/teams/validate`, `DELETE …/teams/{id}`,
+  `POST/GET …/team-runs`, `GET …/team-runs/{id}?after=<seq>` (events), `POST …/team-runs/{id}/cancel`.
+- **Tables**: `agent_teams`, `agent_team_runs`, `agent_team_events`.
+
 ## Provider notes (EXAONE)
 
 - The provider allows 1 request per second. The gateway serializes upstream calls and retries 429 responses (`UPSTREAM_MIN_INTERVAL`, `UPSTREAM_MAX_RETRIES`).

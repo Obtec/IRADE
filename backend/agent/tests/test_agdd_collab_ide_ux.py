@@ -526,9 +526,12 @@ def test_http_ide_cells_specs_ux_and_collab(tmp_path, monkeypatch):
         base = f"http://127.0.0.1:{srv.server_port}"
         try:
             # Static assets
-            for asset in ("ide.js", "collab.js", "ux_canvas.js"):
+            for asset, expected_ctype in (("ide.js", "javascript"), ("collab.js", "javascript"), ("ux_canvas.js", "javascript"), ("ux_canvas.css", "text/css")):
                 code, ctype, txt = _http_req(base, "GET", f"/static/{asset}")
-                assert code == 200 and "javascript" in ctype and len(txt) > 100
+                assert code == 200 and expected_ctype in ctype and len(txt) > 100
+            code, ctype, html = _http_req(base, "GET", "/console")
+            assert code == 200 and "text/html" in ctype
+            assert "static/ux_canvas.css" in html and "static/ux_canvas.js" in html
 
             # Editable IDE + real-file Cells sync
             code, _, res = _http_req(base, "POST", f"/workspaces/{ws}/ide/repos", {"repo": "workspace"})
@@ -635,6 +638,10 @@ def test_http_ide_cells_specs_ux_and_collab(tmp_path, monkeypatch):
                         "config": {
                             "layout": {"x": 40, "y": 40, "z": 1},
                             "size": {"w": 600, "h": 160},
+                            "variant": "split",
+                            "tokens": {"accent": "#2563eb", "radius": 14, "bg": ""},
+                            "spacing": {"padding": 16, "gap": 12},
+                            "visibility": "visible",
                             "props": {"kind": "hero", "label": "Hero", "connects_to": ["#card"]},
                         },
                     },
@@ -643,6 +650,8 @@ def test_http_ide_cells_specs_ux_and_collab(tmp_path, monkeypatch):
                         "config": {
                             "layout": {"x": 40, "y": 240, "z": 2},
                             "size": {"w": 600, "h": 220},
+                            "variant": "metric",
+                            "tokens": {"accent": "#2f5d50", "radius": 12, "bg": ""},
                             "props": {"kind": "card", "label": "Card"},
                         },
                     },
@@ -655,6 +664,10 @@ def test_http_ide_cells_specs_ux_and_collab(tmp_path, monkeypatch):
 
             code, _, full_ux = _http_req(base, "GET", f"/workspaces/{ws}/ux/home?full=1")
             assert code == 200 and full_ux["summary"]["locked_selectors"] == ["#hero"]
+            by_sel = {e["selector"]: e for e in full_ux["summary"]["elements"]}
+            assert by_sel["#hero"]["variant"] == "split"
+            assert by_sel["#hero"]["tokens"]["accent"] == "#2563eb"
+            assert by_sel["#card"]["variant"] == "metric"
         finally:
             srv.shutdown()
             srv.server_close()
@@ -764,3 +777,87 @@ def test_2d_spatial_summary_worker_dev_pause_verify_exit5_and_audit_lock(tmp_pat
             assert "#nav" in out_aud["feedback"]
         finally:
             v.shell.close()
+
+
+def test_vm_service_shell_and_canvas_for_no_deadlock(monkeypatch):
+    ws = str(uuid.uuid4())
+    vm_service._shells.clear()
+    vm_service._canvas_cache.clear()
+
+    class _VmPg:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def commit(self):
+            return None
+
+        def execute(self, sql, params=()):
+            if "SELECT canvas_id FROM workspace_vms" in sql:
+                return _Cursor([{"canvas_id": 4242}])
+            return _Cursor()
+
+    monkeypatch.setattr(infra, "pg", lambda readonly=False: _VmPg())
+
+    result: dict = {}
+    errors: list[BaseException] = []
+
+    def _run():
+        try:
+            sh1 = vm_service.shell(ws, "agdd-ide")
+            cid = vm_service.canvas_for(ws)
+            sh2 = vm_service.shell(ws, "agdd-ide")
+            result.update({"sh1": sh1, "sh2": sh2, "cid": cid})
+        except BaseException as exc:
+            errors.append(exc)
+
+    try:
+        th = threading.Thread(target=_run, daemon=True)
+        th.start()
+        th.join(timeout=3.0)
+        assert not th.is_alive(), "vm_service.shell() deadlocked while resolving canvas_for()"
+        assert not errors, f"unexpected error: {errors[0]!r}"
+        assert result["cid"] == 4242
+        assert result["sh1"].canvas_id == 4242
+        assert result["sh1"] is result["sh2"]
+    finally:
+        vm_service._shells.clear()
+        vm_service._canvas_cache.clear()
+
+
+def test_vm_service_maybe_expand_disk_and_idempotence(monkeypatch):
+    ws = str(uuid.uuid4())
+    vm_service._shells.clear()
+    vm_service._canvas_cache.clear()
+    vm_service._expanded_cids.clear()
+
+    monkeypatch.setattr(vm_service, "canvas_for", lambda w: 9901)
+    set_calls = []
+
+    class _FakeRC:
+        def settings(self, cid):
+            return {"revision": 3, "diskGiB": 6, "diskSizesGiB": [6, 12, 24]}
+
+        def set_disk(self, cid, size_gib, revision):
+            set_calls.append((cid, size_gib, revision))
+            return {"ok": True, "revision": revision + 1}
+
+    monkeypatch.setattr(vm_service, "RuntimeClient", _FakeRC)
+    cached = vm.VmShell(vm.RuntimeClient(), 9901, "agdd-ide")
+    cached.opened = True
+    vm_service._shells[(ws, "agdd-ide")] = cached
+
+    try:
+        assert vm_service.maybe_expand_disk(ws) is True
+        assert set_calls == [(9901, 12, 3)]
+        assert (ws, "agdd-ide") not in vm_service._shells
+        assert cached.opened is False
+        # Idempotent once expanded
+        assert vm_service.maybe_expand_disk(ws) is False
+        assert len(set_calls) == 1
+    finally:
+        vm_service._shells.clear()
+        vm_service._canvas_cache.clear()
+        vm_service._expanded_cids.clear()

@@ -16,8 +16,10 @@ from dataclasses import dataclass, field
 from .vm import VmShell, sh_quote
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
-# The Agora guest image ships without curl/git; apt goes through the guest's unprivileged package bridge.
-PREREQ = "(command -v curl >/dev/null && command -v git >/dev/null || apt install -y curl git ca-certificates) && "
+# The Agora guest image ships without curl/git and with empty apt lists, so `apt update` must run before
+# install (otherwise "Unable to locate package curl"); apt goes through the guest's unprivileged package bridge.
+PREREQ = ("{ command -v curl >/dev/null && command -v git >/dev/null; } || "
+          "{ apt update -q && apt install -y -q curl git ca-certificates; } && ")
 
 
 @dataclass

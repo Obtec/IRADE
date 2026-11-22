@@ -8,7 +8,7 @@ import os
 import re
 import threading
 
-from . import infra, pgstore, ux_workbench, vm_service
+from . import infra, pgstore, ux_workbench, vm, vm_service
 from .spec_engine import DDL
 
 _VM_SCRIPTS_READY: set[tuple] = set()
@@ -186,16 +186,16 @@ os.makedirs(cells_dir, exist_ok=True)
 
 def ensure_git_repo(d):
     os.makedirs(d, exist_ok=True)
-    if not os.path.isdir(os.path.join(d, ".git")):
+    gi = os.path.join(d, ".gitignore")
+    if not os.path.exists(gi):
+        with open(gi, "w", encoding="utf-8") as f:
+            f.write(".agdd/\n__pycache__/\n.pytest_cache/\nnode_modules/\n")
+    readme = os.path.join(d, "README.md")
+    if not os.path.exists(readme):
+        with open(readme, "w", encoding="utf-8") as f:
+            f.write("# IRADE Workspace\n\nWorkspace cells live under `cells/` and `/workspace/cells`.\n")
+    if shutil.which("git") and not os.path.isdir(os.path.join(d, ".git")):
         subprocess.run(["git", "-C", d, "init", "-q"], check=False)
-        gi = os.path.join(d, ".gitignore")
-        if not os.path.exists(gi):
-            with open(gi, "w", encoding="utf-8") as f:
-                f.write(".agdd/\n__pycache__/\n.pytest_cache/\nnode_modules/\n")
-        readme = os.path.join(d, "README.md")
-        if not os.path.exists(readme):
-            with open(readme, "w", encoding="utf-8") as f:
-                f.write("# IRADE Workspace\n\nWorkspace cells live under `cells/` and `/workspace/cells`.\n")
         subprocess.run(["git", "-C", d, "add", "."], check=False)
         subprocess.run(
             ["git", "-C", d, "-c", "user.name=agdd", "-c", "user.email=agdd@localhost", "commit", "-qm", "init workspace"],
@@ -340,7 +340,7 @@ print(json.dumps({"ok": True, "db_path": db_path, "repo_dir": repo_dir, "cells_d
 '''
 
 VM_CELLS_SCRIPT = r'''
-import base64, hashlib, json, os, re, sqlite3, subprocess, sys
+import base64, hashlib, json, os, re, shutil, sqlite3, subprocess, sys
 
 a = json.loads(base64.b64decode(sys.argv[1]))
 home = a.get("home") or os.environ.get("HOME", "/workspace")
@@ -348,12 +348,12 @@ ws_repo = os.path.join(home, "repos", "workspace")
 cells_dir = os.path.join(ws_repo, "cells")
 os.makedirs(cells_dir, exist_ok=True)
 
-if not os.path.isdir(os.path.join(ws_repo, ".git")):
+gi = os.path.join(ws_repo, ".gitignore")
+if not os.path.exists(gi):
+    with open(gi, "w", encoding="utf-8") as f:
+        f.write(".agdd/\n__pycache__/\n.pytest_cache/\nnode_modules/\n")
+if shutil.which("git") and not os.path.isdir(os.path.join(ws_repo, ".git")):
     subprocess.run(["git", "-C", ws_repo, "init", "-q"], check=False)
-    gi = os.path.join(ws_repo, ".gitignore")
-    if not os.path.exists(gi):
-        with open(gi, "w", encoding="utf-8") as f:
-            f.write(".agdd/\n__pycache__/\n.pytest_cache/\nnode_modules/\n")
     subprocess.run(["git", "-C", ws_repo, "add", "."], check=False)
     subprocess.run(["git", "-C", ws_repo, "-c", "user.name=agdd", "-c", "user.email=agdd@localhost", "commit", "-qm", "init workspace"], check=False)
 
@@ -525,27 +525,45 @@ def _ensure_script(shell, kind: str, path: str, content: str, h: str) -> None:
     key = (shell.canvas_id, shell.home, kind, h)
     if key in _VM_SCRIPTS_READY:
         return
-    shell.run(f"mkdir -p {shell.home}/.agdd {shell.home}/.local/bin", timeout=30)
+    shell.run(f"mkdir -p {shell.home}/.agdd {shell.home}/.local/bin", timeout=30, check=True)
     shell.put_file(path, content)
     if kind == "cli":
-        shell.run(f"chmod 0755 {path}", timeout=30)
+        shell.run(f"chmod 0755 {path}", timeout=30, check=True)
     _VM_SCRIPTS_READY.add(key)
 
 
-def _run_vm_script(shell, kind: str, script_body: str, h: str, payload: dict, timeout: int = 120) -> dict:
-    script_path = f"{shell.home}/.agdd/{kind}-{h}.py"
-    _ensure_script(shell, kind, script_path, script_body, h)
-    _ensure_script(shell, "cli", f"{shell.home}/.local/bin/agdd-spec", AGDD_SPEC_CLI, _CLI_HASH)
-    arg = base64.b64encode(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")).decode("ascii")
-    r = shell.run_inline(f"python3 {script_path} {arg}", timeout=timeout)
-    if r.exit_code != 0 and "No such file" in r.output:
-        _VM_SCRIPTS_READY.discard((shell.canvas_id, shell.home, kind, h))
-        _ensure_script(shell, kind, script_path, script_body, h)
-        r = shell.run_inline(f"python3 {script_path} {arg}", timeout=timeout)
-    if r.exit_code != 0:
-        raise RuntimeError(r.output.strip()[-800:] or f"vm_sync {kind} failed")
-    lines = [ln for ln in r.output.strip().splitlines() if ln.strip()]
-    return json.loads(lines[-1]) if lines else {"ok": True}
+def _run_vm_script(shell, kind: str, script_body: str, h: str, payload: dict, timeout: int = 120,
+                   workspace_id=None, can_expand: bool = False) -> dict:
+    last_err = None
+    sh = shell
+    for attempt in range(2):
+        script_path = f"{sh.home}/.agdd/{kind}-{h}.py"
+        try:
+            _ensure_script(sh, kind, script_path, script_body, h)
+            _ensure_script(sh, "cli", f"{sh.home}/.local/bin/agdd-spec", AGDD_SPEC_CLI, _CLI_HASH)
+            arg = base64.b64encode(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")).decode("ascii")
+            r = sh.run_inline(f"python3 {script_path} {arg}", timeout=timeout)
+            if r.exit_code != 0 and ("No such file" in r.output or "can't open file" in r.output):
+                _VM_SCRIPTS_READY.discard((sh.canvas_id, sh.home, kind, h))
+                _ensure_script(sh, kind, script_path, script_body, h)
+                r = sh.run_inline(f"python3 {script_path} {arg}", timeout=timeout)
+            if r.exit_code != 0:
+                _VM_SCRIPTS_READY.discard((sh.canvas_id, sh.home, kind, h))
+                raise vm.RuntimeError_(r.output.strip()[-800:] or f"vm_sync {kind} failed")
+            lines = [ln for ln in r.output.strip().splitlines() if ln.strip()]
+            if not lines:
+                _VM_SCRIPTS_READY.discard((sh.canvas_id, sh.home, kind, h))
+                raise vm.RuntimeError_(f"vm_sync {kind} returned empty output")
+            return json.loads(lines[-1])
+        except Exception as exc:
+            _VM_SCRIPTS_READY.discard((sh.canvas_id, sh.home, kind, h))
+            _VM_SCRIPTS_READY.discard((sh.canvas_id, sh.home, "cli", _CLI_HASH))
+            last_err = exc if not isinstance(exc, json.JSONDecodeError) else vm.RuntimeError_(f"vm_sync {kind} invalid output")
+            if attempt == 0 and can_expand and workspace_id is not None and vm_service.maybe_expand_disk(workspace_id):
+                sh = vm_service.shell(workspace_id, "agdd-ide")
+                continue
+            raise last_err
+    raise last_err  # pragma: no cover
 
 
 def sync_workspace_context(workspace_id, repo_key: str | None = None, shell=None) -> dict:
@@ -588,7 +606,10 @@ def sync_workspace_context(workspace_id, repo_key: str | None = None, shell=None
         "tuning": tuning,
         "repo_key": rk,
     }
-    return _run_vm_script(sh, "vm-sync", VM_SYNC_SCRIPT, _SYNC_HASH, payload, timeout=120)
+    return _run_vm_script(
+        sh, "vm-sync", VM_SYNC_SCRIPT, _SYNC_HASH, payload, timeout=120,
+        workspace_id=workspace_id, can_expand=(shell is None),
+    )
 
 
 def sync_workspace_context_async(workspace_id, delay: float = 0.35) -> None:
@@ -635,6 +656,8 @@ def sync_cells(workspace_id, cells: list[dict], delete_missing: bool = True, for
         _CELLS_HASH,
         {"home": sh.home, "op": "sync", "cells": sanitized, "delete_missing": delete_missing, "force": force},
         timeout=120,
+        workspace_id=workspace_id,
+        can_expand=(shell is None),
     )
 
 
@@ -647,6 +670,8 @@ def read_cells(workspace_id, shell=None) -> dict:
         _CELLS_HASH,
         {"home": sh.home, "op": "read"},
         timeout=120,
+        workspace_id=workspace_id,
+        can_expand=(shell is None),
     )
 
 

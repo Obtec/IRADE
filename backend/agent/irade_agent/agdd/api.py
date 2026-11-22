@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from psycopg.types.json import Jsonb
 
-from . import spec_store, ux_workbench, vm_service, vm_sync
+from . import multi_agent_service, spec_store, ux_workbench, vm_service, vm_sync
 from . import infra, orchestrator, pgstore, preflight, router, ws_terminal
 from .spec_engine import TABLES
 from .ux_workbench import LockedOverrideError, Workbench
@@ -239,7 +239,12 @@ import base64, json, os, shutil, subprocess, sys
 a = json.loads(base64.b64decode(sys.argv[1]))
 HOME = a.get("home") or os.environ.get("HOME", "/workspace")
 ROOT = os.path.join(HOME, "repos")
+HAS_GIT = bool(shutil.which("git"))
+def has_git_repo(d):
+    return HAS_GIT and os.path.isdir(os.path.join(d, ".git"))
 def git(repo, *args, check=False):
+    if not HAS_GIT:
+        return ""
     r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, errors="replace")
     if check and r.returncode: raise SystemExit(r.stderr[-500:])
     return r.stdout if r.returncode == 0 else ""
@@ -258,14 +263,14 @@ def safe_path(repo, rel):
     return norm.replace("\\", "/"), full
 def ensure_repo(d):
     os.makedirs(d, exist_ok=True)
-    if not os.path.isdir(os.path.join(d, ".git")):
+    gi = os.path.join(d, ".gitignore")
+    if not os.path.exists(gi):
+        open(gi, "w", encoding="utf-8").write(".agdd/\n__pycache__/\n.pytest_cache/\nnode_modules/\n")
+    readme = os.path.join(d, "README.md")
+    if not os.path.exists(readme):
+        open(readme, "w", encoding="utf-8").write("# Workspace Repository\n")
+    if HAS_GIT and not os.path.isdir(os.path.join(d, ".git")):
         subprocess.run(["git", "-C", d, "init", "-q"], check=True)
-        gi = os.path.join(d, ".gitignore")
-        if not os.path.exists(gi):
-            open(gi, "w", encoding="utf-8").write(".agdd/\n__pycache__/\n.pytest_cache/\nnode_modules/\n")
-        readme = os.path.join(d, "README.md")
-        if not os.path.exists(readme):
-            open(readme, "w", encoding="utf-8").write("# Workspace Repository\n")
         subprocess.run(["git", "-C", d, "add", "."], check=False)
         subprocess.run(["git", "-C", d, "-c", "user.name=agdd", "-c", "user.email=agdd@localhost", "commit", "-qm", "init"], check=False)
 
@@ -273,42 +278,67 @@ op = a["op"]
 if op == "repos":
     out = []
     for n in sorted(os.listdir(ROOT)) if os.path.isdir(ROOT) else []:
+        if n.startswith("."):
+            continue
         d = os.path.join(ROOT, n)
-        if os.path.isdir(os.path.join(d, ".git")):
-            out.append({"repo": n, "branch": git(d, "rev-parse", "--abbrev-ref", "HEAD").strip(),
-                        "dirty": bool(git(d, "status", "--porcelain").strip())})
+        if os.path.isdir(d):
+            if has_git_repo(d):
+                out.append({"repo": n, "branch": git(d, "rev-parse", "--abbrev-ref", "HEAD").strip() or "main",
+                            "dirty": bool(git(d, "status", "--porcelain").strip())})
+            else:
+                out.append({"repo": n, "branch": "local", "dirty": False})
     print(json.dumps(out)); raise SystemExit
 repo = os.path.join(ROOT, a["repo"])
 if op == "init_repo":
     ensure_repo(repo)
-    print(json.dumps({"repo": a["repo"], "branch": git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip(), "dirty": False}))
+    br = git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip() if has_git_repo(repo) else "local"
+    print(json.dumps({"repo": a["repo"], "branch": br or "main", "dirty": False}))
     raise SystemExit
-if not os.path.isdir(os.path.join(repo, ".git")): raise SystemExit("repo not found")
+if not os.path.isdir(repo): raise SystemExit("repo not found")
 if op == "tree":
-    files = [f for f in git(repo, "ls-files", "-co", "--exclude-standard").splitlines() if f][:5000]
-    status = {}
-    for line in git(repo, "status", "--porcelain", "-uall").splitlines():
-        status[line[3:].split(" -> ")[-1]] = line[:2].strip() or "M"
-    dirs = sorted({os.path.dirname(f) for f in files if "/" in f})
-    for rdir, dnames, _ in os.walk(repo):
-        dnames[:] = [d for d in dnames if d not in (".git", ".agdd", "__pycache__", "node_modules", ".pytest_cache")]
-        for d in dnames:
-            rel = os.path.relpath(os.path.join(rdir, d), repo).replace(os.sep, "/")
-            if rel != ".":
-                dirs.append(rel)
-    log = []
-    for line in git(repo, "log", "-n", "40", "--date=iso-strict", "--pretty=format:%H%x1f%an%x1f%ad%x1f%s").splitlines():
-        h, an, ad, s = (line.split("\x1f") + ["", "", "", ""])[:4]
-        log.append({"sha": h, "author": an, "date": ad, "subject": s})
-    print(json.dumps({"files": sorted(set(files) | set(k for k, v in status.items() if v != "D")),
-                      "dirs": sorted(set(dirs)), "status": status, "log": log}))
+    if has_git_repo(repo):
+        files = [f for f in git(repo, "ls-files", "-co", "--exclude-standard").splitlines() if f][:5000]
+        status = {}
+        for line in git(repo, "status", "--porcelain", "-uall").splitlines():
+            status[line[3:].split(" -> ")[-1]] = line[:2].strip() or "M"
+        dirs = sorted({os.path.dirname(f) for f in files if "/" in f})
+        for rdir, dnames, _ in os.walk(repo):
+            dnames[:] = [d for d in dnames if d not in (".git", ".agdd", "__pycache__", "node_modules", ".pytest_cache")]
+            for d in dnames:
+                rel = os.path.relpath(os.path.join(rdir, d), repo).replace(os.sep, "/")
+                if rel != ".":
+                    dirs.append(rel)
+        log = []
+        for line in git(repo, "log", "-n", "40", "--date=iso-strict", "--pretty=format:%H%x1f%an%x1f%ad%x1f%s").splitlines():
+            h, an, ad, s = (line.split("\x1f") + ["", "", "", ""])[:4]
+            log.append({"sha": h, "author": an, "date": ad, "subject": s})
+        print(json.dumps({"files": sorted(set(files) | set(k for k, v in status.items() if v != "D")),
+                          "dirs": sorted(set(dirs)), "status": status, "log": log}))
+    else:
+        files, dirs = [], []
+        skip_dirs = {".git", ".agdd", "__pycache__", "node_modules", ".pytest_cache"}
+        for rdir, dnames, fnames in os.walk(repo):
+            dnames[:] = sorted(d for d in dnames if d not in skip_dirs)
+            for d in dnames:
+                rel_d = os.path.relpath(os.path.join(rdir, d), repo).replace(os.sep, "/")
+                if rel_d != ".":
+                    dirs.append(rel_d)
+            for fn in sorted(fnames):
+                files.append(os.path.relpath(os.path.join(rdir, fn), repo).replace(os.sep, "/"))
+                if len(files) >= 5000:
+                    break
+            if len(files) >= 5000:
+                break
+        print(json.dumps({"files": sorted(set(files)), "dirs": sorted(set(dirs)), "status": {}, "log": []}))
 elif op == "file":
     path, full = safe_path(repo, a["path"])
     def txt(b):
         return None if b is None or b"\0" in b[:8000] else b[:262_144].decode("utf-8", "replace")
     cur = open(full, "rb").read() if os.path.isfile(full) else None
-    r = subprocess.run(["git", "-C", repo, "show", "HEAD:" + path], capture_output=True)
-    head = r.stdout if r.returncode == 0 else None
+    head = None
+    if has_git_repo(repo):
+        r = subprocess.run(["git", "-C", repo, "show", "HEAD:" + path], capture_output=True)
+        head = r.stdout if r.returncode == 0 else None
     print(json.dumps({"path": path, "content": txt(cur), "head": txt(head), "exists": cur is not None,
                       "binary": (cur is not None and txt(cur) is None), "size": len(cur or b""), "truncated": len(cur or b"") > 262_144}))
 elif op == "write":
@@ -316,8 +346,10 @@ elif op == "write":
     os.makedirs(os.path.dirname(full), exist_ok=True)
     content = str(a.get("content") or "")
     open(full, "w", encoding="utf-8").write(content)
-    r = subprocess.run(["git", "-C", repo, "show", "HEAD:" + path], capture_output=True)
-    head = r.stdout.decode("utf-8", "replace") if r.returncode == 0 else None
+    head = None
+    if has_git_repo(repo):
+        r = subprocess.run(["git", "-C", repo, "show", "HEAD:" + path], capture_output=True)
+        head = r.stdout.decode("utf-8", "replace") if r.returncode == 0 else None
     print(json.dumps({"path": path, "size": len(content.encode("utf-8")), "head": head, "ok": True}))
 elif op == "delete":
     path, full = safe_path(repo, a["path"])
@@ -360,9 +392,10 @@ elif op == "run":
 elif op == "commit":
     sha = a["sha"]
     if not all(c in "0123456789abcdef" for c in sha) or not 7 <= len(sha) <= 40: raise SystemExit("bad sha")
-    print(json.dumps({"sha": sha, "patch": git(repo, "show", "--stat", "--patch", "--format=%H%n%an <%ae>%n%ad%n%n%B", sha)[:120_000]}))
+    patch = git(repo, "show", "--stat", "--patch", "--format=%H%n%an <%ae>%n%ad%n%n%B", sha)[:120_000] if has_git_repo(repo) else ""
+    print(json.dumps({"sha": sha, "patch": patch}))
 elif op == "diff":
-    print(json.dumps({"patch": git(repo, "diff", "HEAD")[:120_000]}))
+    print(json.dumps({"patch": git(repo, "diff", "HEAD")[:120_000] if has_git_repo(repo) else ""}))
 """
 _REPO_RX = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 _IDE_HASH = __import__("hashlib").sha256(IDE_SCRIPT.encode()).hexdigest()[:12]
@@ -373,21 +406,46 @@ def _ide(ws, **args):
     _require_vm()
     if "repo" in args and (not _REPO_RX.fullmatch(args["repo"]) or args["repo"] in (".", "..")):
         raise HttpError(400, "invalid repo")
-    sh = vm_service.shell(ws, "agdd-ide")
-    payload = {**args, "home": sh.home}
-    arg = base64.b64encode(json.dumps(payload).encode()).decode()
-    script = f"{sh.home}/.agdd/ide-{_IDE_HASH}.py"
-    ready_key = (sh.canvas_id, sh.home)
-    if ready_key not in _IDE_READY:
-        sh.run(f"mkdir -p {sh.home}/.agdd", timeout=30)
-        sh.put_file(script, IDE_SCRIPT)
-        _IDE_READY.add(ready_key)
-    r = sh.run_inline(f"python3 {script} {arg}", timeout=120)
-    if r.exit_code != 0 and "No such file" in r.output:
-        _IDE_READY.discard(ready_key)
-    if r.exit_code != 0:
-        raise HttpError(404 if "not found" in r.output else 400, r.output.strip()[-500:] or "ide error")
-    return json.loads(r.output.strip().splitlines()[-1])
+    from .vm import RuntimeError_
+
+    last_err = None
+    for attempt in range(2):
+        sh = vm_service.shell(ws, "agdd-ide")
+        payload = {**args, "home": sh.home}
+        arg = base64.b64encode(json.dumps(payload).encode()).decode()
+        script = f"{sh.home}/.agdd/ide-{_IDE_HASH}.py"
+        ready_key = (sh.canvas_id, sh.home)
+        raw_out = ""
+        try:
+            if ready_key not in _IDE_READY:
+                sh.run(f"mkdir -p {sh.home}/.agdd", timeout=30, check=True)
+                sh.put_file(script, IDE_SCRIPT)
+            r = sh.run_inline(f"python3 {script} {arg}", timeout=120)
+            if r.exit_code != 0 and ("No such file" in r.output or "can't open file" in r.output):
+                _IDE_READY.discard(ready_key)
+                sh.run(f"mkdir -p {sh.home}/.agdd", timeout=30, check=True)
+                sh.put_file(script, IDE_SCRIPT)
+                r = sh.run_inline(f"python3 {script} {arg}", timeout=120)
+            raw_out = r.output.strip()
+            if r.exit_code != 0:
+                _IDE_READY.discard(ready_key)
+                raise HttpError(404 if "not found" in r.output else 400, raw_out[-500:] or "ide error")
+            lines = [ln for ln in raw_out.splitlines() if ln.strip()]
+            if not lines:
+                _IDE_READY.discard(ready_key)
+                raise RuntimeError_("empty ide helper output (check VM disk space)")
+            data = json.loads(lines[-1])
+            _IDE_READY.add(ready_key)
+            return data
+        except (RuntimeError_, json.JSONDecodeError) as e:
+            _IDE_READY.discard(ready_key)
+            last_err = e
+            if attempt == 0 and vm_service.maybe_expand_disk(ws):
+                continue
+            if isinstance(e, json.JSONDecodeError):
+                raise HttpError(502, f"ide helper returned invalid output: {raw_out[-300:] or 'empty'}")
+            raise HttpError(502, str(e)[:600])
+    raise HttpError(502, str(last_err)[:600])
 
 
 @route("GET", r"/workspaces/(?P<ws>[^/]+)/ide/repos", "VIEWER")
@@ -1115,6 +1173,87 @@ def collab_clear(ctx, ws, body):
         pgstore.clear_collab_messages(c, ws)
         c.commit()
     return {"ok": True}
+
+
+# ---------------- Multi-agent teams (canvas orchestration) ----------------
+_UUID_RX = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _team_id(v):
+    if v in (None, ""):
+        return None
+    if not isinstance(v, str) or not _UUID_RX.fullmatch(v):
+        raise HttpError(422, "invalid team_id")
+    return v
+
+
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/teams", "VIEWER")
+def teams_list(ctx, ws, body):
+    from . import multi_agent
+    return {"teams": multi_agent_service.list_teams(ws), "presets": {p: multi_agent.preset(p) for p in multi_agent.PRESETS},
+            "vm_enabled": vm_service.enabled()}
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/teams/validate", "VIEWER")
+def teams_validate(ctx, ws, body):
+    try:
+        return {"ok": True, "graph": multi_agent_service.validate_team_graph((body or {}).get("graph") or {})}
+    except multi_agent_service.TeamGraphError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/teams", "EDITOR")
+def teams_save(ctx, ws, body):
+    try:
+        return multi_agent_service.save_team(ws, _team_id((body or {}).get("team_id")), (body or {}).get("name"),
+                                             (body or {}).get("graph") or {}, ctx["user"])
+    except multi_agent_service.TeamGraphError as e:
+        raise HttpError(422, str(e))
+    except LookupError as e:
+        raise HttpError(404, str(e))
+
+
+@route("DELETE", r"/workspaces/(?P<ws>[^/]+)/teams/(?P<team>[0-9a-f-]{36})", "EDITOR")
+def teams_delete(ctx, ws, body, team):
+    if not multi_agent_service.delete_team(ws, _team_id(team)):
+        raise HttpError(404, "team not found")
+    return {"ok": True}
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/team-runs", "EDITOR")
+def team_run_start(ctx, ws, body):
+    body = body or {}
+    request = str(body.get("request") or "").strip()[:12000]
+    try:
+        return multi_agent_service.start_run(ws, _team_id(body.get("team_id")), body.get("graph"), request, ctx["user"])
+    except multi_agent_service.TeamGraphError as e:
+        raise HttpError(422, str(e))
+    except LookupError as e:
+        raise HttpError(404, str(e))
+    except ValueError as e:  # invalid repo_key
+        raise HttpError(422, str(e))
+    except RuntimeError as e:
+        raise HttpError(409, str(e))
+
+
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/team-runs", "VIEWER")
+def team_runs_list(ctx, ws, body):
+    team = ((ctx.get("query") or {}).get("team_id") or [None])[0]
+    return {"runs": multi_agent_service.list_runs(ws, _team_id(team))}
+
+
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/team-runs/(?P<rid>[0-9a-f-]{36})", "VIEWER")
+def team_run_get(ctx, ws, body, rid):
+    after = ((ctx.get("query") or {}).get("after") or ["0"])[0]
+    run = multi_agent_service.get_run(ws, _team_id(rid), int(after) if str(after).isdigit() else 0)
+    if run is None:
+        raise HttpError(404, "team run not found")
+    return run
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/team-runs/(?P<rid>[0-9a-f-]{36})/cancel", "EDITOR")
+def team_run_cancel(ctx, ws, body, rid):
+    return {"ok": multi_agent_service.cancel_run(ws, _team_id(rid))}
 
 
 # ---------------- UX workbench ----------------
