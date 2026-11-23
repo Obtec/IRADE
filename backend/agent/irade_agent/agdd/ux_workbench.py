@@ -174,7 +174,7 @@ def normalize_ux_request(obj: dict | None) -> dict | None:
 
 
 def parse_ux_request(text: str) -> dict | None:
-    """Extract the latest ``<<AGDD_UX_REQUEST:{...}>>`` marker from CLI/model output."""
+    """Extract the latest ``<<AGDD_UX_REQUEST:{...}>>`` marker from agent/model output."""
     matches = UX_REQ_RX.findall(text or "")
     for raw in reversed(matches):
         try:

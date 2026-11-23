@@ -233,9 +233,13 @@ def escalate(ctx: Ctx, verdict: watchdog.Verdict) -> dict:
             log(ctx.run["run_id"], f"research failed: {e!r}")
             return {}
     if verdict.escalate_to == "ADVISOR" and getattr(ctx, "vmx", None):
-        v = ctx.vmx  # advisor = same CLI at the highest effort, structured 400~700-token guidance
-        v.agent.s.cheap_effort = "max"
-        out = v.llm("advise")("상위 Advisor입니다. 400~700토큰 이내 구체적 수정 지침만 주세요.\n" + json.dumps(
+        import dataclasses
+
+        from .api_agents import ApiAgent
+        v = ctx.vmx  # advisor = gateway "advisor" model at the highest effort, structured 400~700-token guidance
+        adv = ApiAgent(None, dataclasses.replace(v.agent.s, cheap_model="advisor", cheap_effort="max"),
+                       ctx.ws, ctx.run["run_id"], ctx.node["name"])
+        out = adv.cheap_llm(task="advise")("상위 Advisor입니다. 400~700토큰 이내 구체적 수정 지침만 주세요.\n" + json.dumps(
             {"verdict": verdict.reason, "feedback": ctx.handoff.get("feedback", "")[-4000:],
              "patch": ctx.handoff.get("last_patch", "")[-6000:]}, ensure_ascii=False),
             {"type": "object", "properties": {"advice": {"type": "string"}}, "required": ["advice"]})
@@ -274,7 +278,7 @@ def process(job: dict, wdb: WorkerDB) -> None:
 
     vmx = None
     try:
-        if ctx.handoff.get("engine") == "vm-cli":  # every step runs inside the workspace VM via the chosen CLI
+        if ctx.handoff.get("engine") in ("vm", "vm-cli"):  # repo work in the workspace VM, models via the gateway API
             from . import worker_vm
             vmx = worker_vm.VmCtx(ctx)
             ok, patch = worker_vm.handlers(lambda m: log(run["run_id"], m))[ctx.node["kind"]](ctx, vmx)
@@ -400,7 +404,7 @@ def process(job: dict, wdb: WorkerDB) -> None:
         pass
     log(run["run_id"], f"-> {status} {current} ok={ok}")
     if vmx is not None:
-        vmx.shell.close()  # free the guest PTY slot (max 8 per VM); per-run sessions live in the CLI, not the PTY
+        vmx.shell.close()  # free the guest PTY slot (max 8 per VM); per-run agent sessions live in ~/.agdd/sessions, not the PTY
     if status in ("SUCCEEDED", "ESCALATED", "FAILED"):  # run finished: drop its local SQLite
         path = wdb.db.execute("PRAGMA database_list").fetchone()[2]
         wdb.db.close()

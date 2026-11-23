@@ -255,7 +255,7 @@
     const kind = type === "mock" ? "agent" : type;
     const id = newId(type);
     const n = { id, kind, label: { input: "요청", data: "데이터", agent: `에이전트 ${id.split("_")[1]}`, output: "결과" }[kind], x: x ?? 80, y: y ?? 80 };
-    if (kind === "agent") Object.assign(n, { role: "", system_prompt: "", prompt_template: "", accepts: ACCEPTS.map(a => a[0]), modalities: MODALITIES.map(m => m[0]), input_mode: "all", mode: "think", cli: "", model: "", effort: "", max_runs: 3, can_message: "*", blackboard: false, output_key: "", guardrail: false });
+    if (kind === "agent") Object.assign(n, { role: "", system_prompt: "", prompt_template: "", accepts: ACCEPTS.map(a => a[0]), modalities: MODALITIES.map(m => m[0]), input_mode: "all", mode: "think", model: "", effort: "", max_runs: 3, can_message: "*", blackboard: false, output_key: "", guardrail: false });
     if (type === "mock") Object.assign(n, { mode: "mock", label: `모의 에이전트 ${id.split("_")[1]}` });
     if (kind === "data") Object.assign(n, { source: "files", params: { attachments: [], note: "" } });
     if (kind === "input") Object.assign(n, { default_request: "", attachments: [] });
@@ -302,7 +302,7 @@
       const mods = n.modalities || MODALITIES.map(m => m[0]);
       const media = mods.length === MODALITIES.length ? "모든 미디어" : mods.length ? mods.map(m => MOD_ICON[m]).join("") : "미디어 없음";
       const worker = MA.graph.edges.some(e => e.to === n.id && e.when === "spawn"), orch = MA.graph.edges.some(e => e.from === n.id && e.when === "spawn");
-      const execution = n.mode === "mock" ? ["모의 응답"] : [n.mode === "code" ? "💻 code" : "💭 think", n.cli || "기본 CLI", n.model];
+      const execution = n.mode === "mock" ? ["모의 응답"] : [n.mode === "code" ? "💻 code" : "💭 think", n.model || "기본 모델"];
       const chips = [...execution, media, n.input_mode === "any" ? "any" : null,
         n.guardrail ? "🛡 가드레일" : null, n.output_key ? `state.${n.output_key}` : null, orch ? "오케스트레이터" : null, worker ? "워커" : null].filter(Boolean);
       return `${esc(n.role || "역할 미지정")}<div class="chips">${chips.map(c => `<span class="chip">${esc(c)}</span>`).join("")}</div>`;
@@ -492,11 +492,10 @@
           <label class="fld"><span>실행 순서별 모의 응답 (JSON 배열)</span><textarea id="ma-a-mock" rows="5" class="mono">${esc(typeof n.mock_responses === "string" ? n.mock_responses : JSON.stringify(n.mock_responses ?? [{ content: `${n.label} 모의 응답` }], null, 2))}</textarea></label>
           <div class="ma-hint">응답 객체에 <code>content</code>를 입력하세요. <code>verdict</code>, <code>messages</code>, <code>handoff</code>, <code>tasks</code>, <code>tripwire</code>도 설정할 수 있습니다. 배열을 모두 사용하면 마지막 응답을 반복합니다.</div>` : ""}
           ${n.mode !== "mock" ? `<div class="row">
-            <label class="fld" style="flex:1"><span>CLI</span><select id="ma-a-cli">${opt("", n.cli, "워크스페이스 기본")}${["claude", "codex", "agy"].map(c => opt(c, n.cli)).join("")}</select></label>
             <label class="fld" style="flex:1"><span>노력</span><select id="ma-a-eff">${opt("", n.effort, "기본")}${["low", "medium", "high", "xhigh", "max"].map(c => opt(c, n.effort)).join("")}</select></label>
           </div>` : ""}
           <div class="row">
-            ${n.mode !== "mock" ? `<label class="fld" style="flex:2"><span>모델 (비우면 기본)</span><input id="ma-a-model" class="mono" value="${esc(n.model || "")}" placeholder="opus / gpt-5.5 …"></label>` : ""}
+            ${n.mode !== "mock" ? `<label class="fld" style="flex:2"><span>모델 (비우면 기본)</span><input id="ma-a-model" class="mono" value="${esc(n.model || "")}" placeholder="cheap / mid / advisor 또는 모델명"></label>` : ""}
             <label class="fld" style="flex:1"><span>최대 실행</span><input id="ma-a-max" type="number" min="1" max="10" value="${n.max_runs ?? 3}"></label>
           </div>
           <div class="fld"><span>직접 메시지를 보낼 수 있는 동료</span><div class="ma-checks">
@@ -549,7 +548,6 @@
             n.mock_responses = t.value;
           }
         }, "oninput");
-        bind("#ma-a-cli", t => { n.cli = t.value; draw(); });
         bind("#ma-a-eff", t => { n.effort = t.value; });
         bind("#ma-a-model", t => { n.model = t.value.trim(); draw(); });
         bind("#ma-a-max", t => { n.max_runs = Math.max(1, Math.min(10, parseInt(t.value, 10) || 3)); });
@@ -660,7 +658,7 @@
 
   // ------------------------------------------------------------ agent monitor (one read-only VM PTY per agent)
   // Each agent call runs in its own automation PTY `agdd-ma-<node>` (orchestrator workers: `-t<index>`) and the
-  // CLI output is mirrored there, so the console can watch every agent live. A PTY is opened per call and closed
+  // agent's tool calls/output are mirrored there, so the console can watch every agent live. A PTY is opened per call and closed
   // afterwards; while the run is RUNNING a pane keeps re-attaching to the next session of the same name.
   const termOf = (id, idx) => (`agdd-ma-${id}` + (idx == null ? "" : `-t${idx}`)).slice(0, 64);
   const isWorker = id => MA.graph.edges.some(e => e.to === id && e.when === "spawn");
@@ -682,19 +680,19 @@
   function buildMonitor() {
     if (MA.mon) { MA.mon.stop(); MA.mon = null; }
     const host = $("#ma-mon"); if (!host) return;
-    if (!MA.vm) { host.innerHTML = `<div class="muted" style="font-size:12.5px">에이전트별 실시간 터미널은 워크스페이스 VM이 연결된 경우에만 사용할 수 있습니다 (CLI 에이전트가 VM PTY에서 실행됨).</div>`; return; }
+    if (!MA.vm) { host.innerHTML = `<div class="muted" style="font-size:12.5px">에이전트별 실시간 터미널은 워크스페이스 VM이 연결된 경우에만 사용할 수 있습니다 (에이전트의 도구 실행이 VM PTY에서 이루어짐).</div>`; return; }
     const agents = MA.graph.nodes.filter(n => n.kind === "agent").length;
     MA.mon = G.TermGrid(host, {
       storeKey: "agdd.ma.mon", layout: agents > 2 ? "4" : "2", closable: false, fontSize: 12,
       height: Math.max(360, Math.round(innerHeight * 0.55)),
       connect: () => runActive(), rearm: () => runActive(),
-      idleText: () => "팀이 실행되면 이 에이전트의 CLI 출력이 실시간으로 표시됩니다.",
+      idleText: () => "팀이 실행되면 이 에이전트의 도구 실행과 응답이 실시간으로 표시됩니다.",
       busy: p => paneStatus(p) === "running",
       meta: p => {
         const s = paneStatus(p), ns = p.index == null ? nodeState(p.node) : null, n = node(p.node);
         return `<span class="chip ${ST_CLS[s] || ""}" style="font-size:10.5px;padding:0 6px">${esc(ST_KO[s] || s)}</span>`
           + (ns?.runs ? `<span class="chip" style="font-size:10.5px;padding:0 6px">#${ns.runs}</span>` : "")
-          + (n ? `<span class="chip" style="font-size:10.5px;padding:0 6px">${esc(n.mode || "think")}${n.cli ? " · " + esc(n.cli) : ""}</span>` : "");
+          + (n ? `<span class="chip" style="font-size:10.5px;padding:0 6px">${esc(n.mode || "think")}${n.model ? " · " + esc(n.model) : ""}</span>` : "");
       },
       onActive: p => { if (p?.node && node(p.node)) { MA.sel = { type: "node", id: p.node }; draw(true); } },
       empty: "팀에 에이전트 노드가 없습니다.",
@@ -753,7 +751,7 @@
     MA.graph.edges.forEach((e, i) => { e.id = e.id || `e${i + 1}`; e.when = e.when || "always"; });
     MA.graph.nodes.forEach(n => {
       if (n.kind === "input") n.attachments = n.attachments || [];
-      if (n.kind === "agent") Object.assign(n, { modalities: n.modalities || MODALITIES.map(m => m[0]), output_key: n.output_key || "", guardrail: !!n.guardrail, accepts: n.accepts || ACCEPTS.map(a => a[0]), input_mode: n.input_mode || "all", mode: n.mode || "think", cli: n.cli || "", model: n.model || "", effort: n.effort || "", max_runs: n.max_runs ?? 3, can_message: n.can_message ?? "*", blackboard: !!n.blackboard, role: n.role || "", system_prompt: n.system_prompt || "", prompt_template: n.prompt_template || "" });
+      if (n.kind === "agent") Object.assign(n, { modalities: n.modalities || MODALITIES.map(m => m[0]), output_key: n.output_key || "", guardrail: !!n.guardrail, accepts: n.accepts || ACCEPTS.map(a => a[0]), input_mode: n.input_mode || "all", mode: n.mode || "think", model: n.model || "", effort: n.effort || "", max_runs: n.max_runs ?? 3, can_message: n.can_message ?? "*", blackboard: !!n.blackboard, role: n.role || "", system_prompt: n.system_prompt || "", prompt_template: n.prompt_template || "" });
       if (n.kind === "data") n.params = n.params || {};
     });
     MA.teamId = teamId || ""; MA.name = name || MA.name; MA.sel = null; MA.dirty = false; MA.fitPending = true;
@@ -787,7 +785,7 @@
       if (t) loadGraph(t.graph_json, t.team_id, t.name); else loadGraph(MA.presets.review_loop, "", "기획→구현→리뷰 팀");
     }
     G.V(`<div class="row" style="justify-content:space-between;margin-bottom:10px;gap:10px;flex-wrap:wrap">
-        <div><h2>멀티 에이전트 · 팀 캔버스</h2><p class="sub" style="margin:0">에이전트를 노드로 배치하고 데이터·프롬프트 흐름을 연결하면, 실제 CLI 에이전트들이 그 그래프대로 결과를 주고받고 메시지로 협업합니다.</p></div>
+        <div><h2>멀티 에이전트 · 팀 캔버스</h2><p class="sub" style="margin:0">에이전트를 노드로 배치하고 데이터·프롬프트 흐름을 연결하면, API 기반 에이전트들이 그 그래프대로 결과를 주고받고 메시지로 협업합니다.</p></div>
         <div class="row" style="flex-wrap:wrap">
           <select id="ma-team">${opt("", MA.teamId, "＋ 저장 안 된 팀")}${MA.teams.map(t => opt(t.team_id, MA.teamId, t.name)).join("")}</select>
           <input id="ma-name" value="${esc(MA.name)}" style="width:160px" placeholder="팀 이름">
@@ -827,7 +825,7 @@
         <div class="card" style="margin:0"><b>협업 타임라인</b> <span class="muted" style="font-size:12px">에이전트 작업·메시지·결과가 실시간으로 표시됩니다</span><div id="ma-feed" class="ma-feed" style="margin-top:8px"></div></div>
       </div>
       <div class="card" style="margin:12px 0 0"><div class="row" style="margin-bottom:6px"><b>에이전트 모니터</b> <span class="muted" style="font-size:12px" id="ma-mon-count"></span>
-        <span class="muted" style="font-size:12px">— 에이전트마다 VM 터미널(<span class="mono">agdd-ma-*</span>)의 CLI 출력을 읽기 전용으로 실시간 표시합니다. 패널을 누르면 캔버스에서 해당 노드가 선택됩니다.</span></div>
+        <span class="muted" style="font-size:12px">— 에이전트마다 VM 터미널(<span class="mono">agdd-ma-*</span>)의 도구 실행·응답을 읽기 전용으로 실시간 표시합니다. 패널을 누르면 캔버스에서 해당 노드가 선택됩니다.</span></div>
         <div id="ma-mon"></div></div>`);
 
     $("#ma-team").onchange = e => {

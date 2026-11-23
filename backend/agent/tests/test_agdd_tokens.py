@@ -1,6 +1,5 @@
-"""Token-saving strategies applied to the CLI/API agents (DOC.md §6)."""
-import json
-import stat
+"""Token-saving strategies applied to the API agents (DOC.md §6)."""
+import ast
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -9,12 +8,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fake_runtime import FakeRuntime
-from test_agdd_vm import STUB_CLAUDE
-import ast
-from irade_agent.agdd import budget, infra, semantic_cache
-from irade_agent.agdd.cli_agents import PROFILES, AgentSettings, VmAgent
-from irade_agent.agdd.vm import RuntimeClient, VmShell
+from fake_gateway import FakeGateway, reply, tool_call
+from irade_agent.agdd import api_agents, budget, gateway, infra, semantic_cache
+from irade_agent.agdd.api_agents import AgentSettings, ApiAgent
 
 
 class FakeValkey(dict):
@@ -29,66 +25,47 @@ def cache(monkeypatch):
     return kv
 
 
-@pytest.fixture
-def vm(tmp_path):
-    rt = FakeRuntime(str(tmp_path / "m.sock"), str(tmp_path / "vms"))
-    home = tmp_path / "vms" / "1900000001"
-    (home / ".local" / "bin").mkdir(parents=True)
-    stub = home / ".local" / "bin" / "claude"
-    stub.write_text(STUB_CLAUDE)
-    stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
-    sh = VmShell(RuntimeClient(str(tmp_path / "m.sock")), 1900000001, "agdd-tok", home=str(home))
-    yield sh, home
-    sh.close()
-    rt.stop()
-
-
-def calls(home):
-    return [json.loads(l) for l in (home / "claude-args.log").read_text().splitlines()]
-
-
-def test_structured_uses_cheap_default_no_tools_no_mcp_and_exact_cache(vm, cache):
-    sh, home = vm
-    agent = VmAgent(sh, AgentSettings(cli="claude", model="opus"))
+def test_structured_uses_cheap_model_without_tools_and_exact_cache(monkeypatch, cache):
+    gw = FakeGateway(structured={"ok": True})
+    monkeypatch.setattr(api_agents, "chat_completion", gw)
+    agent = ApiAgent(None, AgentSettings(model="advisor"), "ws-1")
     d1, r1 = agent.structured("same question", {"type": "object"})
     d2, r2 = agent.structured("same question", {"type": "object"})
-    assert d1 == d2 and r1.model == "haiku" and r2.model == "cache"
-    args = calls(home)
-    assert len(args) == 1, "identical structured question must not call the model twice"
-    a = args[0]
-    assert a[a.index("--model") + 1] == "haiku" and a[a.index("--tools") + 1] == ""
-    assert "--strict-mcp-config" in a and "--exclude-dynamic-system-prompt-sections" in a
+    assert d1 == d2 == {"ok": True} and r2.model == "cache"
+    assert len(gw.calls) == 1, "identical structured question must not call the model twice"
+    body = gw.calls[0][0]
+    assert body["model"] == "cheap" and "tools" not in body
     agent.structured("different question", {"type": "object"})
-    assert len(calls(home)) == 2
+    assert len(gw.calls) == 2
 
 
-def test_agent_mcp_allowlist_and_budget_fallback(vm, cache):
-    sh, home = vm
-    (home / "repo").mkdir()
-    agent = VmAgent(sh, AgentSettings(cli="claude", model="opus"), gate=lambda kind: "FALLBACK")
-    res = agent.agent("fix", str(home / "repo"), None, mcp=False)
-    a = calls(home)[-1]
-    assert res.model == "haiku" and a[a.index("--model") + 1] == "haiku" and "--strict-mcp-config" in a
-    agent.gate = lambda kind: "ALLOW"
-    res = agent.agent("fix", str(home / "repo"), None, mcp=True)
-    a = calls(home)[-1]
-    assert res.model == "opus" and "--strict-mcp-config" not in a
+def test_agent_tool_results_are_hard_capped(tmp_path, monkeypatch, cache):
+    class Shell:
+        home = str(tmp_path)
+        mirror = False
+
+        def run(self, cmd, timeout=600, **k):
+            from irade_agent.agdd.vm import CommandResult
+            return CommandResult(1, "Traceback\nerror: boom\n" + "x " * 40000)
+
+        def read_file(self, path, max_bytes=0):
+            raise FileNotFoundError(path)
+
+        def put_file(self, path, content):
+            pass
+
+    gw = FakeGateway([reply("", [tool_call("run_command", {"command": "pytest -q"})]),
+                      reply("", [tool_call("finish", {"summary": "s"})])])
+    monkeypatch.setattr(api_agents, "chat_completion", gw)
+    ApiAgent(Shell(), AgentSettings()).agent("t", "/r", None)
+    tool_msg = [m for m in gw.calls[1][0]["messages"] if m["role"] == "tool"][0]["content"]
+    assert tool_msg.startswith("EXIT 1") and gateway.estimate_tokens(tool_msg) <= gateway.HARD_CAP_TOKENS
 
 
-def test_budget_gate_thresholds_and_halt():
-    assert budget.cli_gate(Decimal("10"), Decimal("7.9")) == "ALLOW"
-    assert budget.cli_gate(Decimal("10"), Decimal("8")) == "FALLBACK"
-    with pytest.raises(budget.BudgetHalt):
-        budget.cli_gate(Decimal("10"), Decimal("10"))
-    with pytest.raises(budget.BudgetHalt):
-        budget.cli_gate(Decimal("0"), Decimal("0"))  # zero limit = no spending allowed
-
-
-def test_codex_disables_mcp_for_structured_and_when_not_allowed():
-    c = PROFILES["codex"]
-    assert "mcp_servers={}" in c.structured_cmd("/p", "/s", "gpt-5-mini", "low")
-    assert "mcp_servers={}" in c.agent_cmd("/p", "/r", "", "medium", None, "sandbox", mcp=False)
-    assert "mcp_servers" not in c.agent_cmd("/p", "/r", "", "medium", None, "sandbox", mcp=True)
+def test_budget_thresholds_and_halt():
+    assert budget.check_budget(Decimal("10"), Decimal("1"), Decimal("0.1"), "mid", "cheap").action == "ALLOW"
+    assert budget.check_budget(Decimal("10"), Decimal("8"), Decimal("0.1"), "mid", "cheap").model == "cheap"
+    assert budget.check_budget(Decimal("10"), Decimal("10"), Decimal("0.1"), "mid", "cheap").action == "HALT"
 
 
 def _const(name):

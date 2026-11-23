@@ -172,7 +172,7 @@ try {
   }
   await page.screenshot({ path: '.artifacts/studio-proof.png' });
 
-  // Verify mini-arcade games (Snake & Tetris) inside the bottom output dock.
+  // Verify mini-arcade games (Snake & Block Drop) inside the bottom output dock.
   await page.locator('[data-dock-tab="games"]').click();
   await page.locator('[data-arcade-stage]').waitFor();
   await page.locator('[data-arcade-toggle]').click();
@@ -180,14 +180,14 @@ try {
   await page.locator('[data-pad="down"]').click();
   await page.screenshot({ path: '.artifacts/studio-dock-snake.png' });
 
-  await page.locator('[data-arcade-game="tetris"]').click();
+  await page.locator('[data-arcade-game="blocks"]').click();
   await page.locator('[data-arcade-next]').waitFor();
   await page.locator('[data-arcade-toggle]').click();
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('Space');
   await page.waitForFunction(() => Number(document.querySelector('[data-arcade-score]')?.textContent || '0') > 0);
-  assert.ok((await page.locator('#bottom-dock-target').textContent())?.includes('테트리스'));
-  await page.screenshot({ path: '.artifacts/studio-dock-tetris.png' });
+  assert.ok((await page.locator('#bottom-dock-target').textContent())?.includes('블록 낙하'));
+  await page.screenshot({ path: '.artifacts/studio-dock-blocks.png' });
   await page.locator('[data-dock-tab="output"]').click();
   await page.locator('#bottom-dock-output').waitFor();
 
@@ -242,7 +242,7 @@ try {
   await page.locator('#bottom-panel-toggle').click();
   await page.waitForFunction(() => Number.parseFloat(getComputedStyle(document.querySelector('#bottom-panel-toggle .layout-pane-fill')).opacity) >= 0.99);
 
-  // Verify Antigravity-style right panel agent chat & Context/Activity tab switching on desktop.
+  // Verify right-panel agent chat & Context/Activity tab switching on desktop.
   await page.locator('#agent-drawer:not([hidden])').waitFor();
   await page.locator('.agent-dock-tabs [data-action="context"]').click();
   await page.locator('.inspector:not([hidden]) #inspector-content').waitFor();
@@ -251,7 +251,7 @@ try {
   await page.locator('#agent-prompt').fill('선택한 셀의 내용을 설명해 줘');
   await page.locator('#agent-prompt').press('Enter');
   await page.locator('#agent-thread .agent-msg.assistant .agent-markdown').first().waitFor();
-  await page.screenshot({ path: '.artifacts/studio-antigravity-right.png' });
+  await page.screenshot({ path: '.artifacts/studio-agent-right.png' });
 
   await page.locator('#account').click();
   await page.waitForURL('**/login**');

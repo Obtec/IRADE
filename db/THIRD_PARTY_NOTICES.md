@@ -4,7 +4,7 @@ The configuration/scripts in this repository are MIT licensed. Vendor database i
 
 | Component observed 2026-10-31 | Applicable review |
 | --- | --- |
-| SQL Server 2022 CU27, configured Express | Microsoft SQL Server license terms. Express is the selected edition; retain vendor terms and review any edition change. Developer edition is for non-production development/testing. |
+| SQL Server 2022 CU27, configured Express | Microsoft SQL Server license terms. Express is the selected single-node edition; retain vendor terms and review any edition change. Developer edition is for non-production development/testing. The optional AG cluster (`mssql/cluster`) uses Standard for its data replicas, which requires purchased per-core licenses; the cluster Compose file has no edition default. |
 | Redis 8.6.7 | Choose and comply with an offered license: RSALv2, SSPLv1 or AGPLv3. Do not label Redis 8 BSD-licensed. The current use is an internal application cache, not a public Redis database service. Reassess when packaging or exposing a database service. |
 | Elasticsearch 8.19.22 official image + analysis-nori | Official distribution terms and bundled LICENSE/NOTICE apply. Do not assume the official binary distribution is Apache-2.0 merely because some source files offer an open-source alternative. Review ELv2 restrictions before a managed Elasticsearch offering. |
 | Redis Insight 3.8.0 | Separate vendor license; review that image's included terms and digest before redistribution. |

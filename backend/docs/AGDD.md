@@ -62,22 +62,24 @@ cd backend/agent && python -m irade_agent.agdd.fetch_vendor   # -> irade_agent/a
 
 When a package is present, the API rewrites its CDN URLs in `console.html` to `static/vendor/<pkg>@<ver>/`; missing packages keep using the CDN. `AGDD_VENDOR_DIR` overrides the location. Build with `--build-arg AGDD_BUNDLE_VENDOR=0` to skip bundling.
 
-## Workspace VMs and CLI agents
+## Workspace VMs and API agents
 
-Each workspace gets its own Cloud Hypervisor VM from the Project Agora runtime ([hypervisor-for-agora](../../../hypervisor-for-agora/README.md)). With the `vm-cli` engine, every AGDD step runs inside that VM.
+Each workspace gets its own Cloud Hypervisor VM from the Project Agora runtime ([hypervisor-for-agora](../../../hypervisor-for-agora/README.md)). With the `vm` engine (the pre-API name `vm-cli` is still accepted), repositories, tests and the coding agent's tools run inside that VM, and every model call goes through the LLM Gateway with the server's API key.
 
 ### How AGDD drives the VM
 
 - AGDD talks to the root-owned runtime manager only through its existing socket protocol. The manager itself is not modified.
 - VM ids come from a reserved range, `AGDD_VM_ID_BASE` (default 1,900,000,000) plus a sequence. This keeps them apart from Agora canvas ids and the 2147483xxx test ids.
 - Automation runs commands in PTY sessions owned by owner 1 and named `agdd-<run>`. Results come back through files, start/end markers and base64.
-- Members can watch the `agdd-*` sessions but cannot type into them.
+- Members can watch the `agdd-*` sessions but cannot type into them. Agent PTYs mirror the agent's tool calls and command output (lines clipped to 400 columns) so the console's VM terminals and the multi-agent monitor show them live.
 
 ### What runs in the VM
 
 - Repositories live at `/workspace/repos/<repo_key>`. Create the demo repo from the console, or `git clone` one in the terminal.
 - Tests run in the VM.
-- Every model step goes through the selected CLI: pre-flight, ambiguity, routing, DEV, semantic lifting, watchdog/advisor and HITL cards.
+- The coding agent (`agdd/api_agents.py`, `ApiAgent`) is a tool-calling loop over the LLM Gateway. Its tools — `list_files`, `read_file`, `grep`, `edit_file`, `write_file`, `run_command` (sandbox permission only) and `finish` — execute in the VM. Test files stay read-only.
+- Structured steps (pre-flight, ambiguity, routing, semantic lifting, watchdog/advisor, HITL cards, think-mode team agents) are JSON-schema calls through the gateway; they need no PTY.
+- Budget gating (80 % → cheap model, 100 % → HITL), per-workspace rate limits and cost accounting happen in the gateway (`x-agdd-workspace` / `x-agdd-run` / `x-agdd-node` headers).
 
 ### Guest environment (from Agora)
 
@@ -88,49 +90,49 @@ Each workspace gets its own Cloud Hypervisor VM from the Project Agora runtime (
 - `apt install` works for the user through the guest's package bridge; there is no sudo.
 - Host-wide limits: at most 4 VMs and 8 GiB of VM RAM, shared with Agora canvases.
 
-### CLIs
+### Model access (API key)
 
-| CLI | Install (run in the VM terminal) | Login |
-| :--- | :--- | :--- |
-| `claude` | `curl -fsSL https://claude.ai/install.sh \| bash` | `claude`, or `claude setup-token` |
-| `codex` | official musl release binary → `~/.local/bin/codex` | `codex login --device-auth` |
-| `agy` | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` | `agy` (URL + code), or `GEMINI_API_KEY` |
+There are no per-user logins. The operator configures the upstream once in `agdd.env`:
+
+| Variable | Purpose |
+| :--- | :--- |
+| `AGDD_UPSTREAM_BASE_URL` | OpenAI-compatible upstream used by the LLM Gateway |
+| `AGDD_UPSTREAM_API_KEY` | API key for that upstream (kept in the gateway; never sent to browsers or VMs) |
+| `AGDD_MODEL_CHEAP` / `AGDD_MODEL_MID` / `AGDD_MODEL_ADVISOR` | Upstream models behind the `cheap` / `mid` / `advisor` aliases |
+| `AGDD_MODEL_PRICES` | Optional per-model USD prices for cost accounting |
+
+Subscription coding CLIs (consumer-plan logins) are not used: their consumer terms do not cover automated use inside a multi-user hosted service, so all agents use the API key above.
 
 ### Per-workspace settings
 
-These are set in the console's **CLI 에이전트** tab and can be overridden for a single run:
+These are set in the console's **에이전트 · 모델 API** tab and can be overridden for a single run:
 
-- **CLI:** `claude`, `codex` or `agy`
-- **Model**
-- **Effort:** low / medium / high / xhigh / max
+- **Model:** a gateway alias (`cheap`, `mid`, `advisor`) or an upstream model name (default `mid`)
+- **Effort:** low / medium / high / xhigh / max (sent as `reasoning_effort`; xhigh/max map to `high`)
 - **Session:**
   - `new`: a fresh context on every attempt
-  - `per-run`: retries resume the same CLI session
-  - an explicit session id: picked from the session list
+  - `per-run`: retries resume the same agent conversation
+  - an explicit session id: continue a saved conversation
+  - Conversations are stored as transcripts in the VM (`~/.agdd/sessions/<id>.json`), so any worker can resume them; old tool output is cleared above 120k tokens.
 - **Permission:**
-  - `sandbox`: full autonomy inside the VM
-  - `ask-edits`: file edits only
-- **Cheap-step model and effort:** used for the structured steps
+  - `sandbox`: file edits and shell commands inside the VM
+  - `ask-edits`: file edits only (no `run_command` tool)
+- **Cheap-step model and effort:** used for the structured steps (default `cheap` / low)
 
-### Remaining usage
+### Usage
 
-The **남은 사용량** button combines three sources:
-- the CLI's own report: `claude -p /usage`, `codex login status` plus the newest rollout's `rate_limits`, or `agy -p /usage` and `/credits`
-- rate-limit events captured during runs
-- AGDD's own 7-day tally per `cli:model`
+The **사용량 (7일)** button shows the gateway-recorded 7-day tally per model (`node_executions`) and this month's workspace budget (`GET /workspaces/{ws}/model-usage`). `GET /workspaces/{ws}/agent-settings` also reports the gateway's health and alias map (`gateway.api_key_configured` tells whether an upstream key is set; the key itself is never returned).
 
 ### Verified on a real VM (2026-11-21)
 
 - **Guest image:**
   - Debian 13 with Node 20 and Python 3.12.
-  - curl and git are not installed. The CLI install commands and the demo repo add them first through `apt`.
-  - The 6 GiB default disk had about 100 MB free, so CLIs fail to install. Set the VM disk to 12 GiB first; the three CLIs take about 0.9 GiB.
+  - git is not installed. The demo repo adds it first through `apt`.
+  - The 6 GiB default disk had about 100 MB free. Set the VM disk to 12 GiB before cloning larger repositories.
 - **Host disk:**
   - About 23 GB was free (95% used).
   - Agora refuses to create or grow a disk unless 8 GiB stays free on the host, so only one or two more 12 GiB VMs fit.
-- **Usage reporting:**
-  - Logged-out CLIs fail loudly (HTTP 502 with "Not logged in"). Structured steps never treat a failed CLI call as an empty answer.
-  - `claude -p /usage` reports only the cost of the current session. For Claude, plan limits come from `rate_limit_event` frames captured during runs.
+- **Failures:** a failed model API call raises `AgentError` (HTTP 502 from the console API; a gateway budget halt is HTTP 402). Structured steps never treat a failed call as an empty answer.
 
 ### Enabling it
 
@@ -154,7 +156,7 @@ The canvas is resizable (drag bar under it, height remembered) and has a full-sc
   `{{data}}`, `{{agents}}`, `{{subtasks}}`, `{{feedback}}`, `{{messages}}`, `{{blackboard}}`, `{{state}}`,
   `{{state:<key>}}`, `{{input:<id>}}`), accepted input kinds (request/data/agent/feedback/message), accepted
   media `modalities` (text/image/video/audio/pdf/file; `[]` = no media), wait-for-all vs. react-to-any,
-  `think` (JSON answer) or `code` (autonomous run in the repo), CLI/model/effort overrides, `max_runs`, who it
+  `think` (JSON answer) or `code` (autonomous run in the repo), model/effort overrides, `max_runs`, who it
   may message, `output_key` (shared state), `guardrail`.
 - **Edges** (`when`):
   - `always`, `approve`, `revise` — a `revise` edge back to an earlier agent is a review / evaluator-optimizer
@@ -183,12 +185,13 @@ The canvas is resizable (drag bar under it, height remembered) and has a full-sc
   flow through edges and handoffs; each agent only receives its `modalities`. At run start every attachment is
   streamed into the VM once (`~/.agdd/attachments/<sha256>/`, cached) and `agdd_media.py` derives PDF text +
   page images (poppler), video key frames + audio track (ffmpeg) and transcripts (only if `whisper` is installed);
-  missing tools are apt-installed best effort (`AGDD_MEDIA_INSTALL=0` disables that). Delivery per CLI: Claude
-  Code gets the read-only `Read` tool + `--add-dir` (images, PDFs, frames), Codex gets `--image=` for images and
-  frames, Gemini-family `agy` gets `@path` references to the originals (video/audio included). Without a VM,
-  images are sent to the gateway as image parts (`AGDD_VISION_MODEL`) and text files as inline excerpts.
-- **Execution**: a background thread in agdd-api. Each agent gets its own VM PTY (`agdd-ma-<id>`, workers
-  `agdd-ma-<id>-t<n>`), so independent agents run in parallel (`parallelism`); code-mode agents share the repo
+  missing tools are apt-installed best effort (`AGDD_MEDIA_INSTALL=0` disables that). Delivery to the model:
+  images (originals, PDF pages, video frames; ≤ 5 MB each, max 12) go in as image parts, text files inline, and
+  the VM paths of everything else are listed so the agent's tools can inspect them. Without a VM, images are sent
+  to the gateway as image parts (`AGDD_VISION_MODEL`) and text files as inline excerpts.
+- **Execution**: a background thread in agdd-api; every model call goes through the LLM Gateway. Each agent gets
+  its own VM PTY for its tools (`agdd-ma-<id>`, workers `agdd-ma-<id>-t<n>`; watch them live in the 에이전트 모니터
+  panel), so independent agents run in parallel (`parallelism`); code-mode agents share the repo
   and run one at a time. Without a VM, think agents use the LLM gateway and code agents fail with a clear error.
   A run left `RUNNING` by an API restart is marked `FAILED` when it is next read.
 - **API**: `GET/POST /workspaces/{ws}/teams`, `POST …/teams/validate`, `DELETE …/teams/{id}`,

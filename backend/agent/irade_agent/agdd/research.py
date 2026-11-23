@@ -11,6 +11,8 @@ import hashlib
 import json
 import re
 import sqlite3
+import threading
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -79,6 +81,38 @@ class Source:
     provider: str
 
 
+class _Throttle:
+    """Process-wide request pacing for an external API (one request in flight, ``interval`` s apart)."""
+
+    def __init__(self, interval: float):
+        self.interval = interval
+        self._lock = threading.Lock()
+        self._last = 0.0
+
+    def __enter__(self):
+        self._lock.acquire()
+        wait = self._last + self.interval - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        return self
+
+    def __exit__(self, *exc):
+        self._last = time.monotonic()
+        self._lock.release()
+
+
+# arXiv API Terms of Use: at most one request every 3 seconds on a single connection, and products must show
+# "Thank you to arXiv for use of its open access interoperability." (https://info.arxiv.org/help/api/tou.html)
+ARXIV_THROTTLE = _Throttle(3.0)
+# Semantic Scholar API License Agreement: respect the per-key rate limit (1 request/second) and attribute
+# Semantic Scholar as the data source (https://www.semanticscholar.org/product/api/license).
+S2_THROTTLE = _Throttle(1.0)
+ATTRIBUTIONS = {
+    "arxiv": "Thank you to arXiv for use of its open access interoperability.",
+    "semantic_scholar": "Paper data from the Semantic Scholar API (https://www.semanticscholar.org).",
+}
+
+
 class Provider(Protocol):
     name: str
 
@@ -99,7 +133,9 @@ class ArxivProvider:
             {"search_query": " AND ".join(f"all:{w}" for w in query.split()[:4]), "max_results": limit,
              "sortBy": "relevance"})
         ns = {"a": "http://www.w3.org/2005/Atom"}
-        root = ET.fromstring(_get(url))
+        with ARXIV_THROTTLE:
+            data = _get(url)
+        root = ET.fromstring(data)
         out = []
         for e in root.findall("a:entry", ns):
             out.append(Source(" ".join((e.findtext("a:title", "", ns)).split()), e.findtext("a:id", "", ns),
@@ -118,7 +154,7 @@ class SemanticScholarProvider:
             {"query": query, "limit": limit, "fields": "title,abstract,url"})
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, **({"x-api-key": self.api_key}
                                                                                 if self.api_key else {})})
-        with urllib.request.urlopen(req, timeout=15) as r:  # noqa: S310
+        with S2_THROTTLE, urllib.request.urlopen(req, timeout=15) as r:  # noqa: S310
             data = json.loads(r.read())
         return [Source(p.get("title") or "", p.get("url") or "", p.get("abstract") or "", self.name)
                 for p in data.get("data", []) if p.get("abstract")]
@@ -204,9 +240,12 @@ def render_brief(problem_sig: str, brief: dict, sources: list[Source]) -> str:
             lines.append(f"- {p.get('claim', '')} [{i + 1}]")
     lines += ["", "## 적용 트레이드오프"] + [f"- {t}" for t in brief.get("tradeoffs", [])[:4]]
     lines += ["", "## 출처"] + [f"{i + 1}. [{s.title}]({s.url})" for i, s in enumerate(sources)]
+    attr = [f"_{ATTRIBUTIONS[p]}_" for p in dict.fromkeys(s.provider for s in sources) if p in ATTRIBUTIONS]
+    lines += ([""] + attr) if attr else []  # provider terms require attribution wherever results are shown
+    tail = len(sources) + 3 + (len(attr) + 1 if attr else 0)
     md = "\n".join(lines)
-    while estimate_tokens(md) > BRIEF_MAX_TOKENS and len(lines) > 8:
-        lines.pop(len(lines) - len(sources) - 3)  # trim body before the source list
+    while estimate_tokens(md) > BRIEF_MAX_TOKENS and len(lines) > 8 + tail - len(sources) - 3:
+        lines.pop(len(lines) - tail)  # trim body before the source list and attributions
         md = "\n".join(lines)
     return md
 

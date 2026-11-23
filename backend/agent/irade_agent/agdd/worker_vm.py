@@ -1,7 +1,8 @@
-"""Graph node handlers that execute inside the workspace VM through coding-agent CLIs.
+"""Graph node handlers whose repository work executes inside the workspace VM.
 
-The worker container only orchestrates (queue, optimistic commits, HITL); repositories, tests and
-every model call (claude / codex / agy) run in the workspace's Agora VM.
+The worker container only orchestrates (queue, optimistic commits, HITL); repositories, tests and the coding
+agent's tools run in the workspace's Agora VM, while every model call goes through the LLM Gateway with the
+server's API key (api_agents.ApiAgent).
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ DEV_PROMPT = """당신은 AGDD(자율 그래프 주도 개발) 파이프라인�
 - 워크스페이스 명세 테이블(SRS/ARC/SCH/추적성/UX 오버라이드)은 RAM 인메모리 SQLite DB `{spec_db}`에 저장되어 있습니다. `agdd-spec scope`, `agdd-spec sql "SELECT ..."`, `agdd-spec search "..."`, `agdd-spec ux`로 조회하세요.
 - `locked_by_user=1`인 UX 오버라이드 셀렉터는 절대 수정·덮어쓰기하지 마세요.
 - 2차원 UI 레이아웃·화면 배치가 모호하거나 사용자의 시각적 배치가 필요하면 임의로 추측하지 말고 `agdd-spec request-ux --view <view_key> --prompt "<질문>" --elements '[...]'`를 실행한 뒤 작업을 멈추세요(사용자 2D UX 캔버스로 연결됩니다).
+- 저장소에 AGENTS.md 같은 규칙 파일이 있으면 먼저 읽고 따르세요.
 - 수정 후 테스트를 실행해 통과를 확인하세요: {test_cmd}
 - 커밋하지 마세요. 작업이 끝나면 무엇을 바꿨는지와 테스트 결과를 3~6줄로 요약하세요.
 - 범위 밖 작업이 필요하면 하지 말고 요약에 이유를 적으세요.
@@ -33,7 +35,7 @@ DEV_PROMPT = """당신은 AGDD(자율 그래프 주도 개발) 파이프라인�
 {task}
 """
 
-# Resumed CLI session: the brief and scope are already in the session context, so only the delta is sent
+# Resumed agent session: the brief and scope are already in the session context, so only the delta is sent
 # (append-only history; re-sending the full brief every retry would duplicate it in the context).
 RESUME_PROMPT = """이전 시도가 실패했습니다. 같은 작업 지시서 범위에서 아래 피드백만 반영해 이어서 수정하세요.
 테스트: {test_cmd}
@@ -52,23 +54,19 @@ class VmCtx:
         self.ctx = ctx
         override = ctx.handoff.get("agent") or {}
         self.settings = vm_service.load_settings(ctx.ws, override)
-        from .cli_agents import VmAgent
+        from .api_agents import ApiAgent
         from .vm import RuntimeClient, VmShell
         # a fresh PTY per job (not cached): closed after the job so guest PTY slots are not leaked
         shell = VmShell(RuntimeClient(), vm_service.canvas_for(ctx.ws), f"agdd-{str(ctx.run['run_id'])[:8]}")
-        shell.mirror = True  # echo CLI output into the PTY so the console can watch the run live
-        self.agent = VmAgent(shell, self.settings, vm_service.budget_gate(ctx.ws))
+        shell.mirror = True  # echo the agent's tool calls into the PTY so the console can watch the run live
+        self.agent = ApiAgent(shell, self.settings, ctx.ws, ctx.run["run_id"], ctx.node["name"])
         self.shell = self.agent.shell
         rk = (ctx.handoff.get("repo_key") or self.settings.default_repo or "workspace").strip() or "workspace"
         self.repo_key = rk
         self.repo = vm_service.repo_path(rk)
 
     def llm(self, task_kind: str):
-        def on_result(res, t0=[time.time()]):
-            vm_service.record_usage(self.ctx.ws, self.ctx.run["run_id"], self.ctx.node["name"], self.settings, res,
-                                    int((time.time() - t0[0]) * 1000), cheap=True)
-            t0[0] = time.time()
-        return self.agent.cheap_llm(on_result)
+        return self.agent.cheap_llm(task=task_kind)  # gateway records usage/cost per call
 
     def sh(self, cmd, timeout=600):
         return self.shell.run(f"cd {self.repo} && {cmd}", timeout=timeout)
@@ -102,8 +100,9 @@ def node_dev(ctx, v: VmCtx, log):
     vm_sync.clear_pending_vm_ux_request(ctx.ws, shell=v.shell)
     s = v.settings
     # session policy: new = fresh context every attempt (DOC node reset), per-run = resume across retries,
-    # explicit id = continue an existing CLI session chosen by the user
-    session = None if s.session == "new" else (ctx.handoff.get("cli_session") if s.session == "per-run" else s.session)
+    # explicit id = continue an existing agent session chosen by the user
+    prev = ctx.handoff.get("agent_session") or ctx.handoff.get("cli_session")  # cli_session: pre-API handoffs
+    session = None if s.session == "new" else (prev if s.session == "per-run" else s.session)
     cap = gateway.hard_cap  # every free-text handoff field is capped (DOC §6.2: 2,500-token hard cap)
     feedback, advisor, brief = (cap(str(ctx.handoff.get(k) or "")) for k in ("feedback", "advisor", "insight_brief"))
     ux_resp = ctx.handoff.get("ux_layout_response")
@@ -138,13 +137,13 @@ def node_dev(ctx, v: VmCtx, log):
             instructions_block=inst_block,
             task=json.dumps(task, ensure_ascii=False, separators=(",", ":")),
         )
-    log(f"DEV via {s.cli} model={s.model or 'default'} effort={s.effort} session={session or 'new'}")
+    log(f"DEV via API model={s.model} effort={s.effort} permission={s.permission} session={session or 'new'}")
     t0 = time.time()
     res = v.agent.agent(prompt, v.repo, session, timeout=int(ctx.node.get("timeout", 3600)),
                         on_progress=lambda: infra.heartbeat(f"run-{ctx.run['run_id']}"),
                         mcp=bool(ctx.node.get("allowed_mcp")))  # node allowlist empty -> no MCP tool schemas
-    vm_service.record_usage(ctx.ws, ctx.run["run_id"], ctx.node["name"], s, res, int((time.time() - t0) * 1000))
-    patch = {"cli_session": res.session_id or session, "dev_summary": (res.text or "")[:3000],
+    log(f"DEV agent steps={res.steps} ms={int((time.time() - t0) * 1000)} cost≈${res.cost_usd or 0:.4f}")
+    patch = {"agent_session": res.session_id or session, "dev_summary": (res.text or "")[:3000],
              "ux_layout_response": None}
     ux_req = vm_sync.read_pending_vm_ux_request(ctx.ws, shell=v.shell) or ux_workbench.parse_ux_request(res.text or "")
     if ux_req is not None:
@@ -171,7 +170,7 @@ def node_dev(ctx, v: VmCtx, log):
         return True, {**patch, "ux_request": ux_req, "pause_at_current": True,
                       "last_patch": diff[-20000:], "changed_files": changed, "feedback": ""}
     if not res.ok:
-        return False, {**patch, "feedback": f"{s.cli} 실행 실패: {(res.text or res.raw_tail)[-2000:]}",
+        return False, {**patch, "feedback": f"에이전트 실행 실패: {(res.text or res.raw_tail)[-2000:]}",
                        "last_patch": diff[-20000:], "changed_files": changed}
     if not changed and not res.text:
         return False, {**patch, "feedback": "변경 사항이 없습니다: " + (res.text or "")[:1000]}
@@ -259,12 +258,12 @@ def node_audit(ctx, v: VmCtx):
                     warnings.append(f"{parts[1]}: {n} lines (God File; split to 150~350)")
                 elif n <= MICRO_FILE_LINES:
                     warnings.append(f"{parts[1]}: {n} lines (over-split)")
-    # DOC §6.2: rule files the CLIs auto-load on every turn must stay small (<= 150~200 lines, pointers only)
+    # DOC §6.2: repo rule files the agent reads first on every task must stay small (<= 150~200 lines, pointers only)
     out = v.sh("wc -l " + " ".join(RULE_FILES) + " 2>/dev/null", 30).output
     for line in out.splitlines():
         parts = line.split()
         if len(parts) == 2 and parts[0].isdigit() and parts[1] in RULE_FILES and int(parts[0]) > RULE_FILE_MAX_LINES:
-            warnings.append(f"{parts[1]}: {parts[0]} lines (auto-loaded every turn; keep <= {RULE_FILE_MAX_LINES}, "
+            warnings.append(f"{parts[1]}: {parts[0]} lines (read at the start of every task; keep <= {RULE_FILE_MAX_LINES}, "
                             "move situational guides to on-demand files)")
     if problems:
         return False, {"feedback": "AUDIT:\n" + "\n".join(problems), "audit_warnings": warnings}

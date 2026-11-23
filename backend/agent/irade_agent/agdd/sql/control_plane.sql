@@ -197,20 +197,14 @@ CREATE TABLE IF NOT EXISTS workspace_agent_settings (
     updated_by    uuid REFERENCES users,
     updated_at    timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE IF NOT EXISTS cli_usage_snapshots (
-    workspace_id uuid NOT NULL REFERENCES workspaces ON DELETE CASCADE,
-    cli          text NOT NULL,
-    captured_at  timestamptz NOT NULL DEFAULT now(),
-    rate_limits  jsonb,
-    raw_text     text,
-    PRIMARY KEY (workspace_id, cli)
-);
+-- Subscription-CLI usage scrapes are no longer collected (agents use the gateway API key); drop old data.
+DROP TABLE IF EXISTS cli_usage_snapshots;
 
 -- IRADE Studio workspace link: an AGDD workspace addressed as "irade-<id>" is the same workspace as
 -- Studio workspace <id> (same members via the gateway, same runtime VM canvas).
 ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS irade_workspace_id integer UNIQUE;
 
--- Collaborative CLI / Conversational AGDD message log per workspace.
+-- Collaborative agent chat / Conversational AGDD message log per workspace ('cli_chat' = direct agent chat).
 CREATE TABLE IF NOT EXISTS collab_messages (
     msg_id       bigserial PRIMARY KEY,
     workspace_id uuid NOT NULL REFERENCES workspaces ON DELETE CASCADE,

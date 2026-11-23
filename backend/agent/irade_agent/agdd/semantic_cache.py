@@ -68,7 +68,7 @@ def _exact_key(scope, prompt: str, schema) -> str:
 
 def cache_lookup(scope, prompt: str, schema):
     """Exact-match reuse for cheap structured steps (DOC §6.1 #6). The key covers the scope (workspace/VM,
-    CLI, model, effort), schema_hash and the full prompt, so a hit is only ever the answer to the identical
+    engine, model, effort), schema_hash and the full prompt, so a hit is only ever the answer to the identical
     question. Cache errors never block the model call."""
     from . import infra
     try:

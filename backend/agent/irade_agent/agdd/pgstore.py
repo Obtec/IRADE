@@ -104,7 +104,7 @@ class PgOverrideStore:
             ]
 
 
-# ---------------- collaborative CLI / chat messages ----------------
+# ---------------- collaborative agent chat messages ----------------
 def add_collab_message(
     conn,
     workspace_id,

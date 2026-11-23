@@ -769,7 +769,7 @@ function renderBottomDock(): void {
   }
   if (outputPane) {
     if (!out || !targetCell) {
-      outputPane.innerHTML = '<div class="bottom-dock-empty">Lean 4 · Rocq · Python 셀에서 <kbd>Shift+Enter</kbd> 또는 <b>▶</b> 버튼을 누르면 실행 결과가 여기에 표시됩니다. <button type="button" class="text-button" data-open-dock-games>🎮 미니게임(스네이크·테트리스) 열기 →</button></div>';
+      outputPane.innerHTML = '<div class="bottom-dock-empty">Lean 4 · Rocq · Python 셀에서 <kbd>Shift+Enter</kbd> 또는 <b>▶</b> 버튼을 누르면 실행 결과가 여기에 표시됩니다. <button type="button" class="text-button" data-open-dock-games>🎮 미니게임(스네이크·블록 낙하) 열기 →</button></div>';
     } else if (out.running) {
       outputPane.innerHTML = `<div class="bottom-dock-status running">[*] 실행 중… <span>${out.runtime === 'agora-vm' ? '격리 VM' : '로컬 실행기'}</span></div>${out.stdout ? `<pre class="bottom-dock-pre">${escape(out.stdout)}</pre>` : ''}`;
     } else {

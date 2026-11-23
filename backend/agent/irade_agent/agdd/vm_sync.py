@@ -456,7 +456,7 @@ if op == "sync":
         prev_hash = prev.get("sha256") if prev else None
 
         if not force and prev_hash and inc_hash == prev_hash and disk_hash is not None and disk_hash != prev_hash:
-            # VM/IDE/CLI edited this cell on disk while incoming cell stayed at old hash.
+            # VM/IDE/terminal edited this cell on disk while incoming cell stayed at old hash.
             final_text = disk_text
             final_hash = disk_hash
             external_changes.append({"id": cid, "kind": kind, "path": rel, "text": disk_text, "sha256": disk_hash})
@@ -595,7 +595,7 @@ def sync_workspace_context(workspace_id, repo_key: str | None = None, shell=None
         "conflict_passed": bool((snap_row or {}).get("conflict_passed")),
     }
     tuning = {
-        "cli": settings.cli,
+        "engine": "api",
         "model": settings.model,
         "effort": settings.effort,
         "permission": settings.permission,

@@ -1,4 +1,4 @@
-"""End-to-end tests for In-Memory Spec DB, VM file cells/IDE, pure CLI & AGDD collab, and 2D UX Canvas."""
+"""End-to-end tests for In-Memory Spec DB, VM file cells/IDE, API agent & AGDD collab, and 2D UX Canvas."""
 from __future__ import annotations
 
 import contextlib
@@ -21,6 +21,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fake_gateway import FakeGateway, reply, tool_call  # noqa: E402
 
 try:
     import psycopg  # noqa: F401
@@ -126,9 +129,9 @@ class FakeState:
         self.snapshots: list[dict] = []
         self.next_snap_id = 1
         self.overrides: dict[tuple[str, str], dict] = {}
+        self.gw = FakeGateway(structured=lambda body: {})  # LLM Gateway stand-in (api_agents.chat_completion)
         self.settings = {
-            "cli": "claude",
-            "model": "sonnet",
+            "model": "mid",
             "effort": "high",
             "session": "per-run",
             "permission": "sandbox",
@@ -421,19 +424,18 @@ def _patch_state(monkeypatch, state: FakeState, runtime_srv=None):
 
     monkeypatch.setattr(vm_service, "canvas_for", lambda ws: state.canvas_id)
     monkeypatch.setattr(vm_service, "enabled", lambda: bool(runtime_srv))
-    monkeypatch.setattr(vm_service, "budget_gate", lambda ws: (lambda est=0.0: None))
-    monkeypatch.setattr(vm_service, "record_usage", lambda *a, **k: None)
+    from irade_agent.agdd import api_agents
+    monkeypatch.setattr(api_agents, "chat_completion", state.gw)
 
     def _load_settings(ws, override=None):
-        from irade_agent.agdd.cli_agents import AgentSettings
+        from irade_agent.agdd.api_agents import AgentSettings
         return AgentSettings.from_row({**state.settings, **(override or {})})
 
     def _save_settings(ws, data, user_id=None):
-        from irade_agent.agdd.cli_agents import AgentSettings
+        from irade_agent.agdd.api_agents import AgentSettings
         merged = {**state.settings, **(data or {})}
         s = AgentSettings.from_row(merged)
         state.settings = {
-            "cli": s.cli,
             "model": s.model,
             "effort": s.effort,
             "session": s.session,
@@ -607,24 +609,13 @@ def test_http_ide_cells_specs_ux_and_collab(tmp_path, monkeypatch):
     monkeypatch.setenv("API_TOKEN", "test-api-token")
 
     with _fake_rt(tmp_path, monkeypatch, 11) as (rt, vm_home):
-        local_bin = vm_home / ".local" / "bin"
-        local_bin.mkdir(parents=True, exist_ok=True)
-        claude_stub = local_bin / "claude"
-        claude_stub.write_text(
-            "#!/usr/bin/env python3\n"
-            "import json, os, pathlib, subprocess\n"
-            "with open('app.py', 'w', encoding='utf-8') as f:\n"
-            "    f.write('def greet():\\n    return \"hi\"\\n')\n"
-            "cli = pathlib.Path(os.environ['HOME']) / '.local' / 'bin' / 'agdd-spec'\n"
-            "if cli.exists():\n"
-            "    subprocess.run([str(cli), 'request-ux', '--view', 'home', '--prompt', 'Place sidebar & card',\n"
-            "                    '--elements', '[{\"selector\":\"#card\",\"kind\":\"card\",\"label\":\"Card\",\"x\":60,\"y\":80,\"w\":320,\"h\":160}]'], check=False)\n"
-            "print(json.dumps({'type': 'result', 'subtype': 'success', 'session_id': 'sess-stub-1',\n"
-            "                  'result': 'Created app.py and requested 2D layout.',\n"
-            "                  'usage': {'input_tokens': 12, 'output_tokens': 8}, 'total_cost_usd': 0.001}))\n",
-            encoding="utf-8",
-        )
-        claude_stub.chmod(0o755)
+        state.gw.script = [
+            reply("", [tool_call("write_file", {"path": "app.py", "content": 'def greet():\n    return "hi"\n'}, "w1"),
+                       tool_call("run_command", {"command": "agdd-spec request-ux --view home --prompt 'Place sidebar & card' "
+                                                            "--elements '[{\"selector\":\"#card\",\"kind\":\"card\",\"label\":\"Card\","
+                                                            "\"x\":60,\"y\":80,\"w\":320,\"h\":160}]'"}, "r1")]),
+            reply("", [tool_call("finish", {"summary": "Created app.py and requested 2D layout."})]),
+        ]
         _patch_state(monkeypatch, state, runtime_srv=rt)
         monkeypatch.setattr(router, "route_request", lambda req, llm: router.RouteDecision("FULL_AGDD", ["test route"]))
 
@@ -685,8 +676,7 @@ def test_http_ide_cells_specs_ux_and_collab(tmp_path, monkeypatch):
 
             # Agent tuning settings
             code, _, sres = _http_req(base, "PUT", f"/workspaces/{ws}/agent-settings", {
-                "cli": "claude",
-                "model": "sonnet",
+                "model": "mid",
                 "effort": "high",
                 "instructions": "Tuned instruction line",
                 "default_repo": "workspace",
@@ -698,11 +688,11 @@ def test_http_ide_cells_specs_ux_and_collab(tmp_path, monkeypatch):
             code, _, sq = _http_req(base, "POST", f"/workspaces/{ws}/specs/query", {"sql": "SELECT req_id FROM srs_requirements WHERE domain='GRAPH_ENGINE'"})
             assert code == 200 and sq["rows"] == [{"req_id": "REQ-001"}]
 
-            # Collab state + CLI launch
+            # Collab state; the interactive subscription-CLI launcher no longer exists
             code, _, st_res = _http_req(base, "GET", f"/workspaces/{ws}/collab/state")
             assert code == 200 and st_res["vm_enabled"] is True and st_res["spec_summary"]["accept"]["srs"] == 3
-            code, _, ln_res = _http_req(base, "POST", f"/workspaces/{ws}/collab/cli-launch", {})
-            assert code == 200 and ln_res["cli"] == "claude" and ln_res["db_path"].startswith("/dev/shm/")
+            code, _, _ = _http_req(base, "POST", f"/workspaces/{ws}/collab/cli-launch", {})
+            assert code == 404
 
             # Collab AGDD run mode
             code, _, agdd_res = _http_req(base, "POST", f"/workspaces/{ws}/collab/send", {
@@ -713,14 +703,17 @@ def test_http_ide_cells_specs_ux_and_collab(tmp_path, monkeypatch):
             run_id = agdd_res["run_id"]
             assert run_id in state.runs and len(state.jobs) >= 1
 
-            # Collab pure CLI chat turn running inside FakeRuntime
+            # Direct agent chat turn: gateway model, tools inside FakeRuntime
             code, _, cli_res = _http_req(base, "POST", f"/workspaces/{ws}/collab/send", {
-                "mode": "cli_chat",
+                "mode": "agent_chat",
                 "message": "Create app.py and ask UX canvas",
             })
             assert code == 200
             assert cli_res["mode"] == "cli_chat" and cli_res["ok"] is True
-            assert cli_res["session_id"] == "sess-stub-1"
+            assert cli_res["session_id"] and cli_res["reply"] == "Created app.py and requested 2D layout."
+            agent_bodies = state.gw.bodies(structured=False)
+            assert agent_bodies and agent_bodies[0]["model"] == "mid" and any(
+                t["function"]["name"] == "run_command" for t in agent_bodies[0]["tools"])
             assert "app.py" in cli_res["changed_files"]
             assert cli_res["ux_request"] is not None and cli_res["ux_request"]["view_key"] == "home"
 
@@ -894,20 +887,12 @@ def test_2d_spatial_summary_worker_dev_pause_verify_exit5_and_audit_lock(tmp_pat
     vm_sync._VM_SCRIPTS_READY.clear()
 
     with _fake_rt(tmp_path, monkeypatch, 19) as (rt, vm_home):
-        local_bin = vm_home / ".local" / "bin"
-        local_bin.mkdir(parents=True, exist_ok=True)
-        claude_stub = local_bin / "claude"
-        claude_stub.write_text(
-            "#!/usr/bin/env python3\n"
-            "import json, os, pathlib, subprocess\n"
-            "cli = pathlib.Path(os.environ['HOME']) / '.local' / 'bin' / 'agdd-spec'\n"
-            "subprocess.run([str(cli), 'request-ux', '--view', 'home', '--prompt', 'Confirm nav & main',\n"
-            "                '--elements', '[{\"selector\":\"#nav\",\"kind\":\"sidebar\",\"label\":\"Nav\",\"x\":40,\"y\":40,\"w\":200,\"h\":400}]'], check=True)\n"
-            "print(json.dumps({'type': 'result', 'subtype': 'success', 'session_id': 'dev-s1',\n"
-            "                  'result': 'Need 2D canvas input', 'usage': {'input_tokens': 5, 'output_tokens': 4}, 'total_cost_usd': 0.0}))\n",
-            encoding="utf-8",
-        )
-        claude_stub.chmod(0o755)
+        state.gw.script = [
+            reply("", [tool_call("run_command", {"command": "agdd-spec request-ux --view home --prompt 'Confirm nav & main' "
+                                                            "--elements '[{\"selector\":\"#nav\",\"kind\":\"sidebar\",\"label\":\"Nav\","
+                                                            "\"x\":40,\"y\":40,\"w\":200,\"h\":400}]'"})]),
+            reply("", [tool_call("finish", {"summary": "Need 2D canvas input"})]),
+        ]
         _patch_state(monkeypatch, state, runtime_srv=rt)
 
         ctx_dev = types.SimpleNamespace(
@@ -1055,9 +1040,10 @@ def test_audit_fixes_api_and_vm_sync(tmp_path, monkeypatch):
     state.add_snapshot(_sample_snapshot(), passed=True)
     vm_sync._VM_SCRIPTS_READY.clear()
     api._IDE_READY.clear()
-    api._CLI_CACHE.clear()
 
     monkeypatch.setenv("API_TOKEN", "test-api-token")
+    monkeypatch.setenv("LLM_GATEWAY_URL", "http://127.0.0.1:9/v1")  # unreachable gateway -> status ok=False
+    api._GATEWAY_STATUS[:] = [0.0, None]
     invalidated: list[str] = []
     monkeypatch.setattr(infra, "cache_invalidate", lambda *keys: invalidated.extend(str(k) for k in keys))
 
@@ -1094,14 +1080,13 @@ def test_audit_fixes_api_and_vm_sync(tmp_path, monkeypatch):
             assert state.budgets[(ws, "2026-11")]["limit_usd"] == 42.5
             assert f"agdd:dash:{ws}" in invalidated
 
-            # 3. CLI cache ?refresh=1 bypasses _CLI_CACHE
-            stale = {"claude": {"installed": False, "version": "stale"}}
-            api._CLI_CACHE[ws] = (time.monotonic(), stale)
-            code, _, cached_res = _http_req(base, "GET", f"/workspaces/{ws}/vm/clis")
-            assert code == 200 and cached_res == stale
-            code, _, fresh_res = _http_req(base, "GET", f"/workspaces/{ws}/vm/clis?refresh=1")
-            assert code == 200 and fresh_res != stale and "claude" in fresh_res
-            assert api._CLI_CACHE[ws][1] == fresh_res
+            # 3. Agent settings expose the gateway status (never the API key); CLI endpoints are gone
+            code, _, ag_res = _http_req(base, "GET", f"/workspaces/{ws}/agent-settings")
+            assert code == 200 and "clis" not in ag_res and ag_res["gateway"]["ok"] is False
+            assert "cheap" in ag_res["models"] and ag_res["settings"]["model"] == "mid"
+            for gone in ("vm/clis", "vm/usage/claude", "vm/sessions/codex"):
+                code, _, _ = _http_req(base, "GET", f"/workspaces/{ws}/{gone}")
+                assert code == 404
 
             # 4. Run cancel halts WAITING_HITL run, marks pending jobs/HITL closed, invalidates caches
             run_cancel_id = str(uuid.uuid4())
@@ -1252,7 +1237,7 @@ def test_audit_fixes_api_and_vm_sync(tmp_path, monkeypatch):
             srv.server_close()
             vm_sync._VM_SCRIPTS_READY.clear()
             api._IDE_READY.clear()
-            api._CLI_CACHE.clear()
+            api._GATEWAY_STATUS[:] = [0.0, None]
 
 
 
@@ -1293,19 +1278,7 @@ def test_preflight_vm_gate_closes_pty_skips_sql_block_and_returns_version(tmp_pa
     vm_sync._VM_SCRIPTS_READY.clear()
 
     with _fake_rt(tmp_path, monkeypatch, 21) as (rt, vm_home):
-        (vm_home / ".local" / "bin").mkdir(parents=True, exist_ok=True)
-        stub = vm_home / ".local" / "bin" / "claude"
-        stub.write_text(
-            '#!/usr/bin/env python3\n'
-            'import json, os, sys\n'
-            'sys.stdin.read()\n'
-            'open(os.path.join(os.environ["HOME"], "claude-gate.log"), "a").write(json.dumps(sys.argv[1:]) + "\\n")\n'
-            'print(json.dumps({"type":"result","subtype":"success","is_error":False,"result":"",'
-            '"structured_output":{"conflicts":[],"questions":[]},'
-            '"session_id":"s-gate","total_cost_usd":0.001,"usage":{"input_tokens":5,"output_tokens":3}}))\n'
-        )
-        stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
-
+        state.gw.structured = {"conflicts": [], "questions": []}
         _patch_state(monkeypatch, state, runtime_srv=rt)
         srv = ThreadingHTTPServer(("127.0.0.1", 0), api.Handler)
         t = threading.Thread(target=srv.serve_forever, daemon=True)
@@ -1317,7 +1290,7 @@ def test_preflight_vm_gate_closes_pty_skips_sql_block_and_returns_version(tmp_pa
                                        {"engine": "vm-cli", "semantic": True, "ambiguity": True})
             assert code == 200
             assert r_bad["passed"] is False and r_bad["version"] == 2
-            assert not (vm_home / "claude-gate.log").exists()
+            assert state.gw.calls == []
             assert rt.state.sessions == {}
 
             # 2. Clean specs run semantic + ambiguity concurrently across requests without PTY leaks/collisions.
@@ -1334,7 +1307,7 @@ def test_preflight_vm_gate_closes_pty_skips_sql_block_and_returns_version(tmp_pa
                 assert c_code == 200
                 assert c_body["passed"] is True
                 assert isinstance(c_body["version"], int)
-            assert len((vm_home / "claude-gate.log").read_text().strip().splitlines()) == 4
+            assert len(state.gw.bodies(structured=True)) == 4  # 2 requests x (semantic + ambiguity)
             assert rt.state.sessions == {}
         finally:
             srv.shutdown()

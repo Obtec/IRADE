@@ -19,17 +19,18 @@ from pathlib import Path
 
 DEFAULT_DIR = Path(__file__).parent / "static" / "vendor"
 
-# (package, version, tarball url, npm integrity, path prefixes inside "package/" to keep)
+# (package, version, tarball url, npm integrity, path prefixes inside "package/" to keep).
+# LICENSE / ThirdPartyNotices.txt are always kept: the MIT licenses require the notice in every copy we ship.
 PACKAGES = (
     ("@xterm/xterm", "5.5.0", "https://registry.npmjs.org/@xterm/xterm/-/xterm-5.5.0.tgz",
      "sha512-hqJHYaQb5OptNunnyAnkHyM8aCjZ1MEIDTQu1iIbbTD/xops91NB5yq1ZK/dC2JDbVWtF23zUtl9JE2NqwT87A==",
-     ("lib/xterm.js", "css/xterm.css")),
+     ("lib/xterm.js", "css/xterm.css", "LICENSE")),
     ("@xterm/addon-fit", "0.10.0", "https://registry.npmjs.org/@xterm/addon-fit/-/addon-fit-0.10.0.tgz",
      "sha512-UFYkDm4HUahf2lnEyHvio51TNGiLK66mqP2JoATy7hRZeXaGMRDr00JiSF7m63vR5WKATF605yEggJKsw0JpMQ==",
-     ("lib/addon-fit.js",)),
+     ("lib/addon-fit.js", "LICENSE")),
     ("monaco-editor", "0.52.2", "https://registry.npmjs.org/monaco-editor/-/monaco-editor-0.52.2.tgz",
      "sha512-GEQWEZmfkOGLdd3XK8ryrfWz3AIP8YymVXiPHEdewrUq7mh0qrKrfHLNCXcbB6sTnMLnOZ3ztSiKcciFUkIJwQ==",
-     ("min/vs/",)),
+     ("min/vs/", "LICENSE", "ThirdPartyNotices.txt")),
 )
 
 
@@ -49,7 +50,7 @@ def fetch(dest: Path) -> list[str]:
     for name, ver, url, integrity, keep in PACKAGES:
         root = dest / f"{name}@{ver}"
         marker = root / ".complete"
-        if marker.is_file():
+        if marker.is_file() and (root / "LICENSE").is_file():  # bundles cached before notices were kept refetch
             done.append(f"{name}@{ver} (cached)")
             continue
         with urllib.request.urlopen(url, timeout=120) as r:

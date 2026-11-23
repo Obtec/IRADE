@@ -100,7 +100,7 @@ ES_ALLOW_LOG_INDEX_MIGRATION=true ./elasticsearch/migrate-log-index-to-ilm.sh
 
 ### MS SQL Server
 
-[SQL Server AG 배포 안내](mssql/cluster/README.md)의 노드 Compose를 각 Linux 호스트에서 실행합니다. 이 저장소의 단일 DB에 맞춰 Standard Basic Availability Group 데이터 복제본 2개와 Express 설정 전용 복제본 1개를 사용합니다. 운영 HA에는 호스트 Pacemaker와 fencing 구성이 필요합니다. AG listener를 기존 `DB_HOST` 및 관리 스크립트의 접속 주소로 사용합니다.
+[SQL Server AG 배포 안내](mssql/cluster/README.md)의 노드 Compose를 각 Linux 호스트에서 실행합니다. 이 저장소의 단일 DB에 맞춰 Standard Basic Availability Group 데이터 복제본 2개와 Express 설정 전용 복제본 1개를 사용합니다. Standard는 유료 에디션이므로 데이터 복제본 호스트의 코어 수만큼 SQL Server Standard 라이선스를 구매한 경우에만 사용하세요(노드 Compose는 에디션 기본값 없이 `MSSQL_NODE_PID`를 명시해야 시작됩니다). 운영 HA에는 호스트 Pacemaker와 fencing 구성이 필요합니다. AG listener를 기존 `DB_HOST` 및 관리 스크립트의 접속 주소로 사용합니다.
 
 ### Redis Stack HA
 

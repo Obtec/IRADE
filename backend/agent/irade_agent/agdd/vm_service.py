@@ -1,4 +1,4 @@
-"""Workspace ↔ VM binding, agent settings and CLI usage bookkeeping (shared by agdd-api and workers)."""
+"""Workspace ↔ VM binding and agent settings (shared by agdd-api and workers)."""
 from __future__ import annotations
 
 import os
@@ -7,7 +7,7 @@ import threading
 from psycopg.types.json import Jsonb
 
 from . import infra
-from .cli_agents import AgentSettings, VmAgent
+from .api_agents import AgentSettings, ApiAgent
 from .vm import CANVAS_BASE, RuntimeClient, VmShell
 
 REPOS_DIR = "/workspace/repos"
@@ -114,40 +114,10 @@ def save_settings(workspace_id, data: dict, user) -> AgentSettings:
     return s
 
 
-def agent(workspace_id, override: dict | None = None, name: str = "agdd") -> VmAgent:
-    return VmAgent(shell(workspace_id, name), load_settings(workspace_id, override), budget_gate(workspace_id))
-
-
-def budget_gate(workspace_id):
-    """Returns a gate(kind) for VmAgent: reads this month's workspace_budgets row (no row = unlimited)."""
-    from datetime import datetime, timezone
-    from . import budget
-
-    def gate(kind):
-        period = datetime.now(timezone.utc).strftime("%Y-%m")
-        with infra.pg(readonly=True) as c:
-            row = c.execute("SELECT limit_usd, spent_usd FROM workspace_budgets WHERE workspace_id=%s AND period_ym=%s",
-                            (workspace_id, period)).fetchone()
-        return "ALLOW" if row is None else budget.cli_gate(row["limit_usd"], row["spent_usd"])
-    return gate
-
-
-def record_usage(workspace_id, run_id, node, settings: AgentSettings, res, ms: int, cheap: bool = False):
-    """Record tokens/cost + rate-limit snapshots and charge reported CLI cost to the workspace budget."""
-    from datetime import datetime, timezone
-    from . import pgstore
-    model = f"{settings.cli}:{getattr(res, 'model', '') or (settings.cheap_model if cheap else settings.model) or 'default'}"
-    with infra.pg() as c:
-        if run_id:
-            pgstore.record_execution(c, run_id, node or "-", model, res.usage or {}, res.cost_usd or 0, ms)
-        if res.cost_usd:
-            c.execute("UPDATE workspace_budgets SET spent_usd = spent_usd + %s WHERE workspace_id=%s AND period_ym=%s",
-                      (res.cost_usd, workspace_id, datetime.now(timezone.utc).strftime("%Y-%m")))
-        if res.rate_limits:
-            c.execute("INSERT INTO cli_usage_snapshots (workspace_id, cli, rate_limits) VALUES (%s,%s,%s) "
-                      "ON CONFLICT (workspace_id, cli) DO UPDATE SET rate_limits=EXCLUDED.rate_limits, "
-                      "captured_at=now()", (workspace_id, settings.cli, Jsonb(res.rate_limits)))
-        c.commit()
+def agent(workspace_id, override: dict | None = None, name: str = "agdd", run_id=None, node: str = "") -> ApiAgent:
+    """API-key agent (LLM Gateway) whose repository tools run in this workspace's VM. Budget gating and cost
+    accounting happen in the gateway (x-agdd-workspace / x-agdd-run headers)."""
+    return ApiAgent(shell(workspace_id, name), load_settings(workspace_id, override), workspace_id, run_id, node)
 
 
 def repo_path(repo_key: str) -> str:

@@ -150,7 +150,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/healthz":
-            return self._send(200, {"ok": True, "aliases": ALIASES})
+            return self._send(200, {"ok": True, "aliases": ALIASES, "api_key_configured": bool(self.upstream_key)})
         self._send(404, {"error": "not found"})
 
     def do_POST(self):

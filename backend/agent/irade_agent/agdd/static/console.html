@@ -137,7 +137,7 @@
 <header>
   <h1>AGDD Console</h1>
   <button class="g" id="studio-link" type="button" style="font-size:12.5px; padding:5px 10px;">노트북 Studio</button>
-  <button class="g" id="collab-link" type="button" style="font-size:12.5px; padding:5px 10px;">💬 CLI / 대화 협업</button>
+  <button class="g" id="collab-link" type="button" style="font-size:12.5px; padding:5px 10px;">💬 에이전트 대화 협업</button>
   <div class="row">
     <input id="token" type="password" placeholder="API token" size="22" autocomplete="off">
     <input id="user" placeholder="user id (uuid)" size="38" class="mono">
@@ -176,7 +176,7 @@ function toast(msg, bad) { const t = $("#toast"); t.textContent = msg; t.style.b
 // GET responses are cached (30 s, VM-backed calls 5 min) and in-flight requests are shared, so switching tabs is instant.
 // Any mutation clears the cache so the next view shows fresh data.
 const CACHE = new Map(), INFLIGHT = new Map();
-const SLOW = /\/(vm\/clis|ide\/|vm$)/;
+const SLOW = /\/(ide\/|vm$)/;
 const peek = path => { const c = CACHE.get(path); return c && Date.now() - c.t < (SLOW.test(path) ? 300000 : 30000) ? c.v : undefined; };
 async function api(method, path, body, opts = {}) {
   if (method === "GET" && !opts.fresh) {
@@ -200,7 +200,7 @@ function prefetch() {
   if (!WS) return;
   const fast = ["/specs", "/conflicts", "/graphs", "/runs", "/hitl", "/dashboard", "/agent-settings", "/vm"];
   Promise.allSettled(fast.map(s => api("GET", `/workspaces/${WS}${s}`))).then(() => {
-    api("GET", `/workspaces/${WS}/ide/repos`).catch(() => {}); api("GET", `/workspaces/${WS}/vm/clis`).catch(() => {});
+    api("GET", `/workspaces/${WS}/ide/repos`).catch(() => {});
   });
 }
 // IRADE Studio API (same origin, same login): in gateway mode AGDD workspaces ARE Studio workspaces ("irade-<id>").
@@ -239,7 +239,7 @@ async function loadWs() {
   $("#ws").value = WS; store.set("agdd.ws", WS); syncUrl(); prefetch(); render();
 }
 
-const TABS = { ide: "IDE · 코드 & 셀", collab: "협업 · CLI/대화", vm: "VM · 터미널", agents: "CLI 에이전트", team: "멀티 에이전트", specs: "명세 테이블", gate: "사전 검사", graphs: "그래프", runs: "실행", hitl: "HITL 결정", ux: "UX 2D 캔버스", research: "리서치", dash: "대시보드·예산" };
+const TABS = { ide: "IDE · 코드 & 셀", collab: "협업 · 에이전트 대화", vm: "VM · 터미널", agents: "에이전트 · 모델 API", team: "멀티 에이전트", specs: "명세 테이블", gate: "사전 검사", graphs: "그래프", runs: "실행", hitl: "HITL 결정", ux: "UX 2D 캔버스", research: "리서치", dash: "대시보드·예산" };
 function nav() { $("#nav").innerHTML = Object.entries(TABS).map(([k, v]) => `<button data-t="${k}" class="${k === TAB ? "on" : ""}">${v}</button>`).join(""); $("#nav").querySelectorAll("button").forEach(b => b.onclick = () => { TAB = b.dataset.t; store.set("agdd.tab", TAB); render(); }); }
 const V = html => $("#view").innerHTML = html;
 const statusCls = s => ({ ACCEPT_NOW: "ok", SUCCEEDED: "ok", APPROVED: "ok", DEFER: "warn", HOLD: "warn", WAITING_HITL: "warn", RUNNING: "warn", PENDING: "warn", REJECT: "bad", FAILED: "bad", ESCALATED: "bad", HALTED: "bad", REJECTED: "bad" }[s] || "");
@@ -490,7 +490,7 @@ function openTerminal(el, name, readOnly, opts = {}) {
 
 // ---------------- visual graph editor ----------------
 const KINDS = { SPEC: "#5b6cf0", AMBIGUITY_GATE: "#b7791f", DEV: "#2f5d50", SEMANTIC_VERIFY: "#7c4dcc", VERIFY: "#2f7d4f", AUDIT: "#0e7490", HITL: "#b3261e" };
-const KIND_HINT = { SPEC: "명세 작성", AMBIGUITY_GATE: "모호성 검사", DEV: "구현 (CLI 에이전트)", SEMANTIC_VERIFY: "의미론적 검증", VERIFY: "테스트·리포트", AUDIT: "감사·UX 잠금", HITL: "사람 승인" };
+const KIND_HINT = { SPEC: "명세 작성", AMBIGUITY_GATE: "모호성 검사", DEV: "구현 (코딩 에이전트)", SEMANTIC_VERIFY: "의미론적 검증", VERIFY: "테스트·리포트", AUDIT: "감사·UX 잠금", HITL: "사람 승인" };
 const NW = 176, NH = 58;
 const GRAPH_TEMPLATE = () => ({ entry: "ambiguity", fast_track_entry: "dev", nodes: [
   { name: "ambiguity", kind: "AMBIGUITY_GATE" },
@@ -939,7 +939,7 @@ const VIEWS = {
     try { st = await api("GET", `/workspaces/${WS}/vm`); } catch (e) { err = e.message; }
     if (stale("vm")) return;
     const rt = st?.runtime || {};
-    V(`<h2>워크스페이스 VM</h2><p class="sub">이 워크스페이스 전용 Cloud Hypervisor VM(Project Agora 런타임)입니다. AGDD의 저장소·테스트·CLI 에이전트 실행은 모두 이 VM 안에서 수행됩니다. 셸은 UID 1000, HOME=/workspace이며 <span class="mono">apt install</span>은 게스트의 승인된 패키지 브리지로 동작합니다(sudo 없음).</p>
+    V(`<h2>워크스페이스 VM</h2><p class="sub">이 워크스페이스 전용 Cloud Hypervisor VM(Project Agora 런타임)입니다. AGDD의 저장소·테스트와 코딩 에이전트의 도구 실행은 모두 이 VM 안에서 수행됩니다(모델 호출은 서버의 LLM Gateway API). 셸은 UID 1000, HOME=/workspace이며 <span class="mono">apt install</span>은 게스트의 승인된 패키지 브리지로 동작합니다(sudo 없음).</p>
       ${err ? `<div class="card bad">${esc(err)}</div>` : `<div class="card row"><span>VM id <span class="mono">${esc(st.canvas_id)}</span></span>
         <span>사양 <select id="tpl">${(Array.isArray(rt.resourceTemplates) ? rt.resourceTemplates.map(k => [k, {}]) : Object.entries(rt.resourceTemplates || {})).map(([k, t]) => `<option value="${esc(k)}" ${k === rt.resourceTemplate ? "selected" : ""}>${esc(t.label || k)}${t.vcpus ? ` · ${t.vcpus} vCPU · ${t.memoryMiB / 1024} GiB` : ""}</option>`).join("")}</select></span>
         <span>디스크 <select id="disk">${(rt.diskSizesGiB || [6,12,24]).map(g => `<option ${g === rt.diskGiB ? "selected" : ""}>${g}</option>`).join("")}</select> GiB</span>
@@ -987,78 +987,39 @@ const VIEWS = {
   },
   async agents() {
     const cfg = await api("GET", `/workspaces/${WS}/agent-settings`);
-    const s = cfg.settings;
-    const errMap = VIEWS._cliErr || (VIEWS._cliErr = {});
-    let clis = peek(`/workspaces/${WS}/vm/clis`), cliErr = errMap[WS] || "";
-    if (clis !== undefined) {
-      delete errMap[WS];
-      cliErr = "";
-    } else if (!cliErr) {
-      clis = null;
-      const wsAt = WS;
-      api("GET", `/workspaces/${WS}/vm/clis`).then(() => {
-        delete errMap[wsAt];
-        if (TAB === "agents" && WS === wsAt) render();
-      }).catch(e => {
-        errMap[wsAt] = e.message || "CLI 상태 확인 실패";
-        if (TAB === "agents" && WS === wsAt) { toast(errMap[wsAt], true); render(); }
-      });
-    }
+    const s = cfg.settings, gw = cfg.gateway || {};
     const opt = (list, cur) => list.map(v => `<option ${v === cur ? "selected" : ""}>${esc(v)}</option>`).join("");
-    V(`<div class="row" style="justify-content:space-between;margin-bottom:8px"><div><h2>CLI 에이전트</h2><p class="sub" style="margin:0">AGDD의 모든 모델 단계(사전 검사, 모호성, 라우팅, Dev, 의미 검증, Watchdog, HITL 카드)는 이 워크스페이스 VM 안에서 선택한 CLI로 실행됩니다. 기본 엔진: <b>${esc(cfg.engine_default)}</b></p></div>
-        <button class="g" id="refresh-clis">설치 상태 새로고침</button></div>
-      <div class="grid2">${Object.entries(cfg.clis).map(([k, c]) => `<div class="card"><h3>${esc(k)}</h3>
-        ${cliErr ? `<p class="bad">${esc(cliErr)}</p>` : clis === null ? `<p class="muted">VM에서 설치 상태 확인 중…</p>` : clis[k]?.installed ? `<p class="ok">설치됨 · <span class="mono">${esc(clis[k].version)}</span></p>` : `<p class="warn">미설치</p>`}
-        <div class="row"><button class="g" data-install="${esc(k)}">VM 터미널에서 설치</button><button class="g" data-login="${esc(k)}">로그인</button></div>
-        <p class="muted mono" style="font-size:11px">${esc(c.install)}</p><p class="muted" style="font-size:12px">로그인: ${esc(c.login)}</p>
-        <div class="row"><button class="g" data-usage="${esc(k)}">남은 사용량</button><button class="g" data-sess="${esc(k)}">세션 목록</button></div></div>`).join("")}</div>
+    const aliasRows = Object.entries(gw.aliases || {}).map(([k, v]) => `<span class="chip"><b>${esc(k)}</b> → <span class="mono">${esc(v)}</span></span>`).join(" ");
+    V(`<div class="row" style="justify-content:space-between;margin-bottom:8px"><div><h2>에이전트 · 모델 API</h2><p class="sub" style="margin:0">AGDD의 모든 모델 단계(사전 검사, 모호성, 라우팅, Dev, 의미 검증, Watchdog, HITL 카드, 팀 에이전트)는 서버에 설정된 API 키로 <b>LLM Gateway</b>를 통해 호출됩니다. 코딩 에이전트의 파일 읽기·수정·명령 실행은 워크스페이스 VM 안에서 수행됩니다. 기본 엔진: <b>${esc(cfg.engine_default)}</b></p></div>
+        <button class="g" id="ag-usage">사용량 (7일)</button></div>
+      <div class="card"><h3>LLM Gateway</h3>
+        ${gw.ok ? `<p class="ok">연결됨${gw.api_key_configured === false ? ` · <span class="warn">업스트림 API 키 미설정 (AGDD_UPSTREAM_API_KEY)</span>` : ""}</p>` : `<p class="bad">연결 안 됨${gw.error ? ` · ${esc(gw.error)}` : ""}</p>`}
+        ${aliasRows ? `<div class="row">${aliasRows}</div>` : ""}
+        <p class="muted" style="font-size:12px">API 키와 업스트림 제공자는 서버 관리자가 <span class="mono">agdd.env</span>(AGDD_UPSTREAM_BASE_URL / AGDD_UPSTREAM_API_KEY / AGDD_MODEL_*)에서 설정합니다. 키는 브라우저나 VM에 전달되지 않습니다.</p></div>
       <div class="card"><h3>기본 실행 설정</h3><div class="row">
-        <label>CLI <select id="cli">${opt(Object.keys(cfg.clis), s.cli)}</select></label>
-        <label>모델 <input id="model" list="models" value="${esc(s.model)}" placeholder="기본값" size="16"><datalist id="models"></datalist></label>
+        <label>모델 <input id="model" list="models" value="${esc(s.model)}" placeholder="mid" size="16"><datalist id="models">${(cfg.models || []).map(m => `<option value="${esc(m)}">`).join("")}</datalist></label>
         <label>추론 강도 <select id="effort">${opt(cfg.efforts, s.effort)}</select></label>
         <label>세션 <input id="session" value="${esc(s.session)}" size="22" title="new | per-run | 세션 ID"></label>
-        <label>권한 <select id="perm">${opt(["sandbox", "ask-edits"], s.permission)}</select></label></div>
-        <div class="row" style="margin-top:8px"><label>저가 단계 모델 <input id="cmodel" value="${esc(s.cheap_model)}" placeholder="모델과 동일" size="16"></label>
+        <label>권한 <select id="perm">${(cfg.permissions || ["sandbox", "ask-edits"]).map(v => `<option value="${esc(v)}" ${v === s.permission ? "selected" : ""}>${v === "sandbox" ? "sandbox · 편집 + 셸 명령" : "ask-edits · 파일 편집만"}</option>`).join("")}</select></label></div>
+        <div class="row" style="margin-top:8px"><label>저가 단계 모델 <input id="cmodel" list="models" value="${esc(s.cheap_model)}" placeholder="cheap" size="16"></label>
         <label>저가 단계 추론 <select id="ceffort">${opt(cfg.efforts, s.cheap_effort)}</select></label>
         <label>기본 저장소 <input id="drepo" value="${esc(s.default_repo || "workspace")}" size="14"></label>
         <label><input type="checkbox" id="uxauto" ${s.ux_auto_canvas !== false ? "checked" : ""}> 2D UX 요청 시 캔버스 자동 연결</label></div>
-        <label class="fld" style="margin-top:10px"><span>워크스페이스 튜닝 지침 / 작업 목표 (CLI 에이전트 및 AGDD에 자동 전달)</span>
+        <label class="fld" style="margin-top:10px"><span>워크스페이스 튜닝 지침 / 작업 목표 (에이전트 및 AGDD에 자동 전달)</span>
           <textarea id="inst" style="min-height:90px" placeholder="예: 한국어 주석을 사용하고, 변경 후 반드시 pytest와 린트를 통과시키세요.">${esc(s.instructions || "")}</textarea></label>
-        <div class="row" style="margin-top:8px"><button class="b" id="saveag">저장</button><button class="g" id="ag-to-collab">협업 · CLI/대화에서 실행 →</button></div>
-        <p class="muted" style="font-size:12px">세션: <b>new</b> = 매 시도 새 컨텍스트(DOC 노드 리셋), <b>per-run</b> = 실행 내 재시도는 같은 세션 이어가기, 세션 ID = 기존 CLI 세션에서 계속. 권한 sandbox = VM 안에서 승인 없이 셸·편집 허용(VM이 격리 경계), ask-edits = 편집만 허용.</p></div>
+        <div class="row" style="margin-top:8px"><button class="b" id="saveag">저장</button><button class="g" id="ag-to-collab">협업 · 에이전트 대화에서 실행 →</button></div>
+        <p class="muted" style="font-size:12px">모델: Gateway 별칭(<b>cheap</b> / <b>mid</b> / <b>advisor</b>) 또는 업스트림 모델 이름. 세션: <b>new</b> = 매 시도 새 컨텍스트(DOC 노드 리셋), <b>per-run</b> = 실행 내 재시도는 같은 대화 이어가기, 세션 ID = 저장된 에이전트 대화에서 계속(VM의 <span class="mono">~/.agdd/sessions</span>). 권한 sandbox = VM 안에서 승인 없이 셸·편집 허용(VM이 격리 경계), ask-edits = 파일 편집만 허용.</p></div>
       <div id="agout"></div>`);
-    const setModels = () => { $("#models").innerHTML = (cfg.clis[$("#cli").value]?.models || []).map(m => `<option value="${esc(m)}">`).join(""); };
-    setModels(); $("#cli").onchange = setModels;
-    $("#refresh-clis").onclick = run(async () => {
-      $("#refresh-clis").disabled = true;
-      try {
-        delete errMap[WS];
-        CACHE.delete(`/workspaces/${WS}/vm/clis`);
-        const fresh = await api("GET", `/workspaces/${WS}/vm/clis?refresh=1`, undefined, { fresh: true });
-        CACHE.set(`/workspaces/${WS}/vm/clis`, { t: Date.now(), v: fresh });
-        toast("CLI 설치 상태 새로고침됨");
-        render();
-      } finally { if ($("#refresh-clis")) $("#refresh-clis").disabled = false; }
-    });
-    $("#saveag").onclick = run(async () => { await api("PUT", `/workspaces/${WS}/agent-settings`, { cli: $("#cli").value, model: $("#model").value.trim(), effort: $("#effort").value, session: $("#session").value.trim() || "per-run", permission: $("#perm").value, cheap_model: $("#cmodel").value.trim(), cheap_effort: $("#ceffort").value, default_repo: $("#drepo").value.trim() || "workspace", ux_auto_canvas: $("#uxauto").checked, instructions: $("#inst").value }); toast("저장됨 (VM 인메모리 DB 동기화 예약됨)"); });
+    $("#saveag").onclick = run(async () => { await api("PUT", `/workspaces/${WS}/agent-settings`, { model: $("#model").value.trim() || "mid", effort: $("#effort").value, session: $("#session").value.trim() || "per-run", permission: $("#perm").value, cheap_model: $("#cmodel").value.trim() || "cheap", cheap_effort: $("#ceffort").value, default_repo: $("#drepo").value.trim() || "workspace", ux_auto_canvas: $("#uxauto").checked, instructions: $("#inst").value }); toast("저장됨 (VM 인메모리 DB 동기화 예약됨)"); });
     $("#ag-to-collab").onclick = () => { TAB = "collab"; store.set("agdd.tab", "collab"); render(); };
-    const toTerm = cmd => { TAB = "vm"; store.set("agdd.tab", "vm"); render().then(() => TERM?.type(cmd + "\r")); };
-    document.querySelectorAll("[data-install]").forEach(b => b.onclick = () => toTerm(cfg.clis[b.dataset.install].install));
-    document.querySelectorAll("[data-login]").forEach(b => b.onclick = () => toTerm({ claude: "claude", codex: "codex login --device-auth", agy: "agy" }[b.dataset.login]));
-    document.querySelectorAll("[data-usage]").forEach(b => b.onclick = run(async () => {
-      $("#agout").innerHTML = `<div class="card muted">${esc(b.dataset.usage)} 사용량 조회 중… (CLI 호출, 최대 2분)</div>`;
-      const u = await api("GET", `/workspaces/${WS}/vm/usage/${b.dataset.usage}`);
-      const rl = u.rate_limits || {};
-      const bars = Object.entries(rl).filter(([, v]) => v && typeof v === "object" && "used_percent" in v).map(([k, v]) => `<p>${esc(k)} (${esc(v.window_minutes ? Math.round(v.window_minutes / 60) + "h" : "")}): 남은 ${(100 - v.used_percent).toFixed(0)}% ${v.resets_at ? `· 리셋 ${esc(new Date(v.resets_at * 1000).toLocaleString())}` : ""}</p><div class="bar"><i style="width:${Math.max(0, 100 - v.used_percent)}%"></i></div>`).join("");
-      $("#agout").innerHTML = `<div class="card"><h3>${esc(u.cli)} 남은 사용량</h3>${bars || (Object.keys(rl).length ? `<pre>${esc(JSON.stringify(rl, null, 2))}</pre>` : "<p class='muted'>구조화된 한도 정보 없음 — CLI 보고서를 확인하세요.</p>")}
-        ${u.rate_limits_at ? `<p class="muted">스냅샷: ${esc(u.rate_limits_at)}</p>` : ""}<h4>CLI 보고서</h4><pre>${esc(u.report)}</pre>
-        <h4>AGDD 사용 기록 (7일)</h4><div class="tbl"><table><tr><th>model</th><th>calls</th><th>prompt</th><th>cached</th><th>output</th><th>thinking</th><th>$</th></tr>${u.agdd_7d.map(t => `<tr><td>${esc(t.model_name)}</td><td>${t.calls}</td><td>${t.prompt}</td><td>${t.cached}</td><td>${t.output}</td><td>${t.thinking}</td><td>${Number(t.cost || 0).toFixed(4)}</td></tr>`).join("")}</table></div></div>`;
-    }));
-    document.querySelectorAll("[data-sess]").forEach(b => b.onclick = run(async () => {
-      const r = await api("GET", `/workspaces/${WS}/vm/sessions/${b.dataset.sess}`);
-      $("#agout").innerHTML = `<div class="card"><h3>${esc(b.dataset.sess)} 세션</h3>${r.sessions.length ? `<div class="tbl"><table><tr><th>session id</th><th>최근</th><th>위치</th><th></th></tr>${r.sessions.map(x => `<tr><td class="mono">${esc(x.id)}</td><td>${esc(new Date(x.mtime * 1000).toLocaleString())}</td><td class="mono">${esc(x.where)}</td><td><button class="g" data-use="${esc(x.id)}">이 세션 사용</button></td></tr>`).join("")}</table></div>` : `<pre>${esc(r.raw || "세션 없음")}</pre>`}</div>`;
-      document.querySelectorAll("[data-use]").forEach(u => u.onclick = () => { $("#session").value = u.dataset.use; $("#cli").value = b.dataset.sess; toast("세션 선택됨 — 저장을 누르세요"); });
-    }));
+    $("#ag-usage").onclick = run(async () => {
+      const u = await api("GET", `/workspaces/${WS}/model-usage`, undefined, { fresh: true });
+      const b = u.budget;
+      $("#agout").innerHTML = `<div class="card"><h3>API 사용 기록 (7일)</h3>
+        ${b ? `<p>이번 달 예산: $${Number(b.spent_usd).toFixed(2)} / $${Number(b.limit_usd).toFixed(2)}</p><div class="bar"><i style="width:${Math.min(100, Number(b.spent_usd) / Math.max(1e-9, Number(b.limit_usd)) * 100)}%"></i></div>` : `<p class="muted">이번 달 예산 한도가 설정되지 않았습니다.</p>`}
+        <div class="tbl"><table><tr><th>model</th><th>calls</th><th>prompt</th><th>cached</th><th>output</th><th>thinking</th><th>$</th></tr>${(u.agdd_7d || []).map(t => `<tr><td>${esc(t.model_name)}</td><td>${t.calls}</td><td>${t.prompt}</td><td>${t.cached}</td><td>${t.output}</td><td>${t.thinking}</td><td>${Number(t.cost || 0).toFixed(4)}</td></tr>`).join("") || `<tr><td colspan="7" class="muted">기록 없음</td></tr>`}</table></div>
+        <p class="muted" style="font-size:12px">그래프 실행 단계의 호출이 집계됩니다. 팀·대화 호출은 워크스페이스 예산에만 반영됩니다.</p></div>`;
+    });
   },
   async specs() {
     const S = SPEC;
@@ -1188,12 +1149,12 @@ const VIEWS = {
     const statusHtml = (ver, ok) => `최신 스냅샷 v${esc(ver ?? "-")}: ${ok ? '<b class="ok">통과</b>' : '<b class="warn">미통과/미검사</b>'}`;
     V(`<h2>사전 검사 (Pre-Flight Gate)</h2><p class="sub">1) SQL 무결성 → 2) 배치 묶기 → 3) 저렴한 모델 의미 검사 → 4) CRITICAL 0건이면 실행 허가. 모호성 린터도 함께 실행됩니다.</p>
       <div class="card row"><span id="gate-status">${statusHtml(last.version, last.conflict_passed)}</span>
-      <select id="gate-eng" title="사전 검사 LLM 엔진"><option value="">엔진 기본</option><option value="vm-cli">VM CLI</option><option value="gateway">Gateway</option></select>
+      <select id="gate-eng" title="사전 검사 LLM 엔진"><option value="">엔진 기본</option><option value="vm">VM + API</option><option value="gateway">Gateway</option></select>
       <label><input type="checkbox" id="sem" checked> 의미 검사</label><label><input type="checkbox" id="amb" checked> 모호성 린터</label><button class="b" id="go">검사 실행</button></div><div id="out"></div>`);
     $("#go").onclick = run(async () => {
       const eng = $("#gate-eng")?.value || "";
       const body = { semantic: $("#sem").checked, ambiguity: $("#amb").checked, ...(eng ? { engine: eng } : {}) };
-      $("#go").disabled = true; $("#out").innerHTML = `<p class="muted">검사 중… (VM CLI 선택 시 첫 기동·LLM 분석에 수십 초~1분 정도 걸릴 수 있습니다)</p>`;
+      $("#go").disabled = true; $("#out").innerHTML = `<p class="muted">검사 중… (LLM 분석에 수십 초 정도 걸릴 수 있습니다)</p>`;
       try {
         const r = await api("POST", `/workspaces/${WS}/preflight`, body);
         const conflicts = r.conflicts || [];
@@ -1281,8 +1242,7 @@ const VIEWS = {
       <div class="card"><div class="row"><select id="gid">${gs.map(g => `<option value="${esc(g.graph_id)}" ${g.graph_id === store.get("agdd.rungraph") ? "selected" : ""}>${esc(g.graph_id.slice(0, 8))} v${g.version} (${esc(g.definition_json.entry)})</option>`).join("")}</select>
       <input id="repo" placeholder="repo_key (예: workspace)" value="${esc(store.get("agdd.repo") || "workspace")}"></div>
       <div class="row" style="margin-top:8px"><span class="muted">이번 실행만:</span>
-        <select id="r_engine"><option value="">엔진 기본</option><option value="vm-cli">VM CLI</option><option value="gateway">Gateway</option></select>
-        <select id="r_cli"><option value="">CLI 기본</option><option>claude</option><option>codex</option><option>agy</option></select>
+        <select id="r_engine"><option value="">엔진 기본</option><option value="vm">VM + API</option><option value="gateway">Gateway</option></select>
         <input id="r_model" placeholder="모델" size="12"><select id="r_effort"><option value="">추론 기본</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select>
         <input id="r_session" placeholder="세션 (new/per-run/ID)" size="18"></div>
       <textarea id="req" style="min-height:90px;margin-top:8px" placeholder="변경 요청 (예: calc.py의 add 함수 버그를 고치고 테스트를 통과시켜라)"></textarea>
@@ -1291,7 +1251,7 @@ const VIEWS = {
     if ($("#r-to-graphs")) $("#r-to-graphs").onclick = () => { TAB = "graphs"; store.set("agdd.tab", TAB); render(); };
     if ($("#r-to-gate")) $("#r-to-gate").onclick = () => { TAB = "gate"; store.set("agdd.tab", TAB); render(); };
     $("#r-refresh").onclick = () => VIEWS.runs();
-    $("#start").onclick = run(async () => { store.set("agdd.repo", $("#repo").value); const agent = Object.fromEntries([["cli", $("#r_cli").value], ["model", $("#r_model").value.trim()], ["effort", $("#r_effort").value], ["session", $("#r_session").value.trim()]].filter(([, v]) => v));
+    $("#start").onclick = run(async () => { store.set("agdd.repo", $("#repo").value); const agent = Object.fromEntries([["model", $("#r_model").value.trim()], ["effort", $("#r_effort").value], ["session", $("#r_session").value.trim()]].filter(([, v]) => v));
       const r = await api("POST", `/workspaces/${WS}/runs`, { graph_id: $("#gid").value, request: $("#req").value, repo_key: $("#repo").value, agent, ...($("#r_engine").value ? { engine: $("#r_engine").value } : {}) }); toast(`${r.route_mode} 실행 시작`); await VIEWS.runs(); showRun(r.run_id); });
     document.querySelectorAll("a[data-run]").forEach(a => a.onclick = e => { e.preventDefault(); showRun(a.dataset.run); });
   },
@@ -1339,7 +1299,7 @@ const VIEWS = {
     $("#unlock").onclick = run(async () => { await api("POST", `/workspaces/${WS}/ux/${encodeURIComponent($("#view").value)}/unlock`, { selectors: [$("#unl").value] }); toast("해제됨"); load(); });
   },
   async research() {
-    V(`<h2>즉시 리서치</h2><p class="sub">사내 이름·경로·비밀값·PII를 제거한 질의로 과거 사례 → arXiv / Semantic Scholar / 공식 문서를 검색해 1,000토큰 이내 Insight Brief를 만듭니다.</p>
+    V(`<h2>즉시 리서치</h2><p class="sub">사내 이름·경로·비밀값·PII를 제거한 질의로 과거 사례 → arXiv / Semantic Scholar / 공식 문서를 검색해 1,000토큰 이내 Insight Brief를 만듭니다. <span class="muted" style="font-size:12px">Thank you to arXiv for use of its open access interoperability. · 논문 데이터: <a href="https://www.semanticscholar.org" target="_blank" rel="noopener">Semantic Scholar API</a></span></p>
       <div class="card"><textarea id="prob" style="min-height:120px" placeholder="막힌 문제 / 에러 메시지를 붙여넣으세요"></textarea><div class="row" style="margin-top:8px"><button class="b" id="go">리서치</button><button class="g bad" id="r-abort" hidden>검색 중단</button></div></div><div id="out"></div><div id="r-hist"></div>`);
     const loadHistory = async () => {
       const h = await api("GET", `/workspaces/${WS}/research/history`, undefined, { fresh: true }).catch(() => ({ items: [] }));
@@ -1409,7 +1369,7 @@ const VIEWS = {
 
 function renderRunBody(r) {
   const h = r.handoff_json || {};
-  return `<p class="muted">엔진 ${esc(h.engine || "gateway")} ${h.agent && Object.keys(h.agent).length ? "· " + esc(JSON.stringify(h.agent)) : ""} ${h.cli_session ? `· CLI 세션 <span class="mono">${esc(h.cli_session)}</span>` : ""} · 자동화 터미널 <span class="mono">agdd-${esc(String(r.run_id).slice(0, 8))}</span></p>
+  return `<p class="muted">엔진 ${esc(h.engine || "gateway")} ${h.agent && Object.keys(h.agent).length ? "· " + esc(JSON.stringify(h.agent)) : ""} ${(h.agent_session || h.cli_session) ? `· 에이전트 세션 <span class="mono">${esc(h.agent_session || h.cli_session)}</span>` : ""} · 자동화 터미널 <span class="mono">agdd-${esc(String(r.run_id).slice(0, 8))}</span></p>
     ${h.dev_summary ? `<p><b>Dev 요약:</b> ${esc(h.dev_summary)}</p>` : ""}${h.feedback ? `<p class="bad"><b>피드백:</b></p><pre>${esc(h.feedback)}</pre>` : ""}
     ${h.last_patch ? `<details><summary>변경 diff (${esc((h.changed_files || []).join(", "))})</summary><pre>${esc(h.last_patch)}</pre></details>` : ""}
     ${h.insight_brief ? `<details><summary>Insight Brief</summary><pre>${esc(h.insight_brief)}</pre></details>` : ""}
@@ -1477,7 +1437,7 @@ window.AGDD = {
 { const q = new URL(location.href).searchParams;  // deep links: /agdd/?tab=ide&pane=studio&workspace=N
   if (q.get("tab") && /^[a-z]+$/.test(q.get("tab"))) { if (TABS[q.get("tab")]) TAB = q.get("tab"); }
   if (["files", "studio", "split"].includes(q.get("pane"))) IDE.pane = q.get("pane");
-  if (["chat", "cli"].includes(q.get("mode"))) COLLAB.mode = q.get("mode");
+  if (q.get("mode") === "chat") COLLAB.mode = "chat";
   if (q.get("view") && /^[A-Za-z0-9_.-]{1,64}$/.test(q.get("view"))) UXC.view = q.get("view"); }
 </script>
 <script src="static/terms.js"></script>

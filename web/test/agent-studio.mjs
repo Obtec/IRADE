@@ -32,7 +32,7 @@ try {
 	assert.equal(logoLoaded, true, 'IRADE header logo must load');
 	await page.waitForFunction(() => document.querySelector('#connection-label')?.textContent === 'WORKSPACE LIVE SYNC');
 
-	// Desktop right panel opens on the Antigravity AI Agent drawer by default, and #agent-toggle cleanly toggles it closed/open.
+	// Desktop right panel opens on the IRADE Research Agent drawer by default, and #agent-toggle cleanly toggles it closed/open.
 	await page.waitForSelector('#agent-drawer:not([hidden])');
 	await page.click('#agent-toggle');
 	await page.waitForSelector('#agent-drawer', { state: 'hidden' });

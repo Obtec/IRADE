@@ -1,17 +1,17 @@
 """Multi-agent teams: persistence (agent_teams / agent_team_runs / agent_team_events / attachments) and execution.
 
-A team run executes in a background thread of agdd-api. Each agent node gets its own VM PTY
-(``agdd-ma-<node>``) so independent agents really run in parallel inside the workspace VM; code-mode agents
-share one repo working tree and are therefore serialized per workspace. Without a VM, think-mode agents
-fall back to the LLM gateway and code-mode agents fail with a clear error.
+A team run executes in a background thread of agdd-api. Every model call goes through the LLM Gateway (server
+API key). Each agent node gets its own VM PTY (``agdd-ma-<node>``) where its tools run, so independent agents
+really run in parallel inside the workspace VM; code-mode agents share one repo working tree and are therefore
+serialized per workspace. Without a VM, think-mode agents call the gateway directly and code-mode agents fail
+with a clear error.
 
 Multimodal inputs: files are uploaded in chunks (``agent_team_attachments`` + ``_chunks``). At run start
 :class:`VmMedia` streams every attachment that reaches an agent into ``~/.agdd/attachments/<sha256>/`` (cached
 across runs) and runs ``agdd_media.py`` in the VM: PDF -> text + page images, video -> key frames + audio
-transcript, audio -> transcript (whisper, when installed). Each CLI then gets the files it can consume natively:
-Claude Code reads images/PDFs with its Read tool, Codex receives images with ``--image``, Gemini-family CLIs get
-``@path`` references (video/audio included). Without a VM, images go to the gateway as image parts and text
-files as inline excerpts.
+transcript, audio -> transcript (whisper, when installed). The agent then receives images (originals and derived
+frames/pages) as image parts, text files inline, and the VM paths of everything else for its tools. Without a VM,
+images go to the gateway as image parts and text files as inline excerpts.
 """
 from __future__ import annotations
 
@@ -228,7 +228,7 @@ def delete_attachment(ws, aid) -> bool:
 
 # ---------------------------------------------------------------- media in the VM
 MEDIA_SCRIPT = r'''#!/usr/bin/env python3
-"""agdd_media.py <file> <modality>: best-effort derivatives for CLI agents; prints a JSON manifest (cached)."""
+"""agdd_media.py <file> <modality>: best-effort derivatives for model agents; prints a JSON manifest (cached)."""
 import json, os, shutil, subprocess, sys
 
 path, modality = sys.argv[1], sys.argv[2]
@@ -294,8 +294,8 @@ def transcribe(audio):
         if r.returncode == 0 and os.path.exists(txt):
             text_file(txt, "음성 전사")
             return
-    out["notes"].append("음성 전사 도구(whisper)가 VM에 없어 전사본이 없습니다 — Gemini 계열(agy) 에이전트는 원본 오디오를 "
-                        "직접 들을 수 있고, 다른 에이전트는 메타데이터만 참고합니다")
+    out["notes"].append("음성 전사 도구(whisper)가 VM에 없어 전사본이 없습니다 — 에이전트는 메타데이터와 VM 경로만 "
+                        "참고합니다 (전사가 필요하면 VM에 whisper를 설치하세요)")
 
 
 if modality == "pdf":
@@ -333,7 +333,7 @@ _MODAL_KO = {"text": "텍스트", "image": "이미지", "video": "동영상", "a
 
 
 class VmMedia(multi_agent.MediaHooks):
-    """Copies attachments into the workspace VM once per run and tells each CLI how to read them."""
+    """Copies attachments into the workspace VM once per run and tells each agent how to read them."""
 
     def __init__(self, ws, use_vm: bool | None = None):
         self.ws = ws
@@ -394,7 +394,7 @@ class VmMedia(multi_agent.MediaHooks):
         return "\n".join(rows)
 
     def files_for(self, metas) -> list:
-        from .cli_agents import MediaFile
+        from .api_agents import MediaFile
         files = []
         for m in metas:
             inf = self.info.get(m["id"])
@@ -490,37 +490,33 @@ def invoker(ws, repo_key: str, run_id: str, media: VmMedia | None = None):
                 return _gateway_multimodal(ws, node, prompt, schema, metas)
             llm = infra.cheap_model("multi_agent", ws, None, node["id"])
             return llm(prompt, schema)
-        from .cli_agents import VmAgent
+        from .api_agents import ApiAgent
         from .vm import RuntimeClient, VmShell
         prompt += f"\n\n(team run {run_id})"  # keep the semantic cache from replaying an earlier run's answer
-        override = {k: node[k] for k in ("cli", "model", "effort") if node.get(k)}
+        override = {k: node[k] for k in ("model", "effort") if node.get(k)}
         if node["mode"] == "think":  # structured() uses the cheap slot: point it at this node's model/effort
             override["cheap_model"] = node.get("model") or base.model
             override["cheap_effort"] = node.get("effort") or base.effort
         settings = vm_service.load_settings(ws, override)
         term = f"agdd-ma-{node['id']}" + (f"-t{ctx['subtask']['index']}" if ctx.get("subtask") else "")
         sh = VmShell(RuntimeClient(), vm_service.canvas_for(ws), term[:64])  # parallel sub-tasks: one PTY each
-        sh.mirror = True  # echo CLI output into the PTY: the console's agent monitor watches it live
-        agent = VmAgent(sh, settings, vm_service.budget_gate(ws))
+        sh.mirror = True  # echo the agent's tool calls into the PTY: the console's agent monitor watches it live
+        agent = ApiAgent(sh, settings, ws, None, f"team:{node['id']}")
         files = media.files_for(metas)
-        t0 = time.time()
         try:
             if node["mode"] == "think":
-                data, res = agent.structured(prompt, schema, timeout=node["timeout"], files=files)
-                vm_service.record_usage(ws, None, f"team:{node['id']}", settings, res,
-                                        int((time.time() - t0) * 1000), cheap=True)
+                data, _res = agent.structured(prompt, schema, timeout=node["timeout"], files=files, task="multi_agent")
                 return data
             with _code_lock(ws):
                 repo_dir = f"{sh.home}/repos/{repo_key}"
                 res = agent.agent(prompt, repo_dir, None, timeout=node["timeout"], files=files)
                 status = sh.run(f"cd {repo_dir} && git status --porcelain 2>/dev/null || true", timeout=30).output
-            vm_service.record_usage(ws, None, f"team:{node['id']}", settings, res, int((time.time() - t0) * 1000))
             if not res.ok:
-                raise RuntimeError((res.text or res.raw_tail or "CLI agent failed")[:3000])
+                raise RuntimeError((res.text or res.raw_tail or "agent failed")[:3000])
             out = multi_agent.coerce_output(res.text)
             out.meta = {"changed_files": sorted({l[3:].strip() for l in status.splitlines()
                                                  if l[3:].strip() and not l[3:].startswith(".agdd")}),
-                        "cli": settings.cli, "model": res.model}
+                        "model": res.model, "steps": res.steps}
             return out
         finally:
             sh.close()

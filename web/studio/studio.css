@@ -2601,8 +2601,8 @@ body.is-resizing iframe {
   cursor: pointer;
 }
 
-.dock-arcade-canvas.tetris-aspect {
-  aspect-ratio: 1 / 2;
+.dock-arcade-canvas.blocks-aspect {
+  aspect-ratio: 3 / 4;
 }
 
 .dock-arcade-side-panel {

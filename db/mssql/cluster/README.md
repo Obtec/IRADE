@@ -25,6 +25,17 @@ Linux host and manage the Availability Group with Pacemaker on the hosts.
   patterns or install SQL Server directly on supported Linux hosts with
   Pacemaker rather than treating this Compose file as the HA manager.
 
+## Licensing
+
+SQL Server Standard is a paid edition. Setting `MSSQL_PID=Standard` (or a
+product key) and `ACCEPT_EULA=Y` declares that you hold valid SQL Server
+Standard licenses for every core of each data-replica host (per-core licensing,
+minimum 4 cores per server, or the container/virtualization terms of your
+agreement). The Compose file therefore has no edition default: set
+`MSSQL_NODE_PID` explicitly on every node. Use `Express` (free) only for the
+configuration-only replica, and never run the Developer edition in production.
+See [Microsoft SQL Server licensing](https://www.microsoft.com/licensing/guidance/SQL).
+
 ## Per-node Compose setup
 
 On each of three SQL Server hosts, provide the same `mssql/.env` secrets and

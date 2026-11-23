@@ -78,43 +78,31 @@ def _ws_engine(conn, ws):
     return pgstore.hydrate_engine(conn, ws)
 
 
-# ---------------- workspace VM & CLI agents ----------------
+# ---------------- workspace VM & API agents ----------------
+_ENGINE_ALIASES = {"vm-cli": "vm"}  # pre-API engine name kept for stored runs / old clients
+
+
 def _engine(body) -> str:
-    e = (body or {}).get("engine") or ("vm-cli" if vm_service.enabled() else "gateway")
-    if e not in ("vm-cli", "gateway"):
-        raise HttpError(422, "engine must be vm-cli or gateway")
-    if e == "vm-cli" and not vm_service.enabled():
+    e = (body or {}).get("engine") or ("vm" if vm_service.enabled() else "gateway")
+    e = _ENGINE_ALIASES.get(e, e)
+    if e not in ("vm", "gateway"):
+        raise HttpError(422, "engine must be vm or gateway")
+    if e == "vm" and not vm_service.enabled():
         raise HttpError(503, "VM runtime is not connected (AGORA_RUNTIME_SOCKET)")
     return e
 
 
 @contextlib.contextmanager
 def _vm_llm_session(ws, name, override=None):
-    """Lazy ephemeral VM PTY for cheap structured CLI calls; closed on exit so guest PTY slots never leak."""
-    import time as _t
-    from . import cli_agents, vm
-    settings = vm_service.load_settings(ws, override)
-    pty_name = f"{name}-{uuid.uuid4().hex[:8]}"[:64]
-    sh = vm.VmShell(vm.RuntimeClient(), vm_service.canvas_for(ws), pty_name)
-    agent = cli_agents.VmAgent(sh, settings, vm_service.budget_gate(ws))
-
-    def call(prompt: str, schema: dict) -> dict:
-        t0 = _t.time()
-        data, res = agent.structured(prompt, schema)
-        vm_service.record_usage(ws, None, pty_name, settings, res, int((_t.time() - t0) * 1000), cheap=True)
-        return data
-
-    try:
-        yield call
-    finally:
-        try:
-            sh.close()
-        except Exception:
-            pass
+    """Structured model calls with the workspace's agent settings (cheap model/effort) through the LLM Gateway.
+    No VM PTY is needed: only repository tools run in the VM."""
+    from .api_agents import ApiAgent
+    agent = ApiAgent(None, vm_service.load_settings(ws, override), ws, None, name)
+    yield agent.cheap_llm(task=name.removeprefix("agdd-") or "classify")
 
 
 def _lazy_vm_llm(stack: contextlib.ExitStack, ws, name, override=None):
-    """Defer opening an ephemeral VM PTY until an LLM call is actually needed."""
+    """Kept for call sites that build the model function lazily."""
     fn = None
 
     def call(prompt: str, schema: dict) -> dict:
@@ -198,11 +186,33 @@ def vm_terminal_ticket(ctx, ws, body, name):
 
 @route("GET", r"/workspaces/(?P<ws>[^/]+)/agent-settings", "VIEWER")
 def get_agent_settings(ctx, ws, body):
-    from .cli_agents import EFFORTS, PROFILES
+    from .api_agents import EFFORTS, MODEL_ALIASES, PERMISSIONS
     s = vm_service.load_settings(ws)
-    return {"settings": s.__dict__, "efforts": EFFORTS, "engine_default": "vm-cli" if vm_service.enabled() else "gateway",
-            "clis": {k: {"models": list(p.models), "install": p.install, "login": p.login_hint}
-                     for k, p in PROFILES.items()}}
+    return {"settings": s.__dict__, "efforts": EFFORTS, "permissions": PERMISSIONS,
+            "engine_default": "vm" if vm_service.enabled() else "gateway",
+            "models": list(MODEL_ALIASES), "gateway": _gateway_status()}
+
+
+_GATEWAY_STATUS: list = [0.0, None]
+
+
+def _gateway_status() -> dict:
+    """LLM Gateway health + alias → upstream model map (cached 60 s). Never exposes the upstream API key."""
+    now = time.monotonic()
+    if _GATEWAY_STATUS[1] is not None and now - _GATEWAY_STATUS[0] < 60:
+        return _GATEWAY_STATUS[1]
+    base = infra.env("LLM_GATEWAY_URL", "http://llm-gateway:8090/v1").rstrip("/")
+    base = base[:-3] if base.endswith("/v1") else base
+    try:
+        import urllib.request
+        with urllib.request.urlopen(base + "/healthz", timeout=3) as r:  # noqa: S310 (internal service URL)
+            data = json.loads(r.read() or b"{}")
+        st = {"ok": bool(data.get("ok")), "aliases": data.get("aliases") or {},
+              "api_key_configured": data.get("api_key_configured")}
+    except Exception as e:
+        st = {"ok": False, "error": str(e)[:200], "aliases": {}}
+    _GATEWAY_STATUS[:] = [now, st]
+    return st
 
 
 @route("PUT", r"/workspaces/(?P<ws>[^/]+)/agent-settings", "EDITOR")
@@ -215,61 +225,28 @@ def put_agent_settings(ctx, ws, body):
     return saved
 
 
-@route("GET", r"/workspaces/(?P<ws>[^/]+)/vm/clis", "VIEWER")
-def vm_clis(ctx, ws, body):
-    _require_vm()
-    from .cli_agents import PROFILES
-    q_ref = ((ctx.get("query") or {}).get("refresh") or [""])[0].lower() in ("1", "true", "yes")
-    refresh = q_ref or bool((body or {}).get("refresh"))
-    hit = _CLI_CACHE.get(ws)
-    if hit and time.monotonic() - hit[0] < 600 and not refresh:
-        return hit[1]
-    sh = vm_service.shell(ws, "agdd-api")
-    # Version probes start node runtimes (seconds each), so run them in parallel.
-    out = sh.run_inline(" ".join(f"(echo {k}=$( {p.version_cmd()} 2>/dev/null | head -1 )) &" for k, p in PROFILES.items())
-                        + " wait", timeout=120).output
-    vers = dict(l.split("=", 1) for l in out.splitlines() if "=" in l)
-    res = {k: {"installed": bool(vers.get(k, "").strip()), "version": vers.get(k, "").strip(),
-               "install": p.install, "login": p.login_hint} for k, p in PROFILES.items()}
-    _CLI_CACHE[ws] = (time.monotonic(), res)
-    return res
-
-
-_CLI_CACHE: dict = {}
 _LINKS: dict = {}
 
 
-@route("GET", r"/workspaces/(?P<ws>[^/]+)/vm/sessions/(?P<cli>claude|codex|agy)", "VIEWER")
-def vm_sessions(ctx, ws, body, cli):
-    _require_vm()
-    from .cli_agents import PROFILES, parse_sessions
-    out = vm_service.shell(ws, "agdd-api").run(PROFILES[cli].sessions_cmd(), timeout=120).output
-    return {"sessions": parse_sessions(out), "raw": out[-4000:] if cli == "agy" else ""}
-
-
-@route("GET", r"/workspaces/(?P<ws>[^/]+)/vm/usage/(?P<cli>claude|codex|agy)", "VIEWER")
-def vm_usage(ctx, ws, body, cli):
-    """Remaining plan usage as reported by the CLI itself + rate-limit snapshots seen during runs + AGDD's own tally."""
-    _require_vm()
-    from .cli_agents import PROFILES, parse_codex_rate_limits
-    out = vm_service.shell(ws, "agdd-api").run(PROFILES[cli].usage_cmd(), timeout=300).output
-    parsed = parse_codex_rate_limits(out) if cli == "codex" else None
-    with infra.pg() as c:
-        if parsed:
-            c.execute("INSERT INTO cli_usage_snapshots (workspace_id, cli, rate_limits, raw_text) VALUES (%s,%s,%s,%s) "
-                      "ON CONFLICT (workspace_id, cli) DO UPDATE SET rate_limits=EXCLUDED.rate_limits, "
-                      "raw_text=EXCLUDED.raw_text, captured_at=now()", (ws, cli, Jsonb(parsed), out[-8000:]))
-        snap = c.execute("SELECT rate_limits, captured_at FROM cli_usage_snapshots WHERE workspace_id=%s AND cli=%s",
-                         (ws, cli)).fetchone()
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/model-usage", "VIEWER")
+def model_usage(ctx, ws, body):
+    """API model usage for this workspace over the last 7 days (recorded by the LLM Gateway) + monthly budget."""
+    from datetime import datetime, timezone
+    with infra.pg(readonly=True) as c:
         tally = c.execute(
             "SELECT model_name, count(*) calls, sum(prompt_tokens) prompt, sum(cached_tokens) cached, "
             "sum(output_tokens) output, sum(thinking_tokens) thinking, sum(cost_usd) cost FROM node_executions e "
             "JOIN workflow_runs r USING (run_id) JOIN graph_definitions g ON g.graph_id=r.graph_id "
-            "AND g.version=r.graph_version WHERE g.workspace_id=%s AND e.model_name LIKE %s "
-            "AND e.created_at > now() - interval '7 days' GROUP BY 1", (ws, cli + ":%")).fetchall()
-        c.commit()
-    return {"cli": cli, "report": out[-6000:], "rate_limits": parsed or (snap or {}).get("rate_limits"),
-            "rate_limits_at": (snap or {}).get("captured_at"), "agdd_7d": tally}
+            "AND g.version=r.graph_version WHERE g.workspace_id=%s "
+            "AND e.created_at > now() - interval '7 days' GROUP BY 1 ORDER BY 7 DESC NULLS LAST", (ws,)).fetchall()
+        budget_row = c.execute("SELECT limit_usd, spent_usd FROM workspace_budgets WHERE workspace_id=%s "
+                               "AND period_ym=%s", (ws, datetime.now(timezone.utc).strftime("%Y-%m"))).fetchone()
+    return {"agdd_7d": tally, "budget": budget_row}
+
+
+# The Agora guest image ships without git and with empty apt lists, so `apt update` must run before install;
+# apt goes through the guest's unprivileged package bridge.
+_VM_PREREQ = ("command -v git >/dev/null || { apt update -q && apt install -y -q git ca-certificates; } && ")
 
 
 @route("POST", r"/workspaces/(?P<ws>[^/]+)/vm/demo-repo", "EDITOR")
@@ -278,8 +255,7 @@ def vm_demo_repo(ctx, ws, body):
     _require_vm()
     sh = vm_service.shell(ws, "agdd-api")
     d = "/workspace/repos/demo"
-    from .cli_agents import PREREQ
-    sh.run(PREREQ + f"rm -rf {d} && mkdir -p {d}/tests", timeout=900, check=True)
+    sh.run(_VM_PREREQ + f"rm -rf {d} && mkdir -p {d}/tests", timeout=900, check=True)
     sh.put_file(f"{d}/calc.py", DEMO_CALC)
     sh.put_file(f"{d}/tests/test_calc.py", DEMO_TEST)
     sh.put_file(f"{d}/.gitignore", ".agdd/\n__pycache__/\n.pytest_cache/\n")
@@ -878,7 +854,7 @@ def put_trace(ctx, ws, body):
 def run_preflight(ctx, ws, body):
     """3-step: (1) hydrate in a short read -> (2) SQL + LLM checks with no DB connection held ->
     (3) commit the snapshot in a short write (DOC.md §4.1: LLM calls are never inside a transaction)."""
-    use_vm = _engine(body) == "vm-cli"
+    use_vm = _engine(body) == "vm"
     run_semantic = bool(body.get("semantic", True))
     run_ambiguity = bool(body.get("ambiguity", True))
     agent_override = body.get("agent") or {}
@@ -889,8 +865,8 @@ def run_preflight(ctx, ws, body):
         snaps = []
         with contextlib.ExitStack() as stack:
             if use_vm:
-                # Lazily open one ephemeral VM PTY only if Stage 3 or ambiguity needs the CLI,
-                # run batches sequentially (workers=1) to share that warm PTY, and close it on exit.
+                # Workspace model settings (cheap model/effort) through the gateway; batches run sequentially
+                # (workers=1) so one workspace's gate never floods the gateway's per-workspace rate limit.
                 vm_llm = None
 
                 def _vm_call(prompt: str, schema: dict) -> dict:
@@ -945,8 +921,8 @@ def publish_graph(ctx, ws, body):
 def start_run(ctx, ws, body):
     engine = _engine(body)
     agent_override = body.get("agent") or {}
-    if engine == "vm-cli":
-        vm_service.load_settings(ws, agent_override)  # validates cli/model/effort/session before queueing
+    if engine == "vm":
+        vm_service.load_settings(ws, agent_override)  # validates model/effort/session before queueing
     with infra.pg(readonly=True) as c:
         snap = c.execute("SELECT snapshot_id FROM spec_snapshots WHERE workspace_id=%s AND conflict_passed "
                          "ORDER BY version DESC LIMIT 1", (ws,)).fetchone()
@@ -961,7 +937,7 @@ def start_run(ctx, ws, body):
     with contextlib.ExitStack() as stack:
         if body.get("request"):
             route_llm = stack.enter_context(_vm_llm_session(ws, "agdd-route", agent_override)) \
-                if engine == "vm-cli" else infra.cheap_model("route", ws)
+                if engine == "vm" else infra.cheap_model("route", ws)
             decision = router.route_request(body["request"], route_llm)
         else:
             decision = router.RouteDecision("FULL_AGDD", ["no request text"])
@@ -1090,7 +1066,7 @@ def decide(ctx, did, body):
     return {"ok": True, "resolution": resolution}
 
 
-# ---------------- collaborative CLI / AGDD chat ----------------
+# ---------------- collaborative agent / AGDD chat ----------------
 DEFAULT_COLLAB_GRAPH = {
     "entry": "ambiguity",
     "fast_track_entry": "dev",
@@ -1141,9 +1117,9 @@ def _pending_ux_requests(ws: str, check_vm: bool = True) -> list[dict]:
 
 def _start_collab_agdd_run(ws: str, request_text: str, repo_key: str, extra_handoff: dict | None = None,
                            agent_override: dict | None = None, user_id: str | None = None) -> dict:
-    engine = "vm-cli" if vm_service.enabled() else "gateway"
+    engine = "vm" if vm_service.enabled() else "gateway"
     agent_override = agent_override or {}
-    if engine == "vm-cli":
+    if engine == "vm":
         vm_service.load_settings(ws, agent_override)
 
     with infra.pg() as c:
@@ -1174,10 +1150,10 @@ def _start_collab_agdd_run(ws: str, request_text: str, repo_key: str, extra_hand
         try:
             snaps = []
             with contextlib.ExitStack() as stack:
-                llm = _lazy_vm_llm(stack, ws, "agdd-gate", agent_override) if engine == "vm-cli" \
+                llm = _lazy_vm_llm(stack, ws, "agdd-gate", agent_override) if engine == "vm" \
                     else infra.cheap_model("conflict_check", ws)
                 res = preflight.run_gate(eng, llm, lambda snap, ok: snaps.append((snap, ok)),
-                                         workers=1 if engine == "vm-cli" else 4)
+                                         workers=1 if engine == "vm" else 4)
         finally:
             eng.close()
         with infra.pg() as c:
@@ -1199,7 +1175,7 @@ def _start_collab_agdd_run(ws: str, request_text: str, repo_key: str, extra_hand
         try:
             with contextlib.ExitStack() as stack:
                 route_llm = stack.enter_context(_vm_llm_session(ws, "agdd-route", agent_override)) \
-                    if engine == "vm-cli" else infra.cheap_model("route", ws)
+                    if engine == "vm" else infra.cheap_model("route", ws)
                 decision = router.route_request(request_text, route_llm)
         except Exception as exc:
             decision = router.RouteDecision("FULL_AGDD", [f"router fallback: {exc}"])
@@ -1262,8 +1238,11 @@ def collab_state(ctx, ws, body):
 @route("POST", r"/workspaces/(?P<ws>[^/]+)/collab/send", "EDITOR")
 def collab_send(ctx, ws, body):
     mode = str((body or {}).get("mode") or "agdd")
+    # "cli_chat" is the stored identifier of the direct agent chat (collab_messages.mode CHECK constraint);
+    # "agent_chat" is accepted as its current name.
+    mode = "cli_chat" if mode == "agent_chat" else mode
     if mode not in ("agdd", "cli_chat"):
-        raise HttpError(422, "mode must be agdd or cli_chat")
+        raise HttpError(422, "mode must be agdd or agent_chat")
     msg = str((body or {}).get("message") or "").strip()
     attachments = [a for a in ((body or {}).get("attachments") or []) if isinstance(a, dict) and a.get("path")][:10]
     if not msg and not attachments:
@@ -1292,9 +1271,9 @@ def collab_send(ctx, ws, body):
         started = _start_collab_agdd_run(ws, full_prompt, repo_key, agent_override=(body or {}).get("agent"), user_id=ctx["user"])
         return {"mode": "agdd", "user_message": user_msg, **started}
 
-    # Direct tuned CLI chat turn inside the VM.
+    # Direct tuned agent chat turn: model via the gateway API, repository tools inside the VM.
     _require_vm()
-    from .cli_agents import VmAgent
+    from .api_agents import ApiAgent
     from .vm import RuntimeClient, VmShell
 
     sh = VmShell(RuntimeClient(), vm_service.canvas_for(ws), "agdd-collab")
@@ -1307,21 +1286,21 @@ def collab_send(ctx, ws, body):
                 "AND role='assistant' ORDER BY msg_id DESC LIMIT 1",
                 (ws,),
             ).fetchone()
-        prev_sid = ((prev or {}).get("meta_json") or {}).get("cli_session")
+        prev_meta = (prev or {}).get("meta_json") or {}
+        prev_sid = prev_meta.get("agent_session") or prev_meta.get("cli_session")
         session = None if settings.session == "new" else (prev_sid if settings.session == "per-run" else settings.session)
         vm_service.repo_path(repo_key)
         repo_dir = f"{sh.home}/repos/{repo_key}"
         inst_part = f"\n튜닝 지침:\n{settings.instructions}\n" if settings.instructions else ""
         prompt = (
-            f"당신은 워크스페이스 VM({repo_dir})의 CLI 협업 에이전트입니다.\n"
+            f"당신은 워크스페이스 VM({repo_dir})의 협업 코딩 에이전트입니다.\n"
             f"- 노트북 셀 파일: `{sync_info.get('cells_dir')}`\n"
             f"- 명세 인메모리 DB: `{sync_info.get('db_path')}` (`agdd-spec status | scope | sql | search | ux | files`)\n"
             f"- 2D UX 배치가 필요하면 `agdd-spec request-ux --view <view> --prompt \"<질문>\"`를 실행하세요.\n"
             f"{inst_part}\n사용자 요청:\n{full_prompt}"
         )
-        t0 = time.time()
-        res = VmAgent(sh, settings, vm_service.budget_gate(ws)).agent(prompt, repo_dir, session, timeout=600)
-        vm_service.record_usage(ws, None, "collab-cli", settings, res, int((time.time() - t0) * 1000))
+        sh.mirror = True  # members can watch the turn's tool calls in the VM terminal (agdd-collab)
+        res = ApiAgent(sh, settings, ws, None, "collab-chat").agent(prompt, repo_dir, session, timeout=600)
         ux_req = vm_sync.read_pending_vm_ux_request(ws, shell=sh) or ux_workbench.parse_ux_request(res.text or "")
         status_out = sh.run(f"cd {repo_dir} && git status --porcelain 2>/dev/null || true", timeout=30).output
         changed = sorted({l[3:].strip() for l in status_out.splitlines() if l[3:].strip() and not l[3:].startswith(".agdd")})
@@ -1333,9 +1312,9 @@ def collab_send(ctx, ws, body):
         asst_msg = pgstore.add_collab_message(
             c, ws, "assistant", "cli_chat", reply_text,
             meta={
-                "event": "UX_VISUAL_REQUEST" if ux_req else "CLI_REPLY",
+                "event": "UX_VISUAL_REQUEST" if ux_req else "AGENT_REPLY",
                 "ok": res.ok,
-                "cli_session": res.session_id or session,
+                "agent_session": res.session_id or session,
                 "changed_files": changed,
                 "ux_request": ux_req,
             },
@@ -1350,26 +1329,6 @@ def collab_send(ctx, ws, body):
         "ux_request": ux_req,
         "user_message": user_msg,
         "assistant_message": asst_msg,
-    }
-
-
-@route("POST", r"/workspaces/(?P<ws>[^/]+)/collab/cli-launch", "EDITOR")
-def collab_cli_launch(ctx, ws, body):
-    _require_vm()
-    from .cli_agents import PROFILES
-    settings = vm_service.load_settings(ws)
-    repo_key = str((body or {}).get("repo_key") or settings.default_repo or "workspace").strip() or "workspace"
-    sync_info = vm_sync.sync_workspace_context(ws, repo_key)
-    repo_dir = vm_service.repo_path(repo_key)
-    prof = PROFILES[settings.cli]
-    cmd = prof.interactive_cmd(repo_dir, settings.model, settings.effort, settings.session, settings.permission)
-    return {
-        "command": cmd,
-        "cli": settings.cli,
-        "repo_dir": repo_dir,
-        "db_path": sync_info.get("db_path"),
-        "cells_dir": sync_info.get("cells_dir"),
-        "context_file": "~/.agdd/WORKSPACE_CONTEXT.md",
     }
 
 
@@ -1958,14 +1917,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(423, {"error": str(e)})
         except (KeyError, ValueError, json.JSONDecodeError) as e:
             self._send(400, {"error": repr(e)[:300]})
-        except Exception as e:  # CLI / VM failures must surface, never pass silently
+        except Exception as e:  # model API / VM failures must surface, never pass silently
+            from .api_agents import AgentError
             from .budget import BudgetHalt
-            from .cli_agents import CliError
             from .llm_gateway import BudgetHalt as GatewayBudgetHalt
             from .vm import RuntimeError_
             if isinstance(e, (BudgetHalt, GatewayBudgetHalt)):
                 self._send(402, {"error": str(e)[:600]})
-            elif isinstance(e, (CliError, RuntimeError_, TimeoutError)):
+            elif isinstance(e, (AgentError, RuntimeError_, TimeoutError)):
                 self._send(502, {"error": str(e)[:600]})
             else:
                 raise

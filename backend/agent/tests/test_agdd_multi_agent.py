@@ -773,20 +773,10 @@ def test_service_run_with_attachments_without_vm(fake_db, monkeypatch):
         svc.start_run("ws-1", None, graph, "x", None, ["99999999-0000-4000-8000-000000000000"])
 
 
-def test_cli_profiles_receive_media_files():
-    from irade_agent.agdd.cli_agents import PROFILES, MediaFile
-    files = [MediaFile("/workspace/.agdd/attachments/ab/shot.png", "image"),
-             MediaFile("/workspace/.agdd/attachments/cd/spec.pdf", "pdf"),
-             MediaFile("/workspace/.agdd/attachments/cd/spec.pdf.agdd/page-1.png", "image", False),
-             MediaFile("/workspace/.agdd/attachments/ef/demo.mp4", "video")]
-    c = PROFILES["claude"].structured_cmd("/p", "/s", "haiku", "low", files)
-    assert "--tools Read --allowedTools Read" in c and "--add-dir '/workspace/.agdd/attachments/ab'" in c
-    assert '--tools ""' in PROFILES["claude"].structured_cmd("/p", "/s", "haiku", "low")
-    x = PROFILES["codex"].structured_cmd("/p", "/s", "gpt-5-mini", "low", files)
-    assert "--image='/workspace/.agdd/attachments/ab/shot.png'" in x and "page-1.png" in x and "demo.mp4" not in x
-    assert x.index("--image=") < x.index(" - < ")
-    sfx = PROFILES["agy"].prompt_suffix(files)
-    assert "@/workspace/.agdd/attachments/ef/demo.mp4" in sfx and "page-1.png" not in sfx
+def test_media_files_map_to_api_agent_inputs():
+    from irade_agent.agdd.api_agents import MediaFile
+    f = MediaFile("/workspace/.agdd/attachments/cd/spec.pdf.agdd/page-1.png", "image", False)
+    assert (f.kind, f.native) == ("image", False)  # derived page images are sent as image parts too
 
 
 def test_vm_media_streams_once_and_describes_paths(tmp_path, monkeypatch):

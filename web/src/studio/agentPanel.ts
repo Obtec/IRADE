@@ -753,7 +753,7 @@ export class AgentPanelController {
 		if (!this.thread.length) {
 			this.threadEl.innerHTML = `
 				<div class="agent-welcome">
-					<div class="agent-welcome-badge">✦ IRADE Antigravity Agent</div>
+					<div class="agent-welcome-badge">✦ IRADE Research Agent</div>
 					<strong>오른쪽 패널에서 바로 연구를 지시하세요.</strong>
 					<p>코드·형식 증명 생성, 선택한 셀 설명 및 리팩터링, 실험 결과 요약을 대화형으로 수행합니다.</p>
 					<div class="agent-starter-grid">

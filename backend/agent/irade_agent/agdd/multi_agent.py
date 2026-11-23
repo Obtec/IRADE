@@ -7,7 +7,7 @@ A *team graph* is what the console's multi-agent canvas edits::
 Node kinds
   input   the user request entering the team, plus optional default attachments (images, video, audio, PDF …)
   data    a data source resolved once at run start (spec scope, 2D UX layout, repo files, cells, text, files …)
-  agent   a CLI/LLM agent: role, default system prompt, prompt template, which input kinds and media modalities
+  agent   an LLM agent (API via the LLM Gateway): role, default system prompt, prompt template, which input kinds and media modalities
           it accepts, wait-for-all or react-to-any inputs, think (JSON answer) or code (autonomous run in the repo)
   output  a sink that collects the team's final results
 
@@ -36,7 +36,7 @@ media-agnostic: :class:`MediaHooks` (injected) looks attachments up, prepares th
 them into the VM and extracts PDF text / video frames / audio transcripts) and describes them in the prompt.
 
 The scheduler (:class:`TeamRun`) is pure Python: model calls, data lookups and media handling are injected, so
-it is unit tested without a VM or database. ``multi_agent_service`` wires it to the VM CLIs and PostgreSQL.
+it is unit tested without a VM or database. ``multi_agent_service`` wires it to the gateway API, the workspace VM and PostgreSQL.
 """
 from __future__ import annotations
 
@@ -57,7 +57,6 @@ MODALITIES = ("text", "image", "video", "audio", "pdf", "file")
 AGENT_MODES = ("think", "code", "mock")
 DATA_SOURCES = ("spec_scope", "ux_layout", "repo_files", "cells", "collab_history", "text", "files")
 EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
-CLIS = ("", "claude", "codex", "agy")
 VERDICTS = ("approve", "revise", "none")
 
 MAX_NODES, MAX_EDGES = 40, 120
@@ -80,7 +79,7 @@ _TEXT_EXT = (".txt", ".md", ".csv", ".tsv", ".json", ".jsonl", ".xml", ".yaml", 
 
 
 def modality_of(mime: str, name: str = "") -> str:
-    """Media modality of an attachment, used for routing (``modalities``) and per-CLI delivery."""
+    """Media modality of an attachment, used for routing (``modalities``) and delivery to the model."""
     mime, low = str(mime or "").lower().split(";")[0].strip(), str(name or "").lower()
     if mime == "application/pdf" or low.endswith(".pdf"):
         return "pdf"
@@ -130,9 +129,7 @@ def _norm_agent(n: dict, out: dict) -> None:
             raise TeamGraphError(f"agent {out['id']}: mock_responses must contain 1–10 response objects "
                                  "with string content (at most 16000 characters total)")
         out["mock_responses"] = deepcopy(responses)
-    out["cli"] = n.get("cli") or ""
-    if out["cli"] not in CLIS:
-        raise TeamGraphError(f"agent {out['id']}: cli must be one of {[c for c in CLIS if c]} or empty")
+    # (a legacy "cli" key from pre-API graphs is dropped: every agent calls the model through the LLM Gateway)
     out["model"] = _s(n.get("model"), 80)
     if out["model"] and not _MODEL_RX.fullmatch(out["model"]):
         raise TeamGraphError(f"agent {out['id']}: invalid model name")

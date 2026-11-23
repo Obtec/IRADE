@@ -217,6 +217,14 @@ class VmShell:
             self.open()
 
     @_locked
+    def echo(self, text: str) -> None:
+        """Write one status line into the PTY for console watchers (fire-and-forget; later reads skip it)."""
+        self.ensure()
+        line = " ".join(str(text).split())[:MIRROR_COLS]
+        if line:
+            self._send(f"printf '%s\\n' {sh_quote(line)}\n")
+
+    @_locked
     def put_file(self, path: str, content: bytes | str) -> None:
         """Upload through base64 chunks (terminal input is limited to 8 KiB per request)."""
         self.ensure()
