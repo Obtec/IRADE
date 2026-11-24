@@ -283,3 +283,47 @@ CREATE TABLE IF NOT EXISTS agent_team_attachment_chunks (
     data          bytea NOT NULL,
     PRIMARY KEY (attachment_id, idx)
 );
+
+-- ---------------- Prompt dependency graphs & nested pre-prompt groups ----------------
+CREATE TABLE IF NOT EXISTS prompt_graphs (
+    graph_id     uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id uuid NOT NULL REFERENCES workspaces ON DELETE CASCADE,
+    name         text NOT NULL,
+    graph_json   jsonb NOT NULL,
+    updated_by   uuid REFERENCES users,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_prompt_graphs_ws ON prompt_graphs (workspace_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS prompt_graph_runs (
+    run_id       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    graph_id     uuid REFERENCES prompt_graphs ON DELETE SET NULL,
+    workspace_id uuid NOT NULL REFERENCES workspaces ON DELETE CASCADE,
+    target_type  text NOT NULL CHECK (target_type IN ('all','node','group','subset')),
+    target_id    text,
+    graph_json   jsonb NOT NULL,
+    status       text NOT NULL CHECK (status IN ('RUNNING','SUCCEEDED','PARTIAL','FAILED','CANCELLED')),
+    node_state   jsonb NOT NULL DEFAULT '{}',
+    result_json  jsonb NOT NULL DEFAULT '{}',
+    created_by   uuid REFERENCES users,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_prompt_graph_runs_ws ON prompt_graph_runs (workspace_id, created_at DESC);
+ALTER TABLE prompt_graph_runs DROP CONSTRAINT IF EXISTS prompt_graph_runs_target_type_check;
+ALTER TABLE prompt_graph_runs ADD CONSTRAINT prompt_graph_runs_target_type_check
+    CHECK (target_type IN ('all','node','group','subset'));
+
+CREATE TABLE IF NOT EXISTS prompt_graph_events (
+    event_id     bigserial PRIMARY KEY,
+    run_id       uuid NOT NULL REFERENCES prompt_graph_runs ON DELETE CASCADE,
+    seq          integer NOT NULL,
+    type         text NOT NULL,
+    node         text,
+    target       text,
+    content      text NOT NULL DEFAULT '',
+    meta_json    jsonb NOT NULL DEFAULT '{}',
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_prompt_graph_events_run ON prompt_graph_events (run_id, seq);

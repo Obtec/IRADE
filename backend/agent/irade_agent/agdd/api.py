@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from psycopg.types.json import Jsonb
 
-from . import multi_agent_service, spec_store, ux_workbench, vm_service, vm_sync
+from . import multi_agent_service, prompt_graph_service, spec_store, ux_workbench, vm_service, vm_sync
 from . import infra, orchestrator, pgstore, preflight, router, ws_terminal
 from .spec_engine import TABLES
 from .ux_workbench import LockedOverrideError, Workbench
@@ -1479,6 +1479,111 @@ def team_attachment_delete(ctx, ws, body, aid):
     if not multi_agent_service.delete_attachment(ws, _team_id(aid)):
         raise HttpError(404, "attachment not found")
     return {"ok": True}
+
+
+# ---------------- Prompt dependency graphs & nested pre-prompt groups ----------------
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs", "VIEWER")
+def prompt_graphs_list(ctx, ws, body):
+    from . import prompt_graph
+    return {
+        "graphs": prompt_graph_service.list_graphs(ws),
+        "presets": {p: prompt_graph.preset(p) for p in prompt_graph.PRESETS},
+        "preset_info": prompt_graph.PRESET_INFO,
+        "gateway": _gateway_status(),
+        "default_model": prompt_graph_service.workspace_default_model(ws),
+    }
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/validate", "VIEWER")
+def prompt_graphs_validate(ctx, ws, body):
+    from . import prompt_graph
+    try:
+        clean = prompt_graph.validate_prompt_graph((body or {}).get("graph") or {})
+        return {"ok": True, "graph": clean, "change_status": prompt_graph.compute_change_status(clean)}
+    except prompt_graph.PromptGraphError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/destroy-entity", "EDITOR")
+def prompt_graphs_destroy_entity(ctx, ws, body):
+    from . import prompt_graph
+    body = body or {}
+    try:
+        updated = prompt_graph.delete_entity_with_temp_prompts(
+            body.get("graph") or {},
+            str(body.get("target_id") or ""),
+            body.get("temp_prompts"),
+        )
+        return {"ok": True, "graph": updated}
+    except prompt_graph.PromptGraphError as e:
+        raise HttpError(422, str(e))
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs", "EDITOR")
+def prompt_graphs_save(ctx, ws, body):
+    body = body or {}
+    try:
+        return prompt_graph_service.save_graph(
+            ws,
+            _team_id(body.get("graph_id")),
+            body.get("name"),
+            body.get("graph") or {},
+            ctx["user"],
+        )
+    except prompt_graph_service.PromptGraphError as e:
+        raise HttpError(422, str(e))
+    except LookupError as e:
+        raise HttpError(404, str(e))
+
+
+@route("DELETE", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/(?P<gid>[0-9a-f-]{36})", "EDITOR")
+def prompt_graphs_delete(ctx, ws, body, gid):
+    if not prompt_graph_service.delete_graph(ws, _team_id(gid)):
+        raise HttpError(404, "prompt graph not found")
+    return {"ok": True}
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graph-runs", "EDITOR")
+def prompt_graph_run_start(ctx, ws, body):
+    body = body or {}
+    try:
+        return prompt_graph_service.start_run(
+            ws,
+            _team_id(body.get("graph_id")),
+            body.get("graph"),
+            str(body.get("target_type") or "all"),
+            body.get("target_id"),
+            ctx["user"],
+            reuse_existing_outputs=bool(body.get("reuse_existing_outputs", False)),
+            target_ids=body.get("target_ids"),
+            force_rerun=bool(body.get("force_rerun", False)),
+        )
+    except prompt_graph_service.PromptGraphError as e:
+        raise HttpError(422, str(e))
+    except LookupError as e:
+        raise HttpError(404, str(e))
+    except RuntimeError as e:
+        raise HttpError(409, str(e))
+
+
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/prompt-graph-runs", "VIEWER")
+def prompt_graph_runs_list(ctx, ws, body):
+    gid = ((ctx.get("query") or {}).get("graph_id") or [None])[0]
+    return {"runs": prompt_graph_service.list_runs(ws, _team_id(gid))}
+
+
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/prompt-graph-runs/(?P<rid>[0-9a-f-]{36})", "VIEWER")
+def prompt_graph_run_get(ctx, ws, body, rid):
+    after = ((ctx.get("query") or {}).get("after") or ["0"])[0]
+    run = prompt_graph_service.get_run(ws, _team_id(rid), int(after) if str(after).isdigit() else 0)
+    if run is None:
+        raise HttpError(404, "prompt graph run not found")
+    return run
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graph-runs/(?P<rid>[0-9a-f-]{36})/cancel", "EDITOR")
+def prompt_graph_run_cancel(ctx, ws, body, rid):
+    return {"ok": prompt_graph_service.cancel_run(ws, _team_id(rid))}
 
 
 # ---------------- UX workbench ----------------

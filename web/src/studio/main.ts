@@ -627,6 +627,7 @@ async function connect(id: number, name: string, restoreView = false): Promise<v
   const url = new URL(location.href); url.searchParams.set('workspace', String(id)); history.replaceState(null, '', url);
   document.querySelector<HTMLAnchorElement>('#agdd-link')?.setAttribute('href', `/agdd/?tab=ide&pane=studio&workspace=${id}`);
   document.querySelector<HTMLAnchorElement>('#agdd-collab-link')?.setAttribute('href', `/agdd/?tab=collab&workspace=${id}`);
+  document.querySelector<HTMLAnchorElement>('#agdd-pgraph-link')?.setAttribute('href', `/agdd/?tab=pgraph&workspace=${id}`);
   if (EMBED) { try { window.parent.postMessage({ type: 'irade:workspace', id }, location.origin); } catch { /* ignore */ } }
   if (token && !selfProfile.uid) { await refreshSelfProfile().catch(() => { }); }
   const savedView = restoreView ? sessionStorage.getItem(`irade.research.view:${id}`) : null;

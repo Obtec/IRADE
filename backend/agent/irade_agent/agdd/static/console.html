@@ -239,11 +239,11 @@ async function loadWs() {
   $("#ws").value = WS; store.set("agdd.ws", WS); syncUrl(); prefetch(); render();
 }
 
-const TABS = { ide: "IDE · 코드 & 셀", collab: "협업 · 에이전트 대화", vm: "VM · 터미널", agents: "에이전트 · 모델 API", team: "멀티 에이전트", specs: "명세 테이블", gate: "사전 검사", graphs: "그래프", runs: "실행", hitl: "HITL 결정", ux: "UX 2D 캔버스", research: "리서치", dash: "대시보드·예산" };
+const TABS = { ide: "IDE · 코드 & 셀", collab: "협업 · 에이전트 대화", vm: "VM · 터미널", agents: "에이전트 · 모델 API", team: "멀티 에이전트", pgraph: "프롬프트 그래프", specs: "명세 테이블", gate: "사전 검사", graphs: "그래프", runs: "실행", hitl: "HITL 결정", ux: "UX 2D 캔버스", research: "리서치", dash: "대시보드·예산" };
 function nav() { $("#nav").innerHTML = Object.entries(TABS).map(([k, v]) => `<button data-t="${k}" class="${k === TAB ? "on" : ""}">${v}</button>`).join(""); $("#nav").querySelectorAll("button").forEach(b => b.onclick = () => { TAB = b.dataset.t; store.set("agdd.tab", TAB); render(); }); }
 const V = html => $("#view").innerHTML = html;
 const statusCls = s => ({ ACCEPT_NOW: "ok", SUCCEEDED: "ok", APPROVED: "ok", DEFER: "warn", HOLD: "warn", WAITING_HITL: "warn", RUNNING: "warn", PENDING: "warn", REJECT: "bad", FAILED: "bad", ESCALATED: "bad", HALTED: "bad", REJECTED: "bad" }[s] || "");
-const COLLAB = {}, UXC = {}, MA = {};
+const COLLAB = {}, UXC = {}, MA = {}, PGRAPH = {};
 
 const render = run(async () => {
   const wsChanged = WS !== LAST_WS;
@@ -253,7 +253,7 @@ const render = run(async () => {
   LAST_WS = WS;
   const vw = $("#view"); vw.oninput = vw.onchange = vw.onclick = null;
   $("#studio-host").hidden = true;
-  $("#view").classList.toggle("wide", ["ide", "collab", "graphs", "specs", "ux", "team", "vm"].includes(TAB));
+  $("#view").classList.toggle("wide", ["ide", "collab", "graphs", "specs", "ux", "team", "pgraph", "vm"].includes(TAB));
   if (MA.mon) { MA.mon.stop(); MA.mon = null; }
   nav(); if (ES) { ES.close(); ES = null; } if (TERM) { TERM.stop(); TERM = null; } clearTimeout(RUN_POLL); RUN_POLL = null; if (RES_CTL) { try { RES_CTL.abort(); } catch {} RES_CTL = null; }
   if (!WS) return V(`<h2>시작하기</h2><p class="sub">${GATEWAY ? "IRADE 계정으로 로그인되었습니다. 상단에서 Studio와 같은 workspace를 선택하거나 새로 만드세요." : "상단에 API 토큰(agdd.env의 AGDD_API_TOKEN)을 넣고 저장한 뒤 워크스페이스를 만드세요. 사용자 ID는 이 브라우저에서 자동 생성됩니다."}</p>`);
@@ -764,7 +764,7 @@ async function saveSpecs() {
   const n = S.dirty.size; S.dirty.clear(); S.ws = ""; S.undo = []; S.redo = []; toast(`${n}개 행 저장됨 — 새 스냅샷 (사전 검사 필요)`); render();
 }
 document.addEventListener("keydown", e => { if (TAB === "specs" && !e.isComposing && (e.ctrlKey || e.metaKey) && e.code === "KeyS") { e.preventDefault(); if (SPEC.dirty.size) run(saveSpecs)(); } });
-window.addEventListener("beforeunload", e => { if (SPEC.dirty.size || GRAPH.dirty || (IDE.dirty && IDE.dirty.size) || MA.dirty || UXC.dirty) { e.preventDefault(); e.returnValue = ""; } });
+window.addEventListener("beforeunload", e => { if (SPEC.dirty.size || GRAPH.dirty || (IDE.dirty && IDE.dirty.size) || MA.dirty || PGRAPH.dirty || UXC.dirty) { e.preventDefault(); e.returnValue = ""; } });
 
 // ---------------- IDE: read-only view of what agents changed in /workspace/repos ----------------
 const IDE = { pane: store.get("agdd.idepane") || "files", ws: "", repo: store.get("agdd.repo") || "", tree: null, open: [], active: "", mode: "file", files: {}, commit: "", editor: null };
@@ -1423,7 +1423,7 @@ $("#collab-link").onclick = () => { TAB = "collab"; store.set("agdd.tab", TAB); 
 window.AGDD = {
   $, esc, api, iradeId, peek, CACHE, store, toast, run, stale, V,
   authHeaders, openTerminal, loadMonaco, langOf, darkMode, statusCls, fitStudio, render,
-  VIEWS, IDE, COLLAB, UXC, MA,
+  VIEWS, IDE, COLLAB, UXC, MA, PGRAPH,
   getWS: () => WS, getTAB: () => TAB, getBASE: () => BASE,
   openTab(tab, opts = {}) {
     TAB = tab; store.set("agdd.tab", tab);
@@ -1445,6 +1445,7 @@ window.AGDD = {
 <script src="static/collab.js"></script>
 <script src="static/ux_canvas.js"></script>
 <script src="static/multi_agent.js"></script>
+<script src="static/prompt_graph.js"></script>
 <script>
 if (GATEWAY) {
   $("#token").style.display = $("#user").style.display = $("#save").style.display = "none";

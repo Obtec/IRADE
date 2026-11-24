@@ -4740,6 +4740,7 @@ html.agdd-embed .wordmark,
 html.agdd-embed .topbar-ws-pill,
 html.agdd-embed #agdd-link,
 html.agdd-embed #agdd-collab-link,
+html.agdd-embed #agdd-pgraph-link,
 html.agdd-embed #account,
 html.agdd-embed #theme-toggle { display: none !important; }
 html.agdd-embed .topbar { border-bottom: 1px solid var(--border); box-shadow: none; }
