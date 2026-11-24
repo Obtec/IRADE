@@ -723,12 +723,154 @@ class _FakeConn:
             ws = str(params[0])
             rows = [r for r in self.db["runs"].values() if r["workspace_id"] == ws]
             return _Cursor(rows)
+        if q.startswith("INSERT INTO prompt_node_versions"):
+            (ws, gid, rid, nid, nlbl, it, ihash, pr, tpr, epre, out, mdl, st, cp, cerrs, pt, ct, tt, cost, ms, chit) = params
+            vid = len(self.db["versions"]) + 1
+            row = {
+                "version_id": vid,
+                "workspace_id": str(ws),
+                "graph_id": gid,
+                "run_id": rid,
+                "node_id": nid,
+                "node_label": nlbl,
+                "iteration": it,
+                "input_hash": ihash,
+                "prompt": pr,
+                "temp_prompt": tpr,
+                "effective_pre_prompt": epre,
+                "output": out,
+                "model": mdl,
+                "status": st,
+                "contract_passed": cp,
+                "contract_errors": unwrap(cerrs),
+                "prompt_tokens": pt,
+                "completion_tokens": ct,
+                "total_tokens": tt,
+                "cost_usd": cost,
+                "duration_ms": ms,
+                "cache_hit": chit,
+                "created_at": "2026-11-24T00:00:00Z",
+            }
+            self.db["versions"].append(row)
+            return _Cursor([], rowcount=1)
+        if q.startswith("SELECT output, model, prompt_tokens, completion_tokens, total_tokens FROM prompt_node_versions"):
+            ws, ihash = str(params[0]), str(params[1])
+            hits = [v for v in reversed(self.db["versions"]) if v["workspace_id"] == ws and v["input_hash"] == ihash and v["status"] == "done"]
+            return _Cursor(hits[:1])
+        if q.startswith("SELECT version_id, run_id, node_id, node_label"):
+            ws, gid, nid, lim = str(params[0]), params[1], str(params[2]), int(params[3])
+            hits = [v for v in reversed(self.db["versions"]) if v["workspace_id"] == ws and v["graph_id"] == gid and v["node_id"] == nid]
+            return _Cursor(hits[:lim])
+        if q.startswith("SELECT version_id, node_id, prompt, temp_prompt"):
+            ws, gid, nid, vid = str(params[0]), params[1], str(params[2]), int(params[3])
+            hits = [v for v in self.db["versions"] if v["workspace_id"] == ws and v["graph_id"] == gid and v["node_id"] == nid and v["version_id"] == vid]
+            return _Cursor(hits[:1])
+        if q.startswith("SELECT node_id, MAX(node_label) AS node_label"):
+            ws, gid = str(params[0]), params[1]
+            by_nid = {}
+            for v in self.db["versions"]:
+                if v["workspace_id"] == ws and v["graph_id"] == gid:
+                    by_nid.setdefault(v["node_id"], []).append(v)
+            rows = []
+            for nid, vlist in by_nid.items():
+                rows.append({
+                    "node_id": nid,
+                    "node_label": vlist[-1]["node_label"],
+                    "executions": len(vlist),
+                    "avg_ms": int(sum(x["duration_ms"] for x in vlist) / len(vlist)),
+                    "avg_tokens": int(sum(x["total_tokens"] for x in vlist) / len(vlist)),
+                    "total_tokens": sum(x["total_tokens"] for x in vlist),
+                    "total_cost_usd": sum(float(x["cost_usd"]) for x in vlist),
+                    "cache_hits": sum(1 for x in vlist if x["cache_hit"]),
+                })
+            return _Cursor(rows)
+        if q.startswith("INSERT INTO prompt_node_impact_reviews"):
+            ws, gid, rid, src, tgt, nr, rsn, dec, _dat = params
+            rv_id = len(self.db["reviews"]) + 1
+            self.db["reviews"].append({
+                "review_id": rv_id,
+                "workspace_id": str(ws),
+                "graph_id": gid,
+                "run_id": rid,
+                "source_node_id": src,
+                "target_id": tgt,
+                "needs_rerun": nr,
+                "reason": rsn,
+                "decision": dec,
+                "decided_at": "2026-11-24T00:00:00Z" if dec != "PENDING" else None,
+                "created_at": "2026-11-24T00:00:00Z",
+            })
+            return _Cursor([], rowcount=1)
+        if q.startswith("SELECT review_id, run_id, source_node_id"):
+            ws, gid, lim = str(params[0]), params[1], int(params[2])
+            hits = [r for r in reversed(self.db["reviews"]) if r["workspace_id"] == ws and r["graph_id"] == gid]
+            return _Cursor(hits[:lim])
+        if q.startswith("UPDATE prompt_node_impact_reviews SET decision='DISMISSED'"):
+            ws, gid, key = str(params[0]), params[1], params[2]
+            cnt = 0
+            for r in self.db["reviews"]:
+                if r["workspace_id"] == ws and r["graph_id"] == gid:
+                    if isinstance(key, int) and r["review_id"] == key:
+                        r["decision"] = "DISMISSED"
+                        cnt += 1
+                    elif isinstance(key, str) and r["target_id"] == key and r["decision"] == "PENDING":
+                        r["decision"] = "DISMISSED"
+                        cnt += 1
+            return _Cursor([], rowcount=cnt)
+        if q.startswith("SELECT graph_id, name, graph_json FROM prompt_graphs"):
+            if "workspace_id=%s AND graph_id=%s" in q:
+                ws, gid = str(params[0]), str(params[1])
+                row = self.db["graphs"].get(gid)
+                return _Cursor([row] if row and row["workspace_id"] == ws else [])
+            gid, ws = str(params[0]), str(params[1])
+            row = self.db["graphs"].get(gid)
+            return _Cursor([row] if row and row["workspace_id"] == ws else [])
+        if q.startswith("SELECT name, graph_json FROM prompt_graphs"):
+            gid, ws = str(params[0]), str(params[1])
+            row = self.db["graphs"].get(gid)
+            return _Cursor([row] if row and row["workspace_id"] == ws else [])
+        if q.startswith("SELECT name FROM prompt_graphs"):
+            gid, ws = str(params[0]), str(params[1])
+            row = self.db["graphs"].get(gid)
+            return _Cursor([row] if row and row["workspace_id"] == ws else [])
+        if q.startswith("SELECT template_id, name, description"):
+            ws = str(params[0])
+            rows = [r for r in self.db["templates"].values() if r["workspace_id"] == ws]
+            return _Cursor(rows)
+        if q.startswith("SELECT template_id, name, subtree_json FROM prompt_graph_templates"):
+            tid, ws = str(params[0]), str(params[1])
+            row = self.db["templates"].get(tid)
+            return _Cursor([row] if row and row["workspace_id"] == ws else [])
+        if q.startswith("INSERT INTO prompt_graph_templates"):
+            ws, name, desc, td, nc, gc, sjson, uid = params
+            tid = f"30000000-0000-4000-8000-{len(self.db['templates']) + 1:012d}"
+            row = {
+                "template_id": tid,
+                "workspace_id": str(ws),
+                "name": name,
+                "description": desc,
+                "tier_depth": td,
+                "node_count": nc,
+                "group_count": gc,
+                "subtree_json": unwrap(sjson),
+                "created_at": "2026-11-24T00:00:00Z",
+                "updated_at": "2026-11-24T00:00:00Z",
+            }
+            self.db["templates"][tid] = row
+            return _Cursor([row])
+        if q.startswith("DELETE FROM prompt_graph_templates"):
+            tid, ws = str(params[0]), str(params[1])
+            row = self.db["templates"].get(tid)
+            if row and row["workspace_id"] == ws:
+                del self.db["templates"][tid]
+                return _Cursor([], rowcount=1)
+            return _Cursor([], rowcount=0)
         raise AssertionError(f"Unhandled SQL in fake DB: {q}")
 
 
 class TestPromptGraphServiceAndApiRoutes(unittest.TestCase):
     def setUp(self):
-        self.db = {"graphs": {}, "runs": {}, "events": []}
+        self.db = {"graphs": {}, "runs": {}, "events": [], "versions": [], "reviews": [], "templates": {}}
         self.orig_pg = infra.pg
         self.orig_chat = pgs.make_gateway_chat_fn
         self.orig_ws_model = pgs.workspace_default_model
@@ -846,6 +988,167 @@ class TestPromptGraphServiceAndApiRoutes(unittest.TestCase):
 
         # Also verify completed=True and cleared temp_prompt persisted after run
         self.assertTrue(api.prompt_graphs_delete({}, "ws-1", {}, gid)["ok"])
+
+    def test_enhanced_api_versions_checkout_search_impact_templates_analytics_and_artifacts(self):
+        graph = {
+            "nodes": [
+                _node(
+                    "src",
+                    prompt="produce spec brief",
+                    artifact={"kind": "repo_file", "repo": "workspace", "path": "docs/spec.md", "mode": "read"},
+                ),
+                _node("dst", prompt="summarize spec"),
+            ],
+            "groups": [_group("g_outer", child_group_ids=["g_inner"]), _group("g_inner", parent_group_id="g_outer", node_ids=["dst"])],
+            "edges": [{"from": "dst", "to": "src"}],
+            "settings": {"edge_direction": "execution"},
+        }
+        saved = api.prompt_graphs_save({"user": None}, "ws-1", {"name": "Enhanced", "graph": graph})
+        gid = saved["graph_id"]
+
+        phase = [1]
+
+        def fake_chat_factory(ws, rid, default_model="mid"):
+            async def chat_fn(*, model, messages, tools, node, extra):
+                return _reply(f"{node['id']}-v{phase[0]}")
+
+            async def aclose():
+                pass
+
+            chat_fn.aclose = aclose
+            return chat_fn
+
+        pgs.make_gateway_chat_fn = fake_chat_factory
+
+        def _run_sync_wait(target_type="all", target_id=None, g_override=None):
+            st = api.prompt_graph_run_start({"user": None}, "ws-1", {"graph_id": gid, "graph": g_override, "target_type": target_type, "target_id": target_id})
+            for _ in range(200):
+                row = api.prompt_graph_run_get({"query": {}}, "ws-1", {}, st["run_id"])
+                if row["status"] != "RUNNING":
+                    return row
+                time.sleep(0.02)
+            return row
+
+        r1 = _run_sync_wait()
+        self.assertEqual(r1["status"], "SUCCEEDED")
+        self.assertIn("profile", r1["result_json"])
+
+        # Modify src prompt to force rerun, run second time to create v2 version and record MCP impact on dst
+        g_cur = deepcopy(self.db["graphs"][gid]["graph_json"])
+        g_cur["nodes"][0]["prompt"] = "produce spec brief v2"
+        phase[0] = 2
+
+        def fake_impact_chat_factory(ws, rid, default_model="mid"):
+            async def chat_fn(*, model, messages, tools, node, extra):
+                t_names = {t["function"]["name"] for t in (tools or [])}
+                if "mark_needs_rerun" in t_names:
+                    tmsgs = [m for m in messages if m["role"] == "tool"]
+                    if not tmsgs:
+                        return _reply(tool_calls=[_tool_call("mark_needs_rerun", {"entity_id": "dst", "reason": "v2 breaking change"})])
+                    return _reply("impact done")
+                return _reply(f"{node['id']}-v2")
+
+            async def aclose():
+                pass
+
+            chat_fn.aclose = aclose
+            return chat_fn
+
+        pgs.make_gateway_chat_fn = fake_impact_chat_factory
+        r2 = _run_sync_wait(g_override=g_cur)
+        self.assertEqual(r2["status"], "SUCCEEDED")
+
+        # Version list + Diff + Checkout back to v1
+        vers = api.prompt_graph_node_versions({}, "ws-1", {}, gid, "src")["versions"]
+        self.assertEqual(len(vers), 2)
+        v1_id = min(v["version_id"] for v in vers)
+        chk = api.prompt_graph_node_checkout({"user": None}, "ws-1", {"version_id": v1_id, "restore_prompt": True}, gid, "src")
+        src_after = next(n for n in chk["graph"]["nodes"] if n["id"] == "src")
+        self.assertEqual(src_after["output"], "src-v1")
+
+        # Workspace search
+        hits = api.prompt_graphs_search({"query": {"q": ["spec brief"]}}, "ws-1", {})["results"]
+        self.assertTrue(any(h["node_id"] == "src" for h in hits))
+
+        # Impact reviews list & dismiss on dst
+        revs = api.prompt_graph_impact_reviews_list({}, "ws-1", {}, gid)["reviews"]
+        self.assertTrue(any(r["target_id"] == "dst" and r["needs_rerun"] for r in revs))
+        dis = api.prompt_graph_impact_review_dismiss({"user": None}, "ws-1", {"entity_id": "dst"}, gid)
+        dst_after = next(n for n in dis["graph"]["nodes"] if n["id"] == "dst")
+        self.assertFalse(dst_after["needs_rerun"])
+
+        # Templates save, list, instantiate, delete
+        tpl = api.prompt_graph_templates_save(
+            {"user": None},
+            "ws-1",
+            {"name": "2티어 요약 모듈", "graph": dis["graph"], "group_id": "g_outer"},
+        )
+        self.assertEqual(tpl["tier_depth"], 2)
+        tpls = api.prompt_graph_templates_list({}, "ws-1", {})["templates"]
+        self.assertEqual(len(tpls), 1)
+        inst = api.prompt_graph_templates_instantiate({}, "ws-1", {"graph": dis["graph"], "offset_x": 300}, tpl["template_id"])
+        self.assertGreater(len(inst["graph"]["groups"]), len(dis["graph"]["groups"]))
+        self.assertTrue(api.prompt_graph_templates_delete({}, "ws-1", {}, tpl["template_id"])["ok"])
+
+        # Analytics
+        ana = api.prompt_graph_analytics_get({}, "ws-1", {}, gid)
+        self.assertGreaterEqual(ana["summary"]["total_executions"], 2)
+
+        # Artifact bidirectional sync marks src needs_rerun when external file hash changes
+        ext = pgs.sync_graph_artifacts(
+            "ws-1",
+            inst["graph"],
+            graph_id=gid,
+            artifact_reader=lambda n, _g: ("changed external spec content", "hash_ext_999"),
+        )
+        self.assertIn("src", ext["changed_nodes"])
+        src_synced = next(n for n in ext["graph"]["nodes"] if n["id"] == "src")
+        self.assertTrue(src_synced["needs_rerun"])
+
+    def test_auto_layout_and_mcp_admin_api_routes(self):
+        initial = validate_prompt_graph({
+            "nodes": [_node("n1", x=50, y=50), _node("n2", x=55, y=55)],
+            "groups": [],
+            "edges": [],
+        })
+        step_r = [0]
+
+        def _fake_chat_factory(ws, rid, default_model="mid"):
+            async def _cfn(*, model, messages, tools, node, extra):
+                step_r[0] += 1
+                if step_r[0] == 1:
+                    return _reply(tool_calls=[_tool_call("create_group", {"id": "g_pipe", "label": "파이프라인", "adopt_entity_ids": ["n1", "n2"]})])
+                if step_r[0] == 2:
+                    return _reply(tool_calls=[_tool_call("create_node", {"id": "n3", "label": "후속 단계"})])
+                return _reply("그룹 생성 및 n3 추가 완료 (겹침 0건)")
+
+            async def _ac():
+                pass
+
+            _cfn.aclose = _ac
+            return _cfn
+
+        pgs.make_gateway_chat_fn = _fake_chat_factory
+        saved = api.prompt_graphs_save({"user": None}, "ws-1", {"name": "AutoLayoutTest", "graph": initial})
+        gid = saved["graph_id"]
+        al = api.prompt_graphs_auto_layout({"user": None}, "ws-1", {"graph_id": gid, "save": True})
+        self.assertTrue(al["ok"] and al["layout_report"]["ok"])
+        tl = api.prompt_graphs_mcp_tool(
+            {"user": None},
+            "ws-1",
+            {"graph_id": gid, "tool": "update_settings", "arguments": {"edge_direction": "execution"}, "save": True},
+        )
+        self.assertTrue(tl["ok"] and tl["graph"]["settings"]["edge_direction"] == "execution")
+        mg = api.prompt_graphs_mcp_manage(
+            {"user": None},
+            "ws-1",
+            {"graph_id": gid, "instruction": "두 노드를 그룹으로 묶고 n3 추가", "save": True},
+        )
+        self.assertTrue(mg["ok"] and mg["changed"] and mg["layout_report"]["ok"])
+        persisted = self.db["graphs"][gid]["graph_json"]
+        self.assertTrue(any(n["id"] == "n3" for n in persisted["nodes"]))
+        self.assertTrue(any(g["id"] == "g_pipe" for g in persisted["groups"]))
+        self.assertTrue(pg.detect_layout_overlaps(persisted)["ok"])
 
 
 class TestChangeDetectionAndIncrementalExecution(unittest.IsolatedAsyncioTestCase):
@@ -1256,6 +1559,434 @@ class TestChangeDetectionAndIncrementalExecution(unittest.IsolatedAsyncioTestCas
         self.assertEqual(res["status"], "SUCCEEDED")
         self.assertEqual(set(calls), {"X", "Y"})
         self.assertEqual(res["node_state"]["Z"]["status"], "idle")
+
+
+class TestEnhancedFeaturesLoopsContractsAndDB(unittest.IsolatedAsyncioTestCase):
+    def test_conditional_loop_schema_and_cycle_rules(self):
+        # Non-loop self-loop still rejected
+        with self.assertRaises(PromptGraphError):
+            validate_prompt_graph({"nodes": [_node("A")], "groups": [], "edges": [{"from": "A", "to": "A", "is_loop": False}]})
+
+        # Conditional self-loop allowed & non-loop dependencies stays empty
+        g_self = validate_prompt_graph({
+            "nodes": [_node("A")],
+            "groups": [],
+            "edges": [{"from": "A", "to": "A", "is_loop": True, "max_iterations": 4, "condition": {"type": "on_contract_fail"}}],
+            "settings": {"edge_direction": "execution"},
+        })
+        self.assertEqual(g_self["nodes"][0]["dependencies"], [])
+        self.assertTrue(g_self["edges"][0]["is_loop"])
+        self.assertEqual(g_self["edges"][0]["max_iterations"], 4)
+        self.assertEqual(g_self["settings"]["edge_direction"], "execution")
+
+        # Multi-node conditional loop allowed alongside forward DAG edge
+        g_cyc = validate_prompt_graph({
+            "nodes": [_node("Draft"), _node("Critic")],
+            "groups": [],
+            "edges": [
+                {"from": "Critic", "to": "Draft"},
+                {"from": "Draft", "to": "Critic", "is_loop": True, "max_iterations": 3, "condition": {"type": "on_contract_fail"}},
+            ],
+        })
+        self.assertEqual({e["id"]: e["is_loop"] for e in g_cyc["edges"]}, {"e1": False, "e2": True})
+
+    async def test_conditional_loop_execution_converges_then_runs_downstream(self):
+        graph = pg.preset("conditional_loop_review")
+        seen_order: list[str] = []
+        draft_calls = [0]
+
+        async def chat_fn(*, model, messages, tools, node, extra):
+            nid = node["id"]
+            seen_order.append(nid)
+            if nid == "draft":
+                draft_calls[0] += 1
+                user_txt = "\n".join(m["content"] for m in messages if m["role"] == "user")
+                if draft_calls[0] == 1:
+                    return _reply("초안 v1")
+                self.assertIn("조건부 재귀/반복 실행 피드백", user_txt)
+                return _reply("초안 v2 (보안·성능 보완 완료)")
+            if nid == "critic":
+                if draft_calls[0] == 1:
+                    return _reply("REVISE: 보안 근거 부족")
+                return _reply("PASS: 모든 검증 항목 충족")
+            return _reply("PUBLISH: 최종 승인 완료")
+
+        res = await PromptGraphRun(graph, chat_fn).run()
+        self.assertEqual(res["status"], "SUCCEEDED")
+        self.assertEqual(seen_order, ["draft", "critic", "draft", "critic", "publish"])
+        self.assertEqual(res["result"]["loop_counts"].get("e_loop_cd"), 1)
+        self.assertEqual(res["result"]["outputs"]["publish"], "PUBLISH: 최종 승인 완료")
+
+    async def test_agent_decide_loop_via_mcp_and_max_iterations_cap(self):
+        graph = validate_prompt_graph({
+            "nodes": [_node("worker", prompt="work cleanly")],
+            "groups": [],
+            "edges": [{
+                "id": "e_agent",
+                "from": "worker",
+                "to": "worker",
+                "is_loop": True,
+                "max_iterations": 2,
+                "condition": {"type": "agent_decide"},
+            }],
+        })
+        calls = [0]
+
+        async def chat_fn(*, model, messages, tools, node, extra):
+            tmsgs = [m for m in messages if m["role"] == "tool"]
+            if not tmsgs:
+                calls[0] += 1
+                # Always ask to continue -> max_iterations (2) must stop loop after 3 total runs
+                return _reply(tool_calls=[_tool_call("signal_loop_decision", {"continue_loop": True, "reason": "need refine"})])
+            return _reply(f"round-{calls[0]}")
+
+        res = await PromptGraphRun(graph, chat_fn).run()
+        self.assertEqual(res["status"], "SUCCEEDED")
+        self.assertEqual(calls[0], 3)  # 1 initial + 2 loop iterations
+        self.assertEqual(res["result"]["loop_counts"].get("e_agent"), 2)
+
+    async def test_contract_retry_and_conditional_non_loop_branching(self):
+        graph = validate_prompt_graph({
+            "nodes": [
+                _node(
+                    "judge",
+                    prompt="return json decision",
+                    contract={"enabled": True, "json_required": True, "json_keys": ["verdict"], "max_retries": 1},
+                ),
+                _node("ship", prompt="ship it"),
+                _node("abort", prompt="abort it"),
+            ],
+            "groups": [],
+            "edges": [
+                {"from": "ship", "to": "judge", "condition": {"type": "json_eq", "value": "verdict=GO"}},
+                {"from": "abort", "to": "judge", "condition": {"type": "json_eq", "value": "verdict=STOP"}},
+            ],
+        })
+        judge_attempts = [0]
+
+        async def chat_fn(*, model, messages, tools, node, extra):
+            if node["id"] == "judge":
+                judge_attempts[0] += 1
+                if judge_attempts[0] == 1:
+                    return _reply("not json yet")
+                return _reply('```json\n{"verdict": "GO"}\n```')
+            return _reply(f"ran-{node['id']}")
+
+        res = await PromptGraphRun(graph, chat_fn).run()
+        self.assertEqual(res["status"], "SUCCEEDED")
+        self.assertEqual(judge_attempts[0], 2)
+        self.assertEqual(res["node_state"]["ship"]["status"], "done")
+        self.assertEqual(res["node_state"]["abort"]["status"], "skipped")
+
+    async def test_cross_graph_cache_and_profile_critical_path(self):
+        graph = validate_prompt_graph({
+            "nodes": [
+                _node("A", prompt="root"),
+                _node("B", prompt="branch B"),
+                _node("C", prompt="leaf"),
+            ],
+            "groups": [],
+            "edges": [{"from": "C", "to": "A"}],
+            "settings": {"cross_graph_cache": True},
+        })
+        cache_store: dict[str, dict] = {}
+        llm_calls: list[str] = []
+
+        async def chat_fn(*, model, messages, tools, node, extra):
+            llm_calls.append(node["id"])
+            return _reply(f"out-{node['id']}")
+
+        res1 = await PromptGraphRun(
+            graph,
+            chat_fn,
+            on_node_version=lambda v: cache_store.__setitem__(v["input_hash"], v),
+        ).run()
+        prof = res1["result"]["profile"]
+        self.assertEqual(prof["total_tokens"], 210)
+        self.assertEqual(set(llm_calls), {"A", "B", "C"})
+        self.assertTrue(len(prof["critical_path_nodes"]) >= 1)
+
+        # Second identical graph with completed=False must hit cross-graph hash cache with 0 LLM calls
+        llm_calls.clear()
+        res2 = await PromptGraphRun(
+            graph,
+            chat_fn,
+            cache_lookup=lambda h: cache_store.get(h),
+        ).run()
+        self.assertEqual(llm_calls, [])
+        self.assertEqual(res2["result"]["profile"]["cache_hit_count"], 3)
+        self.assertEqual(res2["result"]["profile"]["total_cost_usd"], 0.0)
+
+    async def test_loop_edge_temp_prompt_reinjects_each_iteration_and_clears_on_node(self):
+        graph = validate_prompt_graph({
+            "nodes": [
+                _node("B", prompt="draft content"),
+                _node(
+                    "A",
+                    prompt="review draft",
+                    contract={"enabled": True, "must_include": ["PASS"], "on_fail": "continue"},
+                ),
+            ],
+            "groups": [],
+            "edges": [
+                {"id": "e_forward", "from": "A", "to": "B"},
+                {
+                    "id": "e_loop_ba",
+                    "from": "B",
+                    "to": "A",
+                    "is_loop": True,
+                    "max_iterations": 3,
+                    "condition": {"type": "on_contract_fail"},
+                    "temp_prompt": "루프 #{iteration}/{max_iterations} 지시: {source_output}",
+                },
+            ],
+            "settings": {"edge_direction": "execution"},
+        })
+        b_prompts: list[str] = []
+        recorded_versions: list[dict] = []
+        a_calls = [0]
+
+        async def chat_fn(*, model, messages, tools, node, extra):
+            user_txt = "\n".join(m["content"] for m in messages if m["role"] == "user")
+            if node["id"] == "B":
+                b_prompts.append(user_txt)
+                return _reply(f"draft-attempt-{len(b_prompts)}")
+            a_calls[0] += 1
+            if a_calls[0] <= 2:
+                return _reply(f"FAIL-round-{a_calls[0]}")
+            return _reply("PASS-final")
+
+        res = await PromptGraphRun(
+            graph,
+            chat_fn,
+            on_node_version=lambda v: recorded_versions.append(v),
+        ).run()
+        self.assertEqual(res["status"], "SUCCEEDED")
+        self.assertEqual(len(b_prompts), 3)
+        self.assertNotIn("루프 #", b_prompts[0])
+        self.assertIn("[임시 프롬프트 (1회성 추가 지시)]\n루프 #1/3 지시: FAIL-round-1", b_prompts[1])
+        temp_sec_2 = b_prompts[2].split("[임시 프롬프트 (1회성 추가 지시)]\n", 1)[1].split("\n\n[조건부 재귀", 1)[0]
+        self.assertEqual(temp_sec_2, "루프 #2/3 지시: FAIL-round-2")
+        self.assertNotIn("FAIL-round-1", temp_sec_2)  # old one-shot prompt cleared cleanly after B2!
+
+        b_final = next(n for n in res["graph"]["nodes"] if n["id"] == "B")
+        self.assertEqual(b_final["temp_prompt"], "")
+        self.assertTrue(b_final["completed"])
+        loop_edge_final = next(e for e in res["graph"]["edges"] if e["id"] == "e_loop_ba")
+        self.assertIn("루프 #{iteration}/{max_iterations}", loop_edge_final["temp_prompt"])
+        self.assertEqual(compute_change_status(res["graph"])["nodes"]["B"]["state"], "clean")
+
+        b_vers = [v for v in recorded_versions if v["node_id"] == "B"]
+        self.assertEqual(len(b_vers), 3)
+        self.assertEqual(b_vers[0]["temp_prompt"], "")
+        self.assertIn("루프 #1/3 지시: FAIL-round-1", b_vers[1]["temp_prompt"])
+        self.assertIn("루프 #2/3 지시: FAIL-round-2", b_vers[2]["temp_prompt"])
+
+    async def test_agent_decide_dynamic_loop_temp_prompt_and_forward_edge_reinjection(self):
+        # 1) MCP signal_loop_decision dynamic temp_prompt into a group target, plus non-loop edge temp_prompt re-injection
+        graph = validate_prompt_graph({
+            "nodes": [
+                _node("B1", prompt="work inside group", parent_group_id="G_WORK"),
+                _node("A", prompt="evaluate G_WORK and decide loop"),
+            ],
+            "groups": [_group("G_WORK", pre_prompt="base group pre", node_ids=["B1"])],
+            "edges": [
+                {
+                    "id": "e_fwd",
+                    "from": "A",
+                    "to": "G_WORK",
+                    "temp_prompt": "전달된 선행 간선 1회 지시",
+                },
+                {
+                    "id": "e_dyn_loop",
+                    "from": "G_WORK",
+                    "to": "A",
+                    "is_loop": True,
+                    "max_iterations": 2,
+                    "condition": {"type": "agent_decide"},
+                },
+            ],
+        })
+        b1_sys_prompts: list[str] = []
+        a_user_prompts: list[str] = []
+        a_turns = [0]
+
+        async def chat_fn(*, model, messages, tools, node, extra):
+            if node["id"] == "B1":
+                b1_sys_prompts.append("\n".join(m["content"] for m in messages if m["role"] == "system"))
+                return _reply(f"B1-iter-{len(b1_sys_prompts)}")
+            a_user_prompts.append("\n".join(m["content"] for m in messages if m["role"] == "user"))
+            tmsgs = [m for m in messages if m["role"] == "tool"]
+            if not tmsgs:
+                a_turns[0] += 1
+                if a_turns[0] == 1:
+                    return _reply(tool_calls=[_tool_call("signal_loop_decision", {
+                        "continue_loop": True,
+                        "reason": "보완 필요",
+                        "temp_prompt": "에이전트 동적 1회 지시: 예외 케이스 포함",
+                    })])
+                return _reply(tool_calls=[_tool_call("signal_loop_decision", {
+                    "continue_loop": False,
+                    "reason": "충분함",
+                })])
+            return _reply(f"A-done-{a_turns[0]}")
+
+        res1 = await PromptGraphRun(graph, chat_fn).run()
+        self.assertEqual(res1["status"], "SUCCEEDED")
+        self.assertEqual(len(b1_sys_prompts), 2)
+        self.assertNotIn("에이전트 동적 1회 지시", b1_sys_prompts[0])
+        self.assertIn("에이전트 동적 1회 지시: 예외 케이스 포함", b1_sys_prompts[1])
+        self.assertEqual(len(a_user_prompts), 4)  # 2 iterations * 2 LLM turns each (tool call + final)
+        self.assertTrue(all("전달된 선행 간선 1회 지시" in p for p in a_user_prompts))
+
+        # Target node/group temporary prompts are cleared after run, while edge.temp_prompt persists for future runs
+        g_after = res1["graph"]["groups"][0]
+        a_after = next(n for n in res1["graph"]["nodes"] if n["id"] == "A")
+        self.assertEqual(g_after["temp_pre_prompt"], "")
+        self.assertEqual(a_after["temp_prompt"], "")
+        self.assertEqual(next(e for e in res1["graph"]["edges"] if e["id"] == "e_fwd")["temp_prompt"], "전달된 선행 간선 1회 지시")
+
+        # Re-running the saved graph with force_rerun=True must re-inject the forward edge temp_prompt again!
+        a_user_prompts.clear()
+        a_turns[0] = 0
+        res2 = await PromptGraphRun(res1["graph"], chat_fn, force_rerun=True).run()
+        self.assertEqual(res2["status"], "SUCCEEDED")
+        self.assertIn("전달된 선행 간선 1회 지시", a_user_prompts[0])
+        self.assertEqual(next(n for n in res2["graph"]["nodes"] if n["id"] == "A")["temp_prompt"], "")
+
+    def test_auto_layout_guarantees_zero_overlap_on_deep_nested_groups_and_cycles(self):
+        # Intentionally place every node and 4-tier nested group at overlapping (0, 0) coordinates
+        messy = {
+            "nodes": [
+                _node("n_research_1", x=0, y=0, width=250, height=140, parent_group_id="g_tier1"),
+                _node("n_research_2", x=0, y=0, width=250, height=140, parent_group_id="g_tier1"),
+                _node("n_spec", x=0, y=0, width=250, height=140, parent_group_id="g_tier2"),
+                _node("n_review", x=0, y=0, width=250, height=140, parent_group_id="g_review"),
+                _node("n_release", x=0, y=0, width=250, height=140),
+            ],
+            "groups": [
+                _group("g_tier4", x=0, y=0, width=300, height=200),
+                _group("g_tier3", x=0, y=0, width=300, height=200, parent_group_id="g_tier4"),
+                _group("g_tier2", x=0, y=0, width=300, height=200, parent_group_id="g_tier3"),
+                _group("g_tier1", x=0, y=0, width=300, height=200, parent_group_id="g_tier2"),
+                _group("g_review", x=0, y=0, width=300, height=200),
+                _group("g_empty", x=0, y=0, width=260, height=160),
+            ],
+            "edges": [
+                {"from": "n_spec", "to": "g_tier1"},
+                {"from": "g_review", "to": "g_tier4"},
+                {"from": "n_spec", "to": "g_review", "is_loop": True, "max_iterations": 3, "condition": {"type": "on_contract_fail"}},
+                {"from": "n_release", "to": "g_review", "condition": {"type": "on_contract_pass"}},
+            ],
+            "settings": {"edge_direction": "execution"},
+        }
+        before_rep = pg.detect_layout_overlaps(messy)
+        self.assertFalse(before_rep["ok"])
+
+        laid_out = pg.auto_layout_graph(messy, direction="execution")
+        after_rep = pg.detect_layout_overlaps(laid_out)
+        self.assertTrue(after_rep["ok"], f"Unexpected layout issues: {after_rep}")
+        self.assertEqual(after_rep["overlap_pairs"], [])
+        self.assertEqual(after_rep["containment_violations"], [])
+        self.assertEqual(after_rep["top_clips"], [])
+
+        by_id = {x["id"]: x for x in laid_out["nodes"] + laid_out["groups"]}
+        # Execution order: g_tier4 -> g_review -> n_release strictly left-to-right
+        self.assertLess(by_id["g_tier4"]["x"] + by_id["g_tier4"]["width"], by_id["g_review"]["x"])
+        self.assertLess(by_id["g_review"]["x"] + by_id["g_review"]["width"], by_id["n_release"]["x"])
+        # Dependency order also produces zero overlaps with reversed horizontal ordering
+        dep_laid = pg.auto_layout_graph(messy, direction="dependency")
+        self.assertTrue(pg.detect_layout_overlaps(dep_laid)["ok"])
+
+    async def test_admin_mcp_server_creates_nested_groups_edges_loops_and_stays_overlap_free(self):
+        from mcp import ClientSession
+        from mcp.shared.memory import create_client_server_memory_streams
+
+        state = {"graph": validate_prompt_graph({"nodes": [], "groups": [], "edges": [], "settings": {"edge_direction": "execution"}})}
+        server = pg.make_prompt_graph_admin_mcp_server(
+            lambda: state["graph"],
+            lambda g: state.__setitem__("graph", g),
+        )
+
+        async def _call(session, name, arguments=None):
+            resp = await session.call_tool(name, arguments or {})
+            return json.loads("\n".join(b.text for b in resp.content))
+
+        async with create_client_server_memory_streams() as (client_streams, server_streams):
+            async with __import__("anyio").create_task_group() as tg:
+                tg.start_soon(server.run, *server_streams, server.create_initialization_options())
+                async with ClientSession(*client_streams) as session:
+                    await session.initialize()
+                    ov0 = await _call(session, "get_graph_overview")
+                    self.assertEqual(ov0["recommended_stage"], "early_simple")
+
+                    n1 = await _call(session, "create_node", {"id": "draft", "label": "초안", "prompt": "write draft"})
+                    self.assertTrue(n1["ok"] and n1["layout_report"]["ok"])
+                    n2 = await _call(session, "create_node", {"id": "critic", "label": "검토", "prompt": "review draft"})
+                    self.assertTrue(n2["ok"] and n2["layout_report"]["ok"])
+                    n3 = await _call(session, "create_node", {"id": "pub", "label": "배포", "prompt": "publish"})
+                    self.assertTrue(n3["ok"] and n3["layout_report"]["ok"])
+
+                    g1 = await _call(session, "create_group", {
+                        "id": "grp_inner",
+                        "label": "1-그룹 작업",
+                        "pre_prompt": "한국어",
+                        "adopt_entity_ids": ["draft", "critic"],
+                    })
+                    self.assertTrue(g1["ok"] and g1["tier"] == 1 and g1["layout_report"]["ok"])
+                    g2 = await _call(session, "create_group", {
+                        "id": "grp_outer",
+                        "label": "2-그룹 품질",
+                        "pre_prompt": "엄격 검증",
+                        "adopt_entity_ids": ["grp_inner"],
+                    })
+                    self.assertTrue(g2["ok"] and g2["tier"] == 2 and g2["layout_report"]["ok"])
+
+                    e_fwd = await _call(session, "add_edge", {"from": "critic", "to": "draft"})
+                    self.assertTrue(e_fwd["ok"] and e_fwd["layout_report"]["ok"])
+                    # Attempting an invalid non-loop cycle must fail cleanly and NOT corrupt graph state
+                    bad_cyc = await _call(session, "add_edge", {"from": "draft", "to": "critic", "is_loop": False})
+                    self.assertFalse(bad_cyc["ok"])
+                    self.assertIn("cycle", bad_cyc["error"].lower())
+
+                    # Conditional loop edge succeeds with temp_prompt and clean layout
+                    e_loop = await _call(session, "add_edge", {
+                        "from": "draft",
+                        "to": "critic",
+                        "is_loop": True,
+                        "max_iterations": 3,
+                        "condition": {"type": "on_contract_fail"},
+                        "temp_prompt": "반려 사유 반영 #{iteration}",
+                    })
+                    self.assertTrue(e_loop["ok"] and e_loop["layout_report"]["ok"])
+                    e_out = await _call(session, "add_edge", {"from": "pub", "to": "grp_outer"})
+                    self.assertTrue(e_out["ok"] and e_out["layout_report"]["ok"])
+
+                    rep_final = pg.detect_layout_overlaps(state["graph"])
+                    self.assertTrue(rep_final["ok"], f"MCP mutations caused layout overlap: {rep_final}")
+                tg.cancel_scope.cancel()
+
+    async def test_manage_prompt_graph_with_mcp_agent_and_api_routes(self):
+        initial = validate_prompt_graph({
+            "nodes": [_node("n1", x=50, y=50), _node("n2", x=55, y=55)],
+            "groups": [],
+            "edges": [],
+        })
+        step = [0]
+
+        async def agent_chat(*, model, messages, tools, node, extra):
+            step[0] += 1
+            if step[0] == 1:
+                return _reply(tool_calls=[_tool_call("create_group", {"id": "g_pipe", "label": "파이프라인", "adopt_entity_ids": ["n1", "n2"]})])
+            if step[0] == 2:
+                return _reply(tool_calls=[_tool_call("add_edge", {"from": "n2", "to": "n1"})])
+            return _reply("그룹 생성 및 의존 간선 배치 완료 (겹침 0건)")
+
+        out = await pg.manage_prompt_graph_with_mcp(initial, "두 노드를 그룹으로 묶고 n2가 n1에 의존하도록 정리해줘", agent_chat)
+        self.assertTrue(out["changed"])
+        self.assertTrue(out["layout_report"]["ok"])
+        self.assertEqual(len(out["graph"]["groups"]), 1)
+        self.assertEqual(out["graph"]["edges"][0]["from"], "n2")
 
 
 if __name__ == "__main__":

@@ -1532,6 +1532,7 @@ def prompt_graphs_save(ctx, ws, body):
         )
     except prompt_graph_service.PromptGraphError as e:
         raise HttpError(422, str(e))
+
     except LookupError as e:
         raise HttpError(404, str(e))
 
@@ -1560,6 +1561,7 @@ def prompt_graph_run_start(ctx, ws, body):
         )
     except prompt_graph_service.PromptGraphError as e:
         raise HttpError(422, str(e))
+
     except LookupError as e:
         raise HttpError(404, str(e))
     except RuntimeError as e:
@@ -1584,6 +1586,179 @@ def prompt_graph_run_get(ctx, ws, body, rid):
 @route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graph-runs/(?P<rid>[0-9a-f-]{36})/cancel", "EDITOR")
 def prompt_graph_run_cancel(ctx, ws, body, rid):
     return {"ok": prompt_graph_service.cancel_run(ws, _team_id(rid))}
+
+
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/search", "VIEWER")
+def prompt_graphs_search(ctx, ws, body):
+    q = ((ctx.get("query") or {}).get("q") or [""])[0]
+    return {"results": prompt_graph_service.search_workspace_nodes(ws, q)}
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/sync-artifacts", "EDITOR")
+def prompt_graphs_sync_artifacts(ctx, ws, body):
+    body = body or {}
+    try:
+        return prompt_graph_service.sync_graph_artifacts(
+            ws,
+            body.get("graph") or {},
+            graph_id=_team_id(body.get("graph_id")),
+            user=ctx["user"],
+        )
+    except prompt_graph_service.PromptGraphError as e:
+        raise HttpError(422, str(e))
+
+
+
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/(?P<gid>[0-9a-f-]{36})/nodes/(?P<nid>[^/]+)/versions", "VIEWER")
+def prompt_graph_node_versions(ctx, ws, body, gid, nid):
+    return {"versions": prompt_graph_service.list_node_versions(ws, _team_id(gid), urllib.parse.unquote(nid))}
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/(?P<gid>[0-9a-f-]{36})/nodes/(?P<nid>[^/]+)/checkout", "EDITOR")
+def prompt_graph_node_checkout(ctx, ws, body, gid, nid):
+    body = body or {}
+    try:
+        return prompt_graph_service.checkout_node_version(
+            ws,
+            _team_id(gid),
+            urllib.parse.unquote(nid),
+            int(body.get("version_id") or 0),
+            restore_prompt=bool(body.get("restore_prompt", False)),
+            user=ctx["user"],
+        )
+    except LookupError as e:
+        raise HttpError(404, str(e))
+    except prompt_graph_service.PromptGraphError as e:
+        raise HttpError(422, str(e))
+
+
+
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/(?P<gid>[0-9a-f-]{36})/impact-reviews", "VIEWER")
+def prompt_graph_impact_reviews_list(ctx, ws, body, gid):
+    return {"reviews": prompt_graph_service.list_impact_reviews(ws, _team_id(gid))}
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/(?P<gid>[0-9a-f-]{36})/impact-reviews/dismiss", "EDITOR")
+def prompt_graph_impact_review_dismiss(ctx, ws, body, gid):
+    body = body or {}
+    try:
+        return prompt_graph_service.dismiss_impact_review(
+            ws,
+            _team_id(gid),
+            str(body.get("entity_id") or ""),
+            review_id=int(body["review_id"]) if body.get("review_id") is not None else None,
+            user=ctx["user"],
+        )
+    except LookupError as e:
+        raise HttpError(404, str(e))
+
+
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/(?P<gid>[0-9a-f-]{36})/analytics", "VIEWER")
+def prompt_graph_analytics_get(ctx, ws, body, gid):
+    return prompt_graph_service.graph_analytics(ws, _team_id(gid))
+
+
+@route("GET", r"/workspaces/(?P<ws>[^/]+)/prompt-graph-templates", "VIEWER")
+def prompt_graph_templates_list(ctx, ws, body):
+    return {"templates": prompt_graph_service.list_templates(ws)}
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graph-templates", "EDITOR")
+def prompt_graph_templates_save(ctx, ws, body):
+    body = body or {}
+    try:
+        return prompt_graph_service.save_template(
+            ws,
+            body.get("name"),
+            body.get("description") or "",
+            body.get("graph") or {},
+            str(body.get("group_id") or ""),
+            ctx["user"],
+        )
+    except prompt_graph_service.PromptGraphError as e:
+        raise HttpError(422, str(e))
+
+
+
+@route("DELETE", r"/workspaces/(?P<ws>[^/]+)/prompt-graph-templates/(?P<tid>[0-9a-f-]{36})", "EDITOR")
+def prompt_graph_templates_delete(ctx, ws, body, tid):
+    if not prompt_graph_service.delete_template(ws, _team_id(tid)):
+        raise HttpError(404, "prompt graph template not found")
+    return {"ok": True}
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graph-templates/(?P<tid>[0-9a-f-]{36})/instantiate", "EDITOR")
+def prompt_graph_templates_instantiate(ctx, ws, body, tid):
+    body = body or {}
+    try:
+        return prompt_graph_service.instantiate_template(
+            ws,
+            _team_id(tid),
+            body.get("graph") or {},
+            offset_x=int(body.get("offset_x", 80)),
+            offset_y=int(body.get("offset_y", 80)),
+        )
+    except LookupError as e:
+        raise HttpError(404, str(e))
+    except prompt_graph_service.PromptGraphError as e:
+        raise HttpError(422, str(e))
+
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/auto-layout", "EDITOR")
+def prompt_graphs_auto_layout(ctx, ws, body):
+    body = body or {}
+    try:
+        return prompt_graph_service.auto_layout_saved_graph(
+            ws,
+            body.get("graph"),
+            graph_id=_team_id(body.get("graph_id")),
+            direction=str(body.get("direction") or "auto"),
+            save=bool(body.get("save", False)),
+            user=ctx["user"],
+        )
+    except LookupError as e:
+        raise HttpError(404, str(e))
+    except prompt_graph_service.PromptGraphError as e:
+        raise HttpError(422, str(e))
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/mcp-tool", "EDITOR")
+def prompt_graphs_mcp_tool(ctx, ws, body):
+    body = body or {}
+    try:
+        return prompt_graph_service.mcp_invoke_tool(
+            ws,
+            body.get("graph"),
+            str(body.get("tool") or ""),
+            body.get("arguments") if isinstance(body.get("arguments"), dict) else {},
+            graph_id=_team_id(body.get("graph_id")),
+            save=bool(body.get("save", False)),
+            user=ctx["user"],
+        )
+    except LookupError as e:
+        raise HttpError(404, str(e))
+    except prompt_graph_service.PromptGraphError as e:
+        raise HttpError(422, str(e))
+
+
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/mcp-manage", "EDITOR")
+def prompt_graphs_mcp_manage(ctx, ws, body):
+    body = body or {}
+    try:
+        return prompt_graph_service.mcp_manage_graph(
+            ws,
+            body.get("graph"),
+            str(body.get("instruction") or ""),
+            graph_id=_team_id(body.get("graph_id")),
+            save=bool(body.get("save", False)),
+            user=ctx["user"],
+            max_steps=int(body.get("max_steps") or 16),
+        )
+    except LookupError as e:
+        raise HttpError(404, str(e))
+    except prompt_graph_service.PromptGraphError as e:
+        raise HttpError(422, str(e))
 
 
 # ---------------- UX workbench ----------------

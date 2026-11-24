@@ -327,3 +327,61 @@ CREATE TABLE IF NOT EXISTS prompt_graph_events (
     created_at   timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_prompt_graph_events_run ON prompt_graph_events (run_id, seq);
+
+CREATE TABLE IF NOT EXISTS prompt_node_versions (
+    version_id           bigserial PRIMARY KEY,
+    workspace_id         uuid NOT NULL REFERENCES workspaces ON DELETE CASCADE,
+    graph_id             uuid REFERENCES prompt_graphs ON DELETE SET NULL,
+    run_id               uuid REFERENCES prompt_graph_runs ON DELETE SET NULL,
+    node_id              text NOT NULL,
+    node_label           text NOT NULL DEFAULT '',
+    iteration            integer NOT NULL DEFAULT 1,
+    input_hash           char(64) NOT NULL,
+    prompt               text NOT NULL DEFAULT '',
+    temp_prompt          text NOT NULL DEFAULT '',
+    effective_pre_prompt text NOT NULL DEFAULT '',
+    output               text NOT NULL DEFAULT '',
+    model                text NOT NULL DEFAULT '',
+    status               text NOT NULL DEFAULT 'done',
+    contract_passed      boolean,
+    contract_errors      jsonb NOT NULL DEFAULT '[]',
+    prompt_tokens        integer NOT NULL DEFAULT 0,
+    completion_tokens    integer NOT NULL DEFAULT 0,
+    total_tokens         integer NOT NULL DEFAULT 0,
+    cost_usd             numeric(12,6) NOT NULL DEFAULT 0,
+    duration_ms          integer NOT NULL DEFAULT 0,
+    cache_hit            boolean NOT NULL DEFAULT false,
+    created_at           timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pg_node_versions_lookup ON prompt_node_versions (workspace_id, graph_id, node_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pg_node_versions_hash ON prompt_node_versions (workspace_id, input_hash, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS prompt_graph_templates (
+    template_id  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id uuid NOT NULL REFERENCES workspaces ON DELETE CASCADE,
+    name         text NOT NULL,
+    description  text NOT NULL DEFAULT '',
+    tier_depth   integer NOT NULL DEFAULT 1,
+    node_count   integer NOT NULL DEFAULT 0,
+    group_count  integer NOT NULL DEFAULT 1,
+    subtree_json jsonb NOT NULL,
+    created_by   uuid REFERENCES users,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pg_templates_ws ON prompt_graph_templates (workspace_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS prompt_node_impact_reviews (
+    review_id      bigserial PRIMARY KEY,
+    workspace_id   uuid NOT NULL REFERENCES workspaces ON DELETE CASCADE,
+    graph_id       uuid REFERENCES prompt_graphs ON DELETE SET NULL,
+    run_id         uuid REFERENCES prompt_graph_runs ON DELETE SET NULL,
+    source_node_id text NOT NULL,
+    target_id      text NOT NULL,
+    needs_rerun    boolean NOT NULL,
+    reason         text NOT NULL DEFAULT '',
+    decision       text NOT NULL DEFAULT 'PENDING' CHECK (decision IN ('PENDING','APPROVED','DISMISSED','AUTO_RERUN')),
+    decided_at     timestamptz,
+    created_at     timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pg_impact_reviews_graph ON prompt_node_impact_reviews (workspace_id, graph_id, created_at DESC);

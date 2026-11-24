@@ -20,12 +20,19 @@
     dirty: !!PG.dirty,
     json: false,
     wrapMode: false,
+    linkMode: false,
+    showProfileOverlay: false,
     reuseOutputs: false,
     edgeDir: PG.edgeDir || (G.store.get("agdd.pg.edgedir") === "execution" ? "execution" : "dependency"),
     pendingLinkFrom: null,
     inspTab: PG.inspTab || "changes",
     changeSel: PG.changeSel instanceof Set ? PG.changeSel : new Set(),
     changeSeen: PG.changeSeen instanceof Set ? PG.changeSeen : new Set(),
+    templates: PG.templates || [],
+    analytics: PG.analytics || null,
+    versionCache: PG.versionCache || {},
+    searchQuery: PG.searchQuery || "",
+    searchResults: PG.searchResults || [],
     run: PG.run || null,
     poll: null,
     flashes: PG.flashes || [],
@@ -59,60 +66,48 @@
       .pg-stage { flex:1; position:relative; overflow:auto; touch-action:none; user-select:none;
         background:radial-gradient(circle, color-mix(in srgb,var(--line) 85%,transparent) 1px, transparent 1px) 0 0/20px 20px, var(--bg); }
       .pg-stage.wrap-mode { cursor:crosshair; }
+      .pg-stage.link-mode { cursor:crosshair; }
+      .pg-stage.link-mode .pg-node, .pg-stage.link-mode .pg-group { cursor:crosshair; }
       .pg-board { position:relative; }
       .pg-svg { position:absolute; inset:0; overflow:visible; pointer-events:none; }
       .pg-edge { fill:none; stroke-width:2.2; pointer-events:none; }
       .pg-edge.grp { stroke-dasharray:6 4; }
-      .pg-edge.on { stroke-width:3.6; }
+      .pg-edge.cond { stroke-dasharray:5 3; }
+      .pg-edge.loop { stroke-dasharray:7 3 2 3; }
+      .pg-edge.crit { stroke-width:3.2; filter:drop-shadow(0 0 4px #ef4444); }
+      .pg-edge.on { stroke-width:2.7; filter:drop-shadow(0 0 3px currentColor); }
       .pg-edge.flow { stroke-dasharray:8 6; animation:pgflow .6s linear infinite; stroke-width:3.2; }
       .pg-edge-hit { fill:none; stroke:transparent; stroke-width:14; cursor:pointer; pointer-events:stroke; }
       @keyframes pgflow { to { stroke-dashoffset:-28; } }
       .pg-elabel { font:11px system-ui,sans-serif; fill:var(--muted); paint-order:stroke; stroke:var(--bg); stroke-width:4px; pointer-events:none; }
+      .pg-node.pg-crit { border-color:#ef4444; box-shadow:0 0 0 3px color-mix(in srgb,#ef4444 32%,transparent); }
+      .pg-prof-badge { position:absolute; left:50%; top:calc(100% + 4px); transform:translateX(-50%); font:10px ui-monospace,Menlo,monospace;
+        background:var(--panel); border:1px solid var(--line); color:var(--ink); padding:1px 6px; border-radius:99px; white-space:nowrap; pointer-events:none; }
 
       /* Dashed Pre-Prompt Group */
       .pg-group { position:absolute; box-sizing:border-box; border:2px dashed color-mix(in srgb,var(--accent) 65%,var(--line));
-        border-radius:12px; background:transparent; cursor:grab; }
+        border-radius:12px; background:transparent; cursor:grab; overflow:visible; }
       .pg-group.depth-1 { border-color:#8b5cf6; background:transparent; }
       .pg-group.depth-2 { border-color:#0ea5e9; background:transparent; }
       .pg-group.depth-3 { border-color:#d97706; background:transparent; }
       .pg-group.on { box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 35%,transparent); border-style:dashed; }
-      .pg-group-hd { display:flex; align-items:center; gap:6px; padding:6px 10px; border-bottom:1px dashed color-mix(in srgb,var(--line) 80%,transparent);
-        font-size:12px; font-weight:600; color:var(--ink); background:transparent; border-radius:10px 10px 0 0; }
-      .pg-group-hd .id { font:10.5px ui-monospace,Menlo,monospace; color:var(--muted); font-weight:400; }
-      .pg-hd-acts { margin-left:auto; display:inline-flex; align-items:center; gap:4px; }
-      .pg-group-hd .pg-mini-link { border:1px solid var(--line); background:transparent; color:var(--muted);
-        border-radius:6px; font-size:11px; padding:1px 6px; cursor:crosshair; }
-      .pg-group-hd .pg-mini-link:hover { border-color:var(--accent); color:var(--accent); }
-      .pg-group-hd .pg-mini-link.linking { border-color:var(--warn); background:var(--warn); color:#fff; }
-      .pg-group-hd .pg-mini-wrap { border:1px dashed var(--line); background:transparent; color:var(--muted);
-        border-radius:6px; font-size:11px; padding:1px 6px; cursor:pointer; }
-      .pg-group-hd .pg-mini-wrap:hover { border-color:var(--accent); color:var(--accent); }
-      .pg-group-hd .pg-mini-run { border:1px solid var(--accent); background:transparent; color:var(--accent);
-        border-radius:6px; font-size:11px; padding:1px 7px; cursor:pointer; }
-      .pg-group-hd .pg-mini-run:hover { background:var(--accent); color:var(--bg); }
-      .pg-group-sub { padding:5px 10px; font-size:11px; color:var(--muted); display:flex; flex-direction:column; gap:3px; pointer-events:none; }
-      .pg-group-pre { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--ink); opacity:.85; }
+      .pg-group.linking { box-shadow:0 0 0 3px color-mix(in srgb,var(--warn) 45%,transparent); border-style:dashed; }
+      .pg-group-title { position:absolute; left:2px; bottom:calc(100% + 4px); max-width:calc(100% - 4px);
+        font-size:12px; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+        pointer-events:none; line-height:1.25; background:color-mix(in srgb,var(--bg) 82%,transparent); padding:0 4px; border-radius:4px; }
       .pg-resize-handle { position:absolute; right:2px; bottom:2px; width:14px; height:14px; cursor:nwse-resize;
-        border-right:2.5px solid var(--muted); border-bottom:2.5px solid var(--muted); border-radius:0 0 8px 0; opacity:.65; }
+        border-right:2.5px solid var(--muted); border-bottom:2.5px solid var(--muted); border-radius:0 0 8px 0; opacity:0; transition:opacity .12s; }
+      .pg-group:hover .pg-resize-handle, .pg-group.on .pg-resize-handle { opacity:.75; }
       .pg-resize-handle:hover { opacity:1; border-color:var(--accent); }
 
       /* Prompt Node */
       .pg-node { position:absolute; box-sizing:border-box; border:1.5px solid var(--line); border-radius:10px;
         background:var(--panel); box-shadow:0 2px 6px rgba(0,0,0,.08); cursor:grab; display:flex; flex-direction:column; overflow:visible; }
       .pg-node.on { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 40%,transparent); }
-      .pg-node .hd { display:flex; align-items:center; gap:6px; padding:6px 10px; border-radius:8px 8px 0 0;
-        background:#2f5d50; color:#fff; font-size:12px; font-weight:600; }
-      .pg-node .hd .id { font:10px ui-monospace,Menlo,monospace; opacity:.82; font-weight:400; }
-      .pg-node .hd .pg-mini-link { border:1px solid rgba(255,255,255,.45); background:rgba(255,255,255,.12);
-        color:#fff; border-radius:5px; font-size:10.5px; padding:1px 5px; cursor:crosshair; }
-      .pg-node .hd .pg-mini-link:hover { background:rgba(255,255,255,.28); }
-      .pg-node .hd .pg-mini-link.linking { border-color:var(--warn); background:var(--warn); color:#fff; }
-      .pg-node .hd .pg-mini-wrap { border:1px dashed rgba(255,255,255,.45); background:rgba(255,255,255,.1);
-        color:#fff; border-radius:5px; font-size:10.5px; padding:1px 5px; cursor:pointer; }
-      .pg-node .hd .pg-mini-wrap:hover { background:rgba(255,255,255,.28); }
-      .pg-node .hd .pg-mini-run { border:1px solid rgba(255,255,255,.5); background:rgba(255,255,255,.15);
-        color:#fff; border-radius:5px; font-size:10.5px; padding:1px 6px; cursor:pointer; }
-      .pg-node .hd .pg-mini-run:hover { background:#fff; color:#1d1d1b; }
+      .pg-node.linking { border-color:var(--warn); box-shadow:0 0 0 3px color-mix(in srgb,var(--warn) 45%,transparent); }
+      .pg-node-title { position:absolute; left:50%; bottom:calc(100% + 4px); transform:translateX(-50%); max-width:calc(100% + 48px);
+        font-size:12px; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+        pointer-events:none; line-height:1.25; text-align:center; background:color-mix(in srgb,var(--bg) 82%,transparent); padding:0 4px; border-radius:4px; }
       .pg-node .bd { padding:6px 10px; font-size:11px; color:var(--muted); line-height:1.35; overflow:hidden; flex:1; display:flex; flex-direction:column; gap:3px; }
       .pg-node .bd .pr { color:var(--ink); overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
       .pg-node .bd .out { color:var(--ok); font-size:10.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -133,7 +128,11 @@
       /* Right Inspector Tabs & Git-style Changes Panel */
       .pg-insp-tabs { display:flex; border-bottom:1px solid var(--line); background:var(--bg); position:sticky; top:0; z-index:4; }
       .pg-insp-tab { flex:1; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--muted);
-        padding:8px 10px; font-size:12.5px; font-weight:600; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; }
+        padding:8px 4px; font-size:11.5px; font-weight:600; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:4px; white-space:nowrap; }
+      .pg-diff { font:11.5px ui-monospace,Menlo,monospace; background:var(--bg); border:1px solid var(--line); border-radius:8px;
+        padding:6px 8px; max-height:220px; overflow:auto; white-space:pre-wrap; line-height:1.45; }
+      .pg-diff-add { background:color-mix(in srgb,var(--ok) 15%,transparent); color:var(--ok); display:block; }
+      .pg-diff-del { background:color-mix(in srgb,var(--bad) 15%,transparent); color:var(--bad); display:block; }
       .pg-insp-tab:hover { color:var(--ink); }
       .pg-insp-tab.on { color:var(--accent); border-bottom-color:var(--accent); background:var(--panel); }
       .pg-tab-cnt { font-size:11px; padding:0 6px; border-radius:99px; background:var(--chip); color:var(--muted); font-weight:600; }
@@ -208,12 +207,24 @@
   const entityLabel = id => findEntity(id)?.label || id || "";
   const nodeState = id => PG.run?.node_state?.[id] || null;
 
+  function defaultContract() {
+    return { enabled: false, json_required: false, json_keys: [], must_include: [], must_exclude: [], regex: "", min_chars: 0, max_retries: 0, on_fail: "fail" };
+  }
+  function defaultArtifact() {
+    return { kind: "none", repo: "workspace", path: "", mode: "read", last_content_hash: "", last_synced_at: "" };
+  }
+  function defaultCondition() {
+    return { type: "always", value: "", case_sensitive: false };
+  }
+
   function ensureArrays(g) {
     g.nodes = Array.isArray(g.nodes) ? g.nodes : [];
     g.groups = Array.isArray(g.groups) ? g.groups : [];
     g.edges = Array.isArray(g.edges) ? g.edges : [];
-    g.settings = g.settings || { parallelism: 4, max_tool_steps: 8, default_model: "", auto_rerun_needs_rerun: false };
+    g.settings = g.settings || { parallelism: 4, max_tool_steps: 8, default_model: "", auto_rerun_needs_rerun: false, edge_direction: "dependency", cross_graph_cache: false };
     g.settings.auto_rerun_needs_rerun = Boolean(g.settings.auto_rerun_needs_rerun);
+    g.settings.cross_graph_cache = Boolean(g.settings.cross_graph_cache);
+    g.settings.edge_direction = g.settings.edge_direction === "execution" ? "execution" : "dependency";
     return g;
   }
 
@@ -247,6 +258,9 @@
       if (n.parent_group_id && !groupIds.has(n.parent_group_id)) n.parent_group_id = null;
       n.dependencies = [];
       n.extra = n.extra && typeof n.extra === "object" && !Array.isArray(n.extra) ? n.extra : {};
+      n.contract = Object.assign(defaultContract(), n.contract && typeof n.contract === "object" ? n.contract : {});
+      n.artifact = Object.assign(defaultArtifact(), n.artifact && typeof n.artifact === "object" ? n.artifact : {});
+      n.impact_history = Array.isArray(n.impact_history) ? n.impact_history.slice(0, 20) : [];
       n.temp_prompt = typeof n.temp_prompt === "string" ? n.temp_prompt : "";
       n.completed = Boolean(n.completed);
       n.last_run_prompt = typeof n.last_run_prompt === "string"
@@ -282,16 +296,25 @@
 
     const seenPairs = new Set();
     g.edges = g.edges.filter(e => {
-      if (!e || !allIds.has(e.from) || !allIds.has(e.to) || e.from === e.to) return false;
-      const k = `${e.from}>${e.to}`;
+      if (!e || !allIds.has(e.from) || !allIds.has(e.to)) return false;
+      const isLoop = Boolean(e.is_loop);
+      if (e.from === e.to && !isLoop) return false;
+      const k = `${e.from}>${e.to}>${isLoop ? 1 : 0}`;
       if (seenPairs.has(k)) return false;
       seenPairs.add(k);
       return true;
     });
     g.edges.forEach((e, i) => {
       if (!e.id) e.id = `e${i + 1}`;
-      const src = findEntity(e.from);
-      if (src) src.dependencies.push(e.to);
+      e.is_loop = Boolean(e.is_loop);
+      e.max_iterations = e.is_loop ? Math.max(1, Math.min(20, parseInt(e.max_iterations, 10) || 3)) : 0;
+      e.condition = Object.assign(defaultCondition(), e.condition && typeof e.condition === "object" ? e.condition : {});
+      e.label = typeof e.label === "string" ? e.label : "";
+      e.temp_prompt = typeof e.temp_prompt === "string" ? e.temp_prompt : "";
+      if (!e.is_loop) {
+        const src = findEntity(e.from);
+        if (src) src.dependencies.push(e.to);
+      }
     });
     g.nodes.forEach(n => {
       if (!n.completed) {
@@ -367,13 +390,14 @@
     return out;
   }
 
-  function wouldCreateCycle(fromId, toId, g = PG.graph) {
-    if (fromId === toId) return "자기 자신을 의존할 수 없습니다.";
+  function wouldCreateCycle(fromId, toId, g = PG.graph, isLoop = false) {
+    if (fromId === toId) return isLoop ? null : "자기 자신을 의존할 수 없습니다.";
     const subFrom = subtreeIds(fromId, g);
     const subTo = subtreeIds(toId, g);
     for (const x of subFrom) {
       if (subTo.has(x)) return "상위 그룹과 내부 요소 간에는 의존 관계를 연결할 수 없습니다.";
     }
+    if (isLoop) return null;
     const adj = new Map();
     const addAdj = (u, v) => {
       const sU = subtreeIds(u, g);
@@ -383,7 +407,7 @@
         for (const y of sV) adj.get(x).add(y);
       }
     };
-    g.edges.forEach(e => addAdj(e.from, e.to));
+    g.edges.filter(e => !e.is_loop).forEach(e => addAdj(e.from, e.to));
     addAdj(fromId, toId);
 
     // Check if any member in subtree(toId) can reach any member in subtree(fromId)
@@ -391,7 +415,7 @@
     const q = [...subTo];
     while (q.length) {
       const cur = q.shift();
-      if (subFrom.has(cur)) return "순환 의존(Cycle)이 발생합니다. DAG 구조만 허용됩니다.";
+      if (subFrom.has(cur)) return "순환 의존(Cycle)이 발생합니다. 조건부 순환 간선으로 추가할 수 있습니다.";
       if (visited.has(cur)) continue;
       visited.add(cur);
       for (const nxt of adj.get(cur) || []) {
@@ -683,24 +707,57 @@
     return isReversedDir() ? { from: e.to, to: e.from } : { from: e.from, to: e.to };
   }
 
-  function addEdge(from, to) {
+  function addEdge(from, to, opts = {}) {
     if (!findEntity(from) || !findEntity(to)) return false;
-    if (PG.graph.edges.some(e => e.from === from && e.to === to)) {
-      toast("이미 동일한 의존 관계가 연결되어 있습니다.", true);
+    let isLoop = Boolean(opts.is_loop);
+    if (!isLoop) {
+      const err = wouldCreateCycle(from, to, PG.graph, false);
+      if (err) {
+        const subFrom = subtreeIds(from, PG.graph);
+        const subTo = subtreeIds(to, PG.graph);
+        const containmentClash = from !== to && [...subFrom].some(x => subTo.has(x));
+        if (containmentClash) {
+          toast(err, true);
+          return false;
+        }
+        const okLoop = typeof confirm === "function"
+          ? confirm("순환/자기참조가 감지되었습니다.\n조건부 재귀·순환 간선(최대 3회 반복)으로 추가할까요?")
+          : false;
+        if (!okLoop) {
+          toast(err, true);
+          return false;
+        }
+        isLoop = true;
+      }
+    } else {
+      const loopErr = wouldCreateCycle(from, to, PG.graph, true);
+      if (loopErr) {
+        toast(loopErr, true);
+        return false;
+      }
+    }
+    if (PG.graph.edges.some(e => e.from === from && e.to === to && Boolean(e.is_loop) === isLoop)) {
+      toast("이미 동일한 간선이 연결되어 있습니다.", true);
       return false;
     }
-    const err = wouldCreateCycle(from, to);
-    if (err) {
-      toast(err, true);
-      return false;
-    }
-    const compErr = validateCompletedEdge(from, to);
-    if (compErr) {
-      toast(compErr, true);
-      return false;
+    if (!isLoop) {
+      const compErr = validateCompletedEdge(from, to);
+      if (compErr) {
+        toast(compErr, true);
+        return false;
+      }
     }
     snapshotUndo();
-    PG.graph.edges.push({ id: `e${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`, from, to });
+    PG.graph.edges.push({
+      id: `e${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
+      from,
+      to,
+      is_loop: isLoop,
+      max_iterations: isLoop ? (opts.max_iterations || 3) : 0,
+      condition: opts.condition || (isLoop ? { type: "on_contract_fail", value: "", case_sensitive: false } : defaultCondition()),
+      label: opts.label || (isLoop ? "조건부 순환" : ""),
+      temp_prompt: typeof opts.temp_prompt === "string" ? opts.temp_prompt : "",
+    });
     syncGraphRelations();
     PG.sel = { type: "edge", id: PG.graph.edges[PG.graph.edges.length - 1].id };
     PG.inspTab = "edit";
@@ -956,7 +1013,7 @@
 
   function shiftGraphIfNeeded(targetMinX, targetMinY, g = PG.graph) {
     const dx = targetMinX < 20 ? Math.ceil((20 - targetMinX) / 10) * 10 : 0;
-    const dy = targetMinY < 20 ? Math.ceil((20 - targetMinY) / 10) * 10 : 0;
+    const dy = targetMinY < 32 ? Math.ceil((32 - targetMinY) / 10) * 10 : 0;
     if (!dx && !dy) return;
     for (const n of g.nodes || []) { n.x += dx; n.y += dy; }
     for (const grp of g.groups || []) { grp.x += dx; grp.y += dy; }
@@ -972,7 +1029,7 @@
       ...(grp.child_group_ids || []).map(id => (g.groups || []).find(x => x.id === id)),
     ].filter(Boolean);
     if (children.length) {
-      const PAD_X = 30, PAD_TOP = 94, PAD_BOT = 28;
+      const PAD_X = 28, PAD_TOP = 36, PAD_BOT = 28;
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const ch of children) {
         minX = Math.min(minX, ch.x);
@@ -982,14 +1039,14 @@
       }
       const needX = Math.round((minX - PAD_X) / 10) * 10;
       const needY = Math.round((minY - PAD_TOP) / 10) * 10;
-      if (needX < 20 || needY < 20) {
+      if (needX < 20 || needY < 32) {
         const sdx = needX < 20 ? Math.ceil((20 - needX) / 10) * 10 : 0;
-        const sdy = needY < 20 ? Math.ceil((20 - needY) / 10) * 10 : 0;
+        const sdy = needY < 32 ? Math.ceil((32 - needY) / 10) * 10 : 0;
         shiftGraphIfNeeded(needX, needY, g);
         minX += sdx; minY += sdy; maxX += sdx; maxY += sdy;
       }
       const nx = Math.max(20, Math.round((minX - PAD_X) / 10) * 10);
-      const ny = Math.max(20, Math.round((minY - PAD_TOP) / 10) * 10);
+      const ny = Math.max(32, Math.round((minY - PAD_TOP) / 10) * 10);
       const nr = Math.round((maxX + PAD_X) / 10) * 10;
       const nb = Math.round((maxY + PAD_BOT) / 10) * 10;
       const oldR = grp.x + (grp.width || 360);
@@ -1025,14 +1082,14 @@
       parent_group_id: oldParent,
       dependencies: [],
       completed: false,
-      x: Math.round((ent.x - 30) / 10) * 10,
-      y: Math.round((ent.y - 94) / 10) * 10,
-      width: Math.max(260, (ent.width || 250) + 60),
-      height: Math.max(170, (ent.height || 140) + 122),
+      x: Math.round((ent.x - 28) / 10) * 10,
+      y: Math.round((ent.y - 36) / 10) * 10,
+      width: Math.max(240, (ent.width || 250) + 56),
+      height: Math.max(150, (ent.height || 140) + 64),
     };
     shiftGraphIfNeeded(grp.x, grp.y);
     grp.x = Math.max(20, grp.x);
-    grp.y = Math.max(20, grp.y);
+    grp.y = Math.max(32, grp.y);
     PG.graph.groups.push(grp);
     ent.parent_group_id = id;
     syncGraphRelations();
@@ -1049,8 +1106,8 @@
     const parent = findGroup(parentGid);
     if (!parent) return null;
     const existingCount = (parent.child_group_ids || []).length;
-    const childX = parent.x + 30 + existingCount * 40;
-    const childY = parent.y + 94 + existingCount * 24;
+    const childX = parent.x + 28 + existingCount * 40;
+    const childY = parent.y + 36 + existingCount * 24;
     const child = addPrePromptGroup(childX, childY, 320, 210, {
       parent_group_id: parentGid,
       label: `하위 그룹 ${(PG.graph.groups.length || 0) + 1}`,
@@ -1115,19 +1172,36 @@
     return { x, y, nx: 0, ny: dy >= 0 ? 1 : -1 };
   }
 
-  function edgePath(a, b) {
+  function edgePath(a, b, opts = {}) {
+    if (a.id === b.id) {
+      const w = a.width || 250;
+      const sx = a.x + w - 22;
+      const sy = a.y;
+      const ex = a.x + w;
+      const ey = a.y + 26;
+      return {
+        d: `M${sx},${sy} C${sx + 8},${sy - 56} ${ex + 62},${sy - 46} ${ex},${ey}`,
+        mx: ex + 26,
+        my: sy - 26,
+      };
+    }
     const acx = a.x + (a.width || 250) / 2;
     const acy = a.y + (a.height || 140) / 2;
     const bcx = b.x + (b.width || 250) / 2;
     const bcy = b.y + (b.height || 140) / 2;
     const p1 = rectBorderPoint(a, bcx, bcy, 1);
     const p2 = rectBorderPoint(b, acx, acy, 3);
-    const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const dist = Math.hypot(dx, dy) || 1;
     const bend = Math.min(90, Math.max(24, dist * 0.32));
-    const c1x = p1.x + p1.nx * bend;
-    const c1y = p1.y + p1.ny * bend;
-    const c2x = p2.x + p2.nx * bend;
-    const c2y = p2.y + p2.ny * bend;
+    const offset = Number(opts.curveOffset || 0);
+    const ux = -dy / dist;
+    const uy = dx / dist;
+    const c1x = p1.x + p1.nx * bend + ux * offset;
+    const c1y = p1.y + p1.ny * bend + uy * offset;
+    const c2x = p2.x + p2.nx * bend + ux * offset;
+    const c2y = p2.y + p2.ny * bend + uy * offset;
     const mx = 0.125 * p1.x + 0.375 * c1x + 0.375 * c2x + 0.125 * p2.x;
     const my = 0.125 * p1.y + 0.375 * c1y + 0.375 * c2y + 0.125 * p2.y;
     return {
@@ -1135,6 +1209,42 @@
       mx,
       my,
     };
+  }
+
+  function edgeCurveOffsets(edges) {
+    const counts = new Map();
+    for (const e of edges) {
+      if (e.from === e.to) continue;
+      const key = e.from < e.to ? `${e.from}|${e.to}` : `${e.to}|${e.from}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    const seen = new Map();
+    const out = new Map();
+    for (const e of edges) {
+      if (e.from === e.to) { out.set(e.id, 0); continue; }
+      const key = e.from < e.to ? `${e.from}|${e.to}` : `${e.to}|${e.from}`;
+      const tot = counts.get(key) || 1;
+      const idx = seen.get(key) || 0;
+      seen.set(key, idx + 1);
+      if (tot > 1) {
+        out.set(e.id, e.is_loop ? 54 : (idx === 0 ? -24 : 24));
+      } else {
+        out.set(e.id, e.is_loop ? 46 : 0);
+      }
+    }
+    return out;
+  }
+
+  function edgeTooltip(e) {
+    const rev = isReversedDir();
+    const a = rev ? entityLabel(e.to) : entityLabel(e.from);
+    const b = rev ? entityLabel(e.from) : entityLabel(e.to);
+    const cond = e.condition || {};
+    const cText = cond.type && cond.type !== "always" ? ` · 조건: ${cond.type}${cond.value ? `(${cond.value})` : ""}` : "";
+    const lText = e.is_loop ? ` · 순환 최대 ${e.max_iterations || 3}회` : "";
+    const tText = (e.temp_prompt || "").trim() ? " · ⚡임시 프롬프트" : "";
+    const modeText = rev ? "실행" : "의존";
+    return `${a} → ${b} (${modeText}${lText}${cText}${tText})`;
   }
 
   function draw(withInsp = false) {
@@ -1147,18 +1257,13 @@
     const now = Date.now();
     PG.flashes = PG.flashes.filter(f => now - f.t < 2600);
     const flowing = new Set(PG.flashes.map(f => `${f.from}>${f.to}`));
+    const critNodes = new Set(PG.showProfileOverlay ? (PG.run?.result_json?.profile?.critical_path_nodes || []) : []);
 
     const allBoxes = [...PG.graph.nodes, ...PG.graph.groups];
     const W = Math.max(2400, ...allBoxes.map(b => b.x + (b.width || 300) + 500));
     const H = Math.max(1500, ...allBoxes.map(b => b.y + (b.height || 200) + 400));
 
     const chg = computeChangeStatus();
-    const chgChip = st => {
-      if (st === "modified") return `<span class="chip chg-mod">M 변경 감지</span>`;
-      if (st === "needs_rerun") return `<span class="chip chg-rerun">↻ 재실행 필요</span>`;
-      if (st === "clean") return `<span class="chip done-ok">✓ 완료</span>`;
-      return `<span class="chip done-no">○ 미실행</span>`;
-    };
 
     // Render groups shallowest -> deepest so inner nested rectangles sit on top
     const sortedGroups = [...PG.graph.groups].sort((a, b) => groupDepth(a.id) - groupDepth(b.id));
@@ -1166,33 +1271,13 @@
       const tier = groupTier(g.id);
       const bColor = tierColor(tier);
       const on = PG.sel?.type === "group" && PG.sel.id === g.id;
-      const deps = g.dependencies || [];
-      const hasTempPre = !!(g.temp_pre_prompt || "").trim();
+      const linking = PG.pendingLinkFrom === g.id;
       const gst = chg.groups[g.id]?.state || (g.completed ? "clean" : "unexecuted");
       const stCls = gst === "modified" ? "st-modified" : gst === "needs_rerun" ? "st-needs-rerun" : "";
       const borderStyle = (gst === "modified" || gst === "needs_rerun") ? "" : `border-color:${bColor};`;
-      return `<div class="pg-group ${stCls} ${on ? "on" : ""}" data-pg-group="${esc(g.id)}"
+      return `<div class="pg-group ${stCls} ${on ? "on" : ""} ${linking ? "linking" : ""}" data-pg-group="${esc(g.id)}"
         style="left:${g.x}px;top:${g.y}px;width:${g.width}px;height:${g.height}px;${borderStyle}">
-        <div class="pg-group-hd">
-          <span style="color:${bColor}">⬚</span>
-          <span>${esc(g.label)}</span>
-          <span class="id">${esc(g.id)} · ${tier}-그룹</span>
-          <span class="pg-hd-acts">
-            <button type="button" class="pg-mini-wrap" data-pg-wrap-entity="${esc(g.id)}" title="이 그룹을 감싸는 ${tier + 1}-그룹 생성">＋⬚</button>
-            <button type="button" class="pg-mini-link${PG.pendingLinkFrom === g.id ? " linking" : ""}" data-pg-out="${esc(g.id)}" title="${isReversedDir() ? "드래그 또는 클릭 후 대상 클릭 (B → A: B가 먼저 실행됨)" : "드래그 또는 클릭 후 대상 클릭 (A → B: A는 B를 의존)"}">🔗</button>
-            <button type="button" class="pg-mini-run" data-pg-run-group="${esc(g.id)}" title="이 프리 프롬프트 그룹 실행">▶ 실행</button>
-          </span>
-        </div>
-        <div class="pg-group-sub">
-          <div class="pg-group-pre">${esc(g.pre_prompt ? `프리 프롬프트: ${g.pre_prompt}` : "(프리 프롬프트 미입력)")}</div>
-          ${hasTempPre ? `<div class="pg-group-temp" title="${esc(g.temp_pre_prompt)}">⚡ 임시 프리 프롬프트: ${esc(g.temp_pre_prompt)}</div>` : ""}
-          <div class="pg-chips">
-            ${chgChip(gst)}
-            ${hasTempPre ? `<span class="chip temp">⚡ 임시 프리</span>` : ""}
-            <span class="chip">노드 ${(g.node_ids || []).length} · 하위그룹 ${(g.child_group_ids || []).length}</span>
-            ${deps.map(d => `<span class="chip dep">의존 → ${esc(entityLabel(d))}</span>`).join("")}
-          </div>
-        </div>
+        <div class="pg-group-title">${esc(g.label)}</div>
         <div class="pg-resize-handle" data-pg-resize="${esc(g.id)}" title="드래그해 그룹 크기 조절"></div>
       </div>`;
     }).join("");
@@ -1200,60 +1285,45 @@
     const nodesHtml = PG.graph.nodes.map(n => {
       const s = nodeState(n.id);
       const on = PG.sel?.type === "node" && PG.sel.id === n.id;
-      const preCount = ancestorGroups(n.id).filter(g => (g.pre_prompt || "").trim() || (g.temp_pre_prompt || "").trim()).length;
-      const deps = n.dependencies || [];
-      const extraKeys = Object.keys(n.extra || {});
-      const hasTemp = !!(n.temp_prompt || "").trim();
+      const linking = PG.pendingLinkFrom === n.id;
       const nst = chg.nodes[n.id]?.state || (n.completed ? "clean" : "unexecuted");
       const stCls = nst === "modified" ? "st-modified" : nst === "needs_rerun" ? "st-needs-rerun" : "";
-      const stTxt = s ? `${STATUS_KO[s.status] || s.status}${s.ms ? ` ${(s.ms / 1000).toFixed(1)}s` : ""}` : "";
-      const modelTxt = n.model || PG.graph.settings?.default_model || PG.defaultModel || "기본 모델";
-      return `<div class="pg-node ${stCls} ${on ? "on" : ""} ${s ? "s-" + esc(s.status) : ""}" data-pg-node="${esc(n.id)}"
+      const isCrit = critNodes.has(n.id);
+      const tok = s?.usage?.total_tokens || 0;
+      const profBadge = PG.showProfileOverlay && s && (s.ms || tok || s.cache_hit)
+        ? `<div class="pg-prof-badge">${s.cache_hit ? "CACHE 0ms" : `${s.ms || 0}ms · ${tok}t`}</div>`
+        : "";
+      return `<div class="pg-node ${stCls} ${on ? "on" : ""} ${linking ? "linking" : ""} ${isCrit ? "pg-crit" : ""} ${s ? "s-" + esc(s.status) : ""}" data-pg-node="${esc(n.id)}"
         style="left:${n.x}px;top:${n.y}px;width:${n.width || 250}px;height:${n.height || 145}px">
-        <div class="hd">
-          <span>◈</span>
-          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(n.label)}</span>
-          <span class="id">${esc(n.id)}</span>
-          <span class="pg-hd-acts">
-            <button type="button" class="pg-mini-wrap" data-pg-wrap-entity="${esc(n.id)}" title="1-그룹으로 감싸기">＋⬚</button>
-            <button type="button" class="pg-mini-link${PG.pendingLinkFrom === n.id ? " linking" : ""}" data-pg-out="${esc(n.id)}" title="${isReversedDir() ? "드래그 또는 클릭 후 대상 클릭 (B → A: B가 먼저 실행됨)" : "드래그 또는 클릭 후 대상 클릭 (A → B: A는 B를 의존)"}">🔗</button>
-            <button type="button" class="pg-mini-run" data-pg-run-node="${esc(n.id)}" title="이 프롬프트 노드 실행">▶</button>
-          </span>
-        </div>
-        <div class="bd">
-          <div class="pg-chips">
-            ${chgChip(nst)}
-            ${hasTemp ? `<span class="chip temp" title="${esc(n.temp_prompt)}">⚡ 임시 프롬프트</span>` : ""}
-            <span class="chip">${esc(modelTxt)}</span>
-            ${preCount ? `<span class="chip pre">⬚ 프리프롬프트 ×${preCount}</span>` : ""}
-            ${extraKeys.length ? `<span class="chip">extra ${extraKeys.length}</span>` : ""}
-            ${deps.map(d => `<span class="chip dep">의존 → ${esc(entityLabel(d))}</span>`).join("")}
-          </div>
-          <div class="pr">${esc(n.prompt || "(프롬프트 미입력)")}</div>
-          ${n.output ? `<div class="out">↳ ${esc(n.output.replace(/\s+/g, " ").slice(0, 90))}</div>` : ""}
-        </div>
-        ${stTxt ? `<span class="pg-st">${esc(stTxt)}</span>` : ""}
+        <div class="pg-node-title">${esc(n.label)}</div>
+        ${profBadge}
       </div>`;
     }).join("");
 
+    const curveMap = edgeCurveOffsets(PG.graph.edges);
     const edgesHtml = PG.graph.edges.map(e => {
       const ep = visualEdgeEndpoints(e);
       const a = findEntity(ep.from), b = findEntity(ep.to);
       if (!a || !b) return "";
-      const p = edgePath(a, b);
+      const p = edgePath(a, b, { curveOffset: curveMap.get(e.id) || 0 });
       const isGrp = !!(findGroup(e.from) || findGroup(e.to));
+      const isLoop = Boolean(e.is_loop);
+      const isCond = !isLoop && (e.condition?.type && e.condition.type !== "always");
       const on = PG.sel?.type === "edge" && PG.sel.id === e.id;
-      const color = on ? "var(--accent)" : isGrp ? "#8b5cf6" : "#0ea5e9";
-      const marker = on ? "pg-arr-on" : isGrp ? "pg-arr-grp" : "pg-arr-node";
-      return `<path class="pg-edge ${isGrp ? "grp" : ""} ${on ? "on" : ""} ${flowing.has(`${e.from}>${e.to}`) ? "flow" : ""}" d="${p.d}" stroke="${color}" marker-end="url(#${marker})"/>
-        <path class="pg-edge-hit" data-pg-edge="${esc(e.id)}" d="${p.d}"/>`;
+      const isCritEdge = PG.showProfileOverlay && critNodes.has(e.from) && critNodes.has(e.to);
+      const color = isLoop ? "#f59e0b" : isCond ? "#10b981" : isGrp ? "#8b5cf6" : "#0ea5e9";
+      const marker = isLoop ? "pg-arr-loop" : isCond ? "pg-arr-cond" : isGrp ? "pg-arr-grp" : "pg-arr-node";
+      const cls = ["pg-edge", isGrp ? "grp" : "", isCond ? "cond" : "", isLoop ? "loop" : "", isCritEdge ? "crit" : "", on ? "on" : "", flowing.has(`${e.from}>${e.to}`) ? "flow" : ""].filter(Boolean).join(" ");
+      return `<path class="${cls}" d="${p.d}" stroke="${color}" style="color:${color}" marker-end="url(#${marker})"/>
+        <path class="pg-edge-hit" data-pg-edge="${esc(e.id)}" d="${p.d}"><title>${esc(edgeTooltip(e))}</title></path>`;
     }).join("");
 
     const markers = [
       ["pg-arr-node", "#0ea5e9"],
       ["pg-arr-grp", "#8b5cf6"],
-      ["pg-arr-on", "var(--accent)"],
-    ].map(([id, c]) => `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${c}"/></marker>`).join("");
+      ["pg-arr-cond", "#10b981"],
+      ["pg-arr-loop", "#f59e0b"],
+    ].map(([id, c]) => `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${c}"/></marker>`).join("");
 
     if (PG.fitPending && stage.clientWidth && allBoxes.length) {
       const maxX = Math.max(...allBoxes.map(b => b.x + (b.width || 260))) + 80;
@@ -1267,6 +1337,7 @@
     updateInspTabBadges(chg);
 
     stage.classList.toggle("wrap-mode", !!PG.wrapMode);
+    stage.classList.toggle("link-mode", !!PG.linkMode);
     stage.innerHTML = `<div style="width:${W * z}px;height:${H * z}px">
       <div class="pg-board" id="pg-board" style="width:${W}px;height:${H}px;transform:scale(${z});transform-origin:0 0">
         ${groupsHtml}
@@ -1285,10 +1356,11 @@
   function redrawEdgesOnly() {
     const svg = $("#pg-board svg");
     if (!svg) return;
+    const curveMap = edgeCurveOffsets(PG.graph.edges);
     const parts = PG.graph.edges.map(e => {
       const ep = visualEdgeEndpoints(e);
       const a = findEntity(ep.from), b = findEntity(ep.to);
-      return a && b ? edgePath(a, b) : null;
+      return a && b ? edgePath(a, b, { curveOffset: curveMap.get(e.id) || 0 }) : null;
     });
     const paths = svg.querySelectorAll(".pg-edge:not(#pg-temp)");
     const hits = svg.querySelectorAll(".pg-edge-hit");
@@ -1338,7 +1410,7 @@
           if (!connectVisual(src, targetId)) draw(true);
           return;
         }
-        if (targetId === PG.pendingLinkFrom && e.target.closest("[data-pg-out]")) {
+        if (targetId === PG.pendingLinkFrom) {
           e.stopPropagation();
           PG.pendingLinkFrom = null;
           draw(true);
@@ -1361,6 +1433,26 @@
         };
         PG.dragging = true;
         return;
+      }
+      if ((PG.linkMode && !e.shiftKey) || e.altKey) {
+        const linkEl = e.target.closest("[data-pg-node],[data-pg-group]");
+        const linkId = linkEl?.dataset?.pgNode || linkEl?.dataset?.pgGroup;
+        if (linkId) {
+          e.stopPropagation();
+          board.setPointerCapture(e.pointerId);
+          const ent = findEntity(linkId);
+          const p = pt(e);
+          drag = {
+            mode: "link",
+            from: ent.id,
+            ent,
+            sx: p.x,
+            sy: p.y,
+            moved: false,
+          };
+          PG.dragging = true;
+          return;
+        }
       }
       const resizeHandle = e.target.closest("[data-pg-resize]");
       if (resizeHandle) {
@@ -1701,6 +1793,25 @@
     return `<div class="pg-chg-callout"><b>○ 미실행</b><span class="pg-hint">아직 실행 완료되지 않은 대상입니다.</span></div>`;
   }
 
+  function renderLineDiff(oldStr, newStr) {
+    const a = String(oldStr || "").split("\n");
+    const b = String(newStr || "").split("\n");
+    const out = [];
+    const maxLen = Math.max(a.length, b.length);
+    for (let i = 0; i < Math.min(maxLen, 160); i += 1) {
+      const la = i < a.length ? a[i] : null;
+      const lb = i < b.length ? b[i] : null;
+      if (la === lb) {
+        out.push(`<div>  ${esc(la ?? "")}</div>`);
+      } else {
+        if (la !== null) out.push(`<span class="pg-diff-del">- ${esc(la)}</span>`);
+        if (lb !== null) out.push(`<span class="pg-diff-add">+ ${esc(lb)}</span>`);
+      }
+    }
+    if (maxLen > 160) out.push(`<div class="muted">… (${maxLen - 160}줄 생략)</div>`);
+    return `<div class="pg-diff">${out.join("") || `<span class="muted">(내용 동일)</span>`}</div>`;
+  }
+
   function drawChangesPanel(bodyEl, chg) {
     const items = [];
     const cleanItems = [];
@@ -1758,7 +1869,7 @@
         <button type="button" class="g" id="pg-chg-run-sel" style="flex:1" ${selectedIds.length ? "" : "disabled"}>▶ 선택 부분 실행 (${selectedIds.length})</button>
       </div>
       <div class="row" style="justify-content:space-between;gap:4px">
-        <span class="pg-hint">최신 완료 노드는 자동 생략</span>
+        <button type="button" class="g" id="pg-chg-sync" style="padding:2px 8px;font-size:11px" title="연결된 Repo 파일/Spec 변경을 감지해 재실행 필요 상태로 반영">🔄 산출물 동기화</button>
         <div class="row" style="gap:4px">
           <button type="button" class="g" id="pg-chg-all" style="padding:2px 7px;font-size:11px">전체</button>
           <button type="button" class="g" id="pg-chg-none" style="padding:2px 7px;font-size:11px">해제</button>
@@ -1769,10 +1880,15 @@
         <input type="checkbox" id="pg-chg-autorun" ${PG.graph.settings?.auto_rerun_needs_rerun ? "checked" : ""}>
         <span>재실행 필요 노드 자동 재실행</span>
       </label>
+      <label class="row" style="font-size:12px">
+        <input type="checkbox" id="pg-chg-cache" ${PG.graph.settings?.cross_graph_cache ? "checked" : ""}>
+        <span>동일 입력 해시 크로스-그래프 캐시 사용</span>
+      </label>
       ${items.length ? `<div style="display:flex;flex-direction:column;gap:6px">
         ${items.map(it => {
           const id = it.ent.id;
           const ic = it.kind === "group" ? "⬚" : "◈";
+          const latestImp = Array.isArray(it.ent.impact_history) && it.ent.impact_history.length ? it.ent.impact_history[0] : null;
           return `<div class="pg-chg-item st-${esc(it.state)}">
             <div class="top">
               <input type="checkbox" data-pg-chg-chk="${esc(id)}" ${PG.changeSel.has(id) ? "checked" : ""}>
@@ -1781,13 +1897,19 @@
               ${badgeFor(it.state)}
             </div>
             <div class="pg-chg-reason"><code>${esc(id)}</code> · ${esc((it.details || []).join(" · "))}</div>
-            <div class="row" style="gap:4px">
-              <button type="button" class="g" data-pg-chg-run="${esc(it.kind)}:${esc(id)}" style="padding:1px 7px;font-size:11px">▶ 단독/의존 실행</button>
-              <button type="button" class="g" data-pg-chg-edit="${esc(it.kind)}:${esc(id)}" style="padding:1px 7px;font-size:11px">속성 편집</button>
+            ${latestImp?.reason ? `<div class="pg-hint" style="color:#b45309">근거 (${esc(latestImp.source_node_id || "")}): ${esc(latestImp.reason)}</div>` : ""}
+            <div class="row" style="gap:4px;flex-wrap:wrap">
+              <button type="button" class="g" data-pg-chg-run="${esc(it.kind)}:${esc(id)}" style="padding:1px 7px;font-size:11px">▶ 승인/실행</button>
+              ${it.ent.needs_rerun ? `<button type="button" class="g" data-pg-chg-dismiss="${esc(id)}" style="padding:1px 7px;font-size:11px">✓ 무시(유지)</button>` : ""}
+              <button type="button" class="g" data-pg-chg-edit="${esc(it.kind)}:${esc(id)}" style="padding:1px 7px;font-size:11px">속성</button>
             </div>
           </div>`;
         }).join("")}
       </div>` : `<div class="pg-chg-callout st-clean"><b>✓ 모든 노드와 그룹이 최신 상태입니다</b><span class="pg-hint">프롬프트·임시 프롬프트 변경이 없어 추가 실행이 필요하지 않습니다.</span></div>`}
+      ${PG.graphId ? `<details style="border-top:1px solid var(--line);padding-top:8px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--muted)" id="pg-rev-sum">⚑ MCP 영향도 판단 감사 로그</summary>
+        <div id="pg-rev-list" style="margin-top:6px;display:flex;flex-direction:column;gap:4px"><span class="muted" style="font-size:11.5px">클릭해 불러오기…</span></div>
+      </details>` : ""}
       ${cleanItems.length ? `<details style="border-top:1px solid var(--line);padding-top:8px">
         <summary style="cursor:pointer;font-size:12px;color:var(--muted)">✓ 최신 완료 (${cleanItems.length}개 — 실행 시 자동 생략)</summary>
         <div style="display:flex;flex-direction:column;gap:5px;margin-top:6px">
@@ -1809,6 +1931,14 @@
       if (!ids.length) return toast("실행할 대상을 선택하세요.", true);
       return startRun("subset", null, ids);
     });
+    $("#pg-chg-sync").onclick = run(async () => {
+      syncGraphRelations();
+      const res = await api("POST", `${WSP()}/prompt-graphs/sync-artifacts`, { graph_id: PG.graphId || null, graph: PG.graph });
+      PG.graph = ensureArrays(res.graph);
+      const cnt = res.changed_nodes?.length || 0;
+      toast(`산출물 ${res.checked || 0}건 확인 · 변경 감지 ${cnt}건`);
+      draw(true);
+    });
     $("#pg-chg-all").onclick = () => { items.forEach(x => PG.changeSel.add(x.ent.id)); drawChangesPanel(bodyEl, computeChangeStatus()); };
     $("#pg-chg-none").onclick = () => { PG.changeSel.clear(); drawChangesPanel(bodyEl, computeChangeStatus()); };
     $("#pg-chg-dirty").onclick = () => {
@@ -1819,6 +1949,11 @@
     $("#pg-chg-autorun").onchange = ev => {
       snapshotUndo();
       (PG.graph.settings || (PG.graph.settings = {})).auto_rerun_needs_rerun = ev.target.checked;
+      touch();
+    };
+    $("#pg-chg-cache").onchange = ev => {
+      snapshotUndo();
+      (PG.graph.settings || (PG.graph.settings = {})).cross_graph_cache = ev.target.checked;
       touch();
     };
     bodyEl.querySelectorAll("[data-pg-chg-chk]").forEach(cb => {
@@ -1836,6 +1971,20 @@
         run(startRun)(kind, id);
       };
     });
+    bodyEl.querySelectorAll("[data-pg-chg-dismiss]").forEach(btn => {
+      btn.onclick = run(async () => {
+        const eid = btn.dataset.pgChgDismiss;
+        snapshotUndo();
+        const ent = findEntity(eid);
+        if (ent) { ent.needs_rerun = false; ent.rerun_reason = ""; }
+        if (PG.graphId) {
+          await api("POST", `${WSP()}/prompt-graphs/${PG.graphId}/impact-reviews/dismiss`, { entity_id: eid }).catch(() => null);
+        }
+        touch();
+        draw(true);
+        toast(`${eid} 재실행 필요 표시를 무시(유지)했습니다.`);
+      });
+    });
     bodyEl.querySelectorAll("[data-pg-chg-edit]").forEach(btn => {
       btn.onclick = () => {
         const [kind, id] = btn.dataset.pgChgEdit.split(":");
@@ -1844,6 +1993,151 @@
         draw(true);
       };
     });
+    if ($("#pg-rev-sum")) {
+      $("#pg-rev-sum").onclick = async () => {
+        const box = $("#pg-rev-list");
+        if (!box || box.dataset.loaded) return;
+        box.dataset.loaded = "1";
+        const res = await api("GET", `${WSP()}/prompt-graphs/${PG.graphId}/impact-reviews`, undefined, { fresh: true }).catch(() => ({ reviews: [] }));
+        box.innerHTML = (res.reviews || []).map(r => `<div class="pg-chg-item">
+          <div class="top">
+            <span class="chip ${r.needs_rerun ? "chg-rerun" : "done-ok"}">${r.needs_rerun ? "⚑ 재실행" : "✓ 영향 없음"}</span>
+            <span class="name">${esc(entityLabel(r.source_node_id))} → ${esc(entityLabel(r.target_id))}</span>
+            <span class="muted" style="font-size:10.5px">${esc(r.decision)}</span>
+          </div>
+          <div class="pg-chg-reason">${esc(r.reason || "")}</div>
+        </div>`).join("") || `<span class="muted" style="font-size:11.5px">기록된 영향도 판단이 없습니다.</span>`;
+      };
+    }
+  }
+
+  function drawTemplatesPanel(bodyEl) {
+    bodyEl.innerHTML = `<div class="pg-chg-panel">
+      <div class="ide-head" style="padding:0">🔍 워크스페이스 노드 검색</div>
+      <div class="row" style="gap:6px">
+        <input id="pg-tpl-search-q" value="${esc(PG.searchQuery || "")}" placeholder="노드 이름·프롬프트·출력 검색…" style="flex:1;min-width:0">
+        <button type="button" class="g" id="pg-tpl-search-btn">검색</button>
+      </div>
+      <div id="pg-tpl-search-res" style="display:flex;flex-direction:column;gap:5px">
+        ${(PG.searchResults || []).map(h => `<div class="pg-chg-item">
+          <div class="top">
+            <span class="name" title="${esc(h.graph_name)}">${esc(h.node_label)}</span>
+            <span class="chip">${esc(h.graph_name)}</span>
+          </div>
+          <div class="pg-chg-reason">${esc(h.prompt_preview || "(비어 있음)")}</div>
+          <button type="button" class="g" data-pg-open-hit="${esc(h.graph_id)}:${esc(h.node_id)}" style="align-self:flex-start;padding:1px 7px;font-size:11px">이동</button>
+        </div>`).join("")}
+      </div>
+      <hr style="border:0;border-top:1px solid var(--line);margin:2px 0">
+      <div class="row" style="justify-content:space-between">
+        <b style="font-size:13px">📦 N-그룹 컴포넌트 라이브러리</b>
+        <button type="button" class="g" id="pg-tpl-refresh" style="padding:2px 7px;font-size:11px">새로고침</button>
+      </div>
+      <div id="pg-tpl-list" style="display:flex;flex-direction:column;gap:6px">
+        ${(PG.templates || []).map(t => `<div class="pg-chg-item">
+          <div class="top">
+            <span class="name">${esc(t.name)}</span>
+            <span class="chip">${t.tier_depth}-그룹 · ${t.node_count}노드</span>
+          </div>
+          ${t.description ? `<div class="pg-chg-reason">${esc(t.description)}</div>` : ""}
+          <div class="row" style="gap:6px">
+            <button type="button" class="b" data-pg-tpl-ins="${esc(t.template_id)}" style="padding:2px 8px;font-size:11px;flex:1">＋ 캔버스에 삽입</button>
+            <button type="button" class="g bad" data-pg-tpl-del="${esc(t.template_id)}" style="padding:2px 8px;font-size:11px">삭제</button>
+          </div>
+        </div>`).join("") || `<div class="pg-hint">저장된 N-그룹 컴포넌트가 없습니다. 프리 프롬프트 그룹을 선택하고 [속성] → [📦 컴포넌트로 저장]을 누르세요.</div>`}
+      </div>
+    </div>`;
+
+    const loadTpls = async () => {
+      const r = await api("GET", `${WSP()}/prompt-graph-templates`, undefined, { fresh: true }).catch(() => ({ templates: [] }));
+      PG.templates = r.templates || [];
+      if (PG.inspTab === "templates") drawTemplatesPanel(bodyEl);
+    };
+    if (!PG._tplLoadedOnce) { PG._tplLoadedOnce = true; loadTpls(); }
+    $("#pg-tpl-refresh").onclick = run(loadTpls);
+    $("#pg-tpl-search-btn").onclick = run(async () => {
+      PG.searchQuery = $("#pg-tpl-search-q").value.trim();
+      const r = await api("GET", `${WSP()}/prompt-graphs/search?q=${encodeURIComponent(PG.searchQuery)}`, undefined, { fresh: true });
+      PG.searchResults = r.results || [];
+      drawTemplatesPanel(bodyEl);
+    });
+    bodyEl.querySelectorAll("[data-pg-open-hit]").forEach(btn => {
+      btn.onclick = () => {
+        const [gid, nid] = btn.dataset.pgOpenHit.split(":");
+        const targetGraph = (PG.graphs || []).find(g => String(g.graph_id) === String(gid));
+        if (targetGraph && String(PG.graphId) !== String(gid)) {
+          loadGraph(targetGraph.graph_json, targetGraph.graph_id, targetGraph.name);
+        }
+        PG.sel = { type: "node", id: nid };
+        PG.inspTab = "edit";
+        G.render();
+      };
+    });
+    bodyEl.querySelectorAll("[data-pg-tpl-ins]").forEach(btn => {
+      btn.onclick = run(async () => {
+        syncGraphRelations();
+        const tid = btn.dataset.pgTplIns;
+        const r = await api("POST", `${WSP()}/prompt-graph-templates/${tid}/instantiate`, { graph: PG.graph, offset_x: 90, offset_y: 90 });
+        snapshotUndo();
+        PG.graph = ensureArrays(r.graph);
+        PG.sel = { type: "group", id: r.inserted_group_id };
+        PG.inspTab = "edit";
+        touch();
+        draw(true);
+        toast("컴포넌트를 캔버스에 삽입했습니다.");
+      });
+    });
+    bodyEl.querySelectorAll("[data-pg-tpl-del]").forEach(btn => {
+      btn.onclick = run(async () => {
+        await api("DELETE", `${WSP()}/prompt-graph-templates/${btn.dataset.pgTplDel}`);
+        await loadTpls();
+        toast("컴포넌트를 삭제했습니다.");
+      });
+    });
+  }
+
+  function drawProfilePanel(bodyEl) {
+    const prof = PG.run?.result_json?.profile || null;
+    const hist = PG.analytics || null;
+    bodyEl.innerHTML = `<div class="pg-chg-panel">
+      <label class="row" style="font-size:12px">
+        <input type="checkbox" id="pg-prof-overlay" ${PG.showProfileOverlay ? "checked" : ""}>
+        <span>캔버스에 임계 경로(빨간 테두리) & 성능 배지 표시</span>
+      </label>
+      ${prof ? `<div class="pg-chg-summary" style="grid-template-columns:repeat(2,1fr)">
+        <div class="pg-chg-stat"><b>$${Number(prof.total_cost_usd || 0).toFixed(5)}</b>실행 비용</div>
+        <div class="pg-chg-stat"><b>${prof.total_tokens || 0}</b>총 토큰</div>
+        <div class="pg-chg-stat"><b>${prof.critical_path_ms || 0}ms</b>임계 경로 (${prof.parallelism_speedup || 1}x)</div>
+        <div class="pg-chg-stat"><b style="color:var(--ok)">${prof.estimated_saved_tokens || 0}t</b>절약 (캐시 ${prof.cache_hit_count || 0} · 생략 ${prof.reused_clean_count || 0})</div>
+      </div>
+      <div class="pg-hint">임계 경로: ${(prof.critical_path_nodes || []).map(x => `<b>${esc(entityLabel(x))}</b>`).join(" → ") || "(없음)"}</div>` : `<div class="pg-hint">최근 실행 결과가 있으면 비용·지연시간·절약 효과가 여기에 표시됩니다.</div>`}
+      <div class="row" style="justify-content:space-between;border-top:1px solid var(--line);padding-top:8px">
+        <b style="font-size:12.5px">노드별 누적 실행 통계 (DB)</b>
+        ${PG.graphId ? `<button type="button" class="g" id="pg-prof-refresh" style="padding:2px 7px;font-size:11px">조회</button>` : ""}
+      </div>
+      ${hist ? `<div style="display:flex;flex-direction:column;gap:5px">
+        <div class="pg-hint">총 실행 ${hist.summary?.total_executions || 0}회 · 누적 비용 $${Number(hist.summary?.total_cost_usd || 0).toFixed(5)} · 캐시 적중 ${hist.summary?.cache_hits || 0}회</div>
+        ${(hist.nodes || []).map(r => `<div class="pg-chg-item">
+          <div class="top">
+            <span class="name">${esc(r.node_label || r.node_id)}</span>
+            <span class="mono" style="font-size:11px">$${Number(r.total_cost_usd || 0).toFixed(5)}</span>
+          </div>
+          <div class="pg-chg-reason">${r.executions}회 · 평균 ${r.avg_ms}ms · 평균 ${r.avg_tokens}t · 캐시 ${r.cache_hits}</div>
+        </div>`).join("")}
+      </div>` : `<div class="pg-hint">${PG.graphId ? "조회 버튼을 눌러 DB 통계를 불러오세요." : "그래프를 저장한 뒤 DB 누적 통계를 볼 수 있습니다."}</div>`}
+    </div>`;
+
+    $("#pg-prof-overlay").onchange = ev => {
+      PG.showProfileOverlay = ev.target.checked;
+      $("#pg-prof-btn")?.classList.toggle("on", PG.showProfileOverlay);
+      draw(false);
+    };
+    if ($("#pg-prof-refresh")) {
+      $("#pg-prof-refresh").onclick = run(async () => {
+        PG.analytics = await api("GET", `${WSP()}/prompt-graphs/${PG.graphId}/analytics`, undefined, { fresh: true });
+        drawProfilePanel(bodyEl);
+      });
+    }
   }
 
   function drawInspector() {
@@ -1857,19 +2151,20 @@
       <button type="button" class="pg-insp-tab ${PG.inspTab === "changes" ? "on" : ""}" id="pg-tab-changes">
         변경·실행 <span class="pg-tab-cnt ${actionCnt > 0 ? "has" : ""}" id="pg-tab-chg-cnt">${actionCnt}</span>
       </button>
-      <button type="button" class="pg-insp-tab ${PG.inspTab === "edit" ? "on" : ""}" id="pg-tab-edit">
-        속성 편집
-      </button>
+      <button type="button" class="pg-insp-tab ${PG.inspTab === "edit" ? "on" : ""}" id="pg-tab-edit">속성</button>
+      <button type="button" class="pg-insp-tab ${PG.inspTab === "templates" ? "on" : ""}" id="pg-tab-templates">컴포넌트</button>
+      <button type="button" class="pg-insp-tab ${PG.inspTab === "profile" ? "on" : ""}" id="pg-tab-profile">프로파일</button>
     </div><div id="pg-insp-body"></div>`;
 
     $("#pg-tab-changes").onclick = () => { PG.inspTab = "changes"; drawInspector(); };
     $("#pg-tab-edit").onclick = () => { PG.inspTab = "edit"; drawInspector(); };
+    $("#pg-tab-templates").onclick = () => { PG.inspTab = "templates"; drawInspector(); };
+    $("#pg-tab-profile").onclick = () => { PG.inspTab = "profile"; drawInspector(); };
 
     const bodyEl = $("#pg-insp-body");
-    if (PG.inspTab === "changes") {
-      drawChangesPanel(bodyEl, chg);
-      return;
-    }
+    if (PG.inspTab === "changes") { drawChangesPanel(bodyEl, chg); return; }
+    if (PG.inspTab === "templates") { drawTemplatesPanel(bodyEl); return; }
+    if (PG.inspTab === "profile") { drawProfilePanel(bodyEl); return; }
 
     const sel = PG.sel;
 
@@ -1878,26 +2173,79 @@
       if (!e) { PG.sel = null; return drawInspector(); }
       const fromEnt = findEntity(e.from), toEnt = findEntity(e.to);
       const rev = isReversedDir();
-      bodyEl.innerHTML = `<div class="ide-head">${rev ? `실행 순서 · ${esc(e.to)} → ${esc(e.from)}` : `의존 연결 · ${esc(e.from)} → ${esc(e.to)}`}</div>
+      const cond = e.condition || defaultCondition();
+      bodyEl.innerHTML = `<div class="ide-head">${e.is_loop ? "↺ 조건부 순환/재귀 간선" : (rev ? `실행 순서 · ${esc(e.to)} → ${esc(e.from)}` : `의존 연결 · ${esc(e.from)} → ${esc(e.to)}`)}</div>
         <div class="g-form">
           <div class="card" style="margin:0">
-            <b>${esc(fromEnt?.label || e.from)}</b> <span class="muted">(${esc(e.from)})</span>
-            <div class="pg-hint" style="margin:6px 0">${rev ? "은(는) 아래 대상이 먼저 실행된 후 실행됩니다 (의존 관계):" : "은(는) 아래 대상에 <b>의존합니다</b>:"}</div>
-            <b>${esc(toEnt?.label || e.to)}</b> <span class="muted">(${esc(e.to)})</span>
+            <b>${esc(rev ? (toEnt?.label || e.to) : (fromEnt?.label || e.from))}</b> <span class="muted">(${esc(rev ? e.to : e.from)})</span>
+            <div class="pg-hint" style="margin:6px 0">${e.is_loop
+              ? (rev ? "↺ 실행 완료 후 조건 충족 시 아래 대상을 다시 실행:" : "↺ 아래 대상 완료 후 조건 충족 시 이 대상을 다시 실행:")
+              : (rev ? "→ 먼저 실행된 후 아래 대상이 이어 실행됨:" : "→ 아래 대상에 의존 (선행 완료 후 실행):")}</div>
+            <b>${esc(rev ? (fromEnt?.label || e.from) : (toEnt?.label || e.to))}</b> <span class="muted">(${esc(rev ? e.from : e.to)})</span>
           </div>
-          <div class="pg-hint">• <b>${esc(e.to)}</b>가 먼저 실행된 뒤 <b>${esc(e.from)}</b>가 실행됩니다.${rev ? ` (표시 방향만 <code>${esc(e.to)} → ${esc(e.from)}</code>로 반전됨)` : ""}<br>
-            • <b>${esc(e.from)}</b>의 에이전트는 MCP 서버를 통해 <b>${esc(e.to)}</b>의 프롬프트, 출력 결과, 실행 모델, 추가 정보(그룹이면 프리 프롬프트와 내부 노드들까지 재귀적으로)를 읽을 수 있습니다.</div>
+          <label class="row" style="font-size:12.5px">
+            <input type="checkbox" id="pg-e-loop" ${e.is_loop ? "checked" : ""}>
+            <span>조건부 순환 / 재귀 간선 (<code>is_loop</code>)</span>
+          </label>
+          <div class="row" style="gap:8px">
+            <label class="fld" style="flex:1"><span>조건 유형</span>
+              <select id="pg-e-ctype">
+                ${[["always","항상 실행"],["on_contract_pass","출력 계약 통과 시"],["on_contract_fail","출력 계약 실패 시"],["contains","출력 포함 문자열"],["not_contains","출력 미포함 문자열"],["regex","정규식 매치"],["json_eq","JSON 키=값 일치"],["agent_decide","에이전트 MCP 판단"]].map(([k, lbl]) => `<option value="${k}" ${cond.type === k ? "selected" : ""}>${lbl} (${k})</option>`).join("")}
+              </select>
+            </label>
+            <label class="fld" style="width:90px"><span>최대 반복</span>
+              <input id="pg-e-maxiter" type="number" min="1" max="20" value="${e.max_iterations || 3}" ${e.is_loop ? "" : "disabled"}>
+            </label>
+          </div>
+          <label class="fld"><span>조건 값 (문자열 / 정규식 / key=val)</span>
+            <input id="pg-e-cval" value="${esc(cond.value || "")}" placeholder="예: REVISE 또는 status=retry">
+          </label>
+          <label class="row" style="font-size:12px">
+            <input type="checkbox" id="pg-e-ccase" ${cond.case_sensitive ? "checked" : ""}>
+            <span>조건 비교 대소문자 구분</span>
+          </label>
+          <div class="fld">
+            <div class="row" style="justify-content:space-between">
+              <span>⚡ 간선 임시 프롬프트 (실행/순환 시 자동 주입 · 1회성)</span>
+              ${(e.temp_prompt || "").trim() ? `<button type="button" class="icon" id="pg-e-clrtemp">비우기</button>` : ""}
+            </div>
+            <textarea id="pg-e-temp" rows="3" style="min-height:72px;border-color:${(e.temp_prompt || "").trim() ? "#d97706" : "var(--line)"}" placeholder="대상이 실행·재귀될 때마다 1회성 임시 프롬프트로 자동 주입됩니다. (실행 후 대상에서는 제거되고 재실행 시 다시 주입)">${esc(e.temp_prompt || "")}</textarea>
+            <span class="pg-hint">치환자: <code>{iteration}</code>, <code>{max_iterations}</code>, <code>{source_id}</code>, <code>{source_label}</code>, <code>{source_output}</code>, <code>{contract_errors}</code></span>
+          </div>
+          <label class="fld"><span>간선 메모 (툴팁 표시)</span><input id="pg-e-lbl" value="${esc(e.label || "")}" placeholder="간선 설명"></label>
           <div class="row">
             <button class="g" id="pg-e-rev">방향 반전 (⇄)</button>
             <button class="g bad" id="pg-e-del">연결 삭제</button>
           </div>
         </div>`;
+      $("#pg-e-loop").onchange = ev => {
+        if (!ev.target.checked) {
+          const otherGraph = { ...PG.graph, edges: PG.graph.edges.filter(x => x.id !== e.id) };
+          const cyc = wouldCreateCycle(e.from, e.to, otherGraph, false);
+          if (cyc) { ev.target.checked = true; return toast(cyc, true); }
+        }
+        snapshotUndo();
+        e.is_loop = ev.target.checked;
+        e.max_iterations = e.is_loop ? Math.max(1, e.max_iterations || 3) : 0;
+        syncGraphRelations();
+        touch();
+        draw(true);
+      };
+      $("#pg-e-ctype").onchange = ev => { snapshotUndo(); (e.condition || (e.condition = defaultCondition())).type = ev.target.value; touch(); draw(false); };
+      $("#pg-e-maxiter").onchange = ev => { snapshotUndo(); e.max_iterations = Math.max(1, Math.min(20, parseInt(ev.target.value, 10) || 3)); touch(); draw(false); };
+      $("#pg-e-cval").oninput = ev => { snapshotUndoOnce(`ecv:${e.id}`); (e.condition || (e.condition = defaultCondition())).value = ev.target.value; touch(); };
+      $("#pg-e-ccase").onchange = ev => { snapshotUndo(); (e.condition || (e.condition = defaultCondition())).case_sensitive = ev.target.checked; touch(); };
+      $("#pg-e-temp").oninput = ev => { snapshotUndoOnce(`etmp:${e.id}`); e.temp_prompt = ev.target.value; touch(); draw(false); };
+      if ($("#pg-e-clrtemp")) $("#pg-e-clrtemp").onclick = () => { snapshotUndo(); e.temp_prompt = ""; touch(); draw(true); };
+      $("#pg-e-lbl").oninput = ev => { snapshotUndoOnce(`elbl:${e.id}`); e.label = ev.target.value; touch(); };
       $("#pg-e-rev").onclick = () => {
         const otherGraph = { ...PG.graph, edges: PG.graph.edges.filter(x => x.id !== e.id) };
-        const err = wouldCreateCycle(e.to, e.from, otherGraph);
+        const err = wouldCreateCycle(e.to, e.from, otherGraph, Boolean(e.is_loop));
         if (err) return toast(err, true);
-        const compErr = validateCompletedEdge(e.to, e.from, otherGraph);
-        if (compErr) return toast(compErr, true);
+        if (!e.is_loop) {
+          const compErr = validateCompletedEdge(e.to, e.from, otherGraph);
+          if (compErr) return toast(compErr, true);
+        }
         snapshotUndo();
         [e.from, e.to] = [e.to, e.from];
         syncGraphRelations();
@@ -1916,6 +2264,8 @@
       const depTargets = [...PG.graph.nodes, ...PG.graph.groups].filter(x => x.id !== n.id && !(n.dependencies || []).includes(x.id));
       const aliases = Object.entries(PG.gateway?.aliases || {});
       const s = nodeState(n.id);
+      const ct = n.contract || defaultContract();
+      const art = n.artifact || defaultArtifact();
 
       bodyEl.innerHTML = `<div class="ide-head">◈ 프롬프트 노드</div>
         <div class="g-form">
@@ -1925,15 +2275,18 @@
             <button class="g bad" id="pg-n-del">삭제</button>
           </div>
           ${renderChangeCallout(chg.nodes[n.id], "pg-n-clrrerun")}
-          <label class="row" style="font-size:12.5px">
-            <input type="checkbox" id="pg-n-completed" ${n.completed ? "checked" : ""}>
-            <span>실행 완료 여부 (<code>completed</code>: <b>${n.completed ? "완료" : "미완료"}</b>)</span>
-          </label>
+          <div class="row" style="justify-content:space-between;gap:6px">
+            <label class="row" style="font-size:12px">
+              <input type="checkbox" id="pg-n-completed" ${n.completed ? "checked" : ""}>
+              <span>완료 (<code>${n.completed ? "True" : "False"}</code>)</span>
+            </label>
+            <button type="button" class="g" id="pg-n-selfloop" style="padding:2px 8px;font-size:11px">↺ 자가 순환 추가</button>
+          </div>
           ${s ? `<div class="pg-hint">실행 상태: <b>${esc(STATUS_KO[s.status] || s.status)}</b>${s.model ? ` · 모델 <code>${esc(s.model)}</code>` : ""}${s.mcp_calls ? ` · MCP 조회 ${s.mcp_calls}회` : ""}${s.error ? `<div class="bad">${esc(s.error)}</div>` : ""}</div>` : ""}
           <label class="fld"><span>노드 ID</span><input id="pg-n-id" class="mono" value="${esc(n.id)}"></label>
           <label class="fld"><span>이름</span><input id="pg-n-label" value="${esc(n.label)}"></label>
-          <label class="fld"><span>실행할 모델 (비우면 그래프/워크스페이스 기본값: ${esc(PG.graph.settings?.default_model || PG.defaultModel)})</span>
-            <input id="pg-n-model" class="mono" list="pg-model-list" value="${esc(n.model || "")}" placeholder="예: cheap / mid / advisor 또는 모델명">
+          <label class="fld"><span>실행할 모델 (비우면 기본값: ${esc(PG.graph.settings?.default_model || PG.defaultModel)})</span>
+            <input id="pg-n-model" class="mono" list="pg-model-list" value="${esc(n.model || "")}" placeholder="예: cheap / mid / advisor">
             <datalist id="pg-model-list">
               ${aliases.map(([k, v]) => `<option value="${esc(k)}">${esc(k)} (${esc(v)})</option>`).join("")}
             </datalist>
@@ -1951,34 +2304,88 @@
             <div class="pg-pre-preview">${preList.map((g, idx) => {
               const parts = [];
               if ((g.pre_prompt || "").trim()) parts.push(`[#${idx + 1} ${esc(g.label)}]\n${esc(g.pre_prompt)}`);
-              if ((g.temp_pre_prompt || "").trim()) parts.push(`[#${idx + 1} ⚡ 임시 프리 프롬프트 (1회성): ${esc(g.label)}]\n${esc(g.temp_pre_prompt)}`);
+              if ((g.temp_pre_prompt || "").trim()) parts.push(`[#${idx + 1} ⚡ 임시 프리: ${esc(g.label)}]\n${esc(g.temp_pre_prompt)}`);
               return parts.join("\n");
             }).join("\n\n")}</div>
           </div>` : ""}
           <div class="fld">
-            <span>의존 노드 / 그룹 (dependencies · 화살표 즉시 반영)</span>
+            <span>의존 노드 / 그룹 (dependencies)</span>
             <div class="pg-chips">${(n.dependencies || []).length
               ? n.dependencies.map(d => `<span class="pg-dep-pill"><span>→ ${esc(entityLabel(d))} <span class="muted">(${esc(d)})</span></span><button type="button" data-pg-rmdep="${esc(d)}" title="의존 제거">×</button></span>`).join("")
-              : `<span class="muted" style="font-size:12px">의존 대상 없음 (즉시 병렬 실행 가능)</span>`}</div>
-            ${depTargets.length ? `<select id="pg-n-adddep"><option value="">＋ 의존 대상 추가 (선행 실행 후 MCP 조회)…</option>${depTargets.map(x => `<option value="${esc(x.id)}">${findGroup(x.id) ? "⬚ 그룹" : "◈ 노드"} · ${esc(x.label)} (${esc(x.id)})</option>`).join("")}</select>` : ""}
+              : `<span class="muted" style="font-size:12px">의존 대상 없음</span>`}</div>
+            ${depTargets.length ? `<select id="pg-n-adddep"><option value="">＋ 의존 대상 추가…</option>${depTargets.map(x => `<option value="${esc(x.id)}">${findGroup(x.id) ? "⬚ 그룹" : "◈ 노드"} · ${esc(x.label)} (${esc(x.id)})</option>`).join("")}</select>` : ""}
           </div>
-          <label class="fld"><span>프롬프트</span><textarea id="pg-n-prompt" rows="6" style="min-height:110px" placeholder="에이전트가 실행할 프롬프트를 입력하세요">${esc(n.prompt || "")}</textarea></label>
+          <label class="fld"><span>프롬프트</span><textarea id="pg-n-prompt" rows="5" style="min-height:95px" placeholder="에이전트가 실행할 프롬프트">${esc(n.prompt || "")}</textarea></label>
           <div class="fld">
             <div class="row" style="justify-content:space-between">
-              <span>⚡ 임시 프롬프트 (temp_prompt · 1회 실행 후 자동 제거)</span>
+              <span>⚡ 임시 프롬프트 (1회성)</span>
               ${(n.temp_prompt || "").trim() ? `<button type="button" class="icon" id="pg-n-clrtemp">비우기</button>` : ""}
             </div>
-            <textarea id="pg-n-temp" rows="3" style="min-height:72px;border-color:${(n.temp_prompt || "").trim() ? "#d97706" : "var(--line)"}" placeholder="의존 노드 파괴 등으로 전달할 1회성 임시 프롬프트">${esc(n.temp_prompt || "")}</textarea>
+            <textarea id="pg-n-temp" rows="2" style="min-height:58px;border-color:${(n.temp_prompt || "").trim() ? "#d97706" : "var(--line)"}" placeholder="1회성 추가 지시">${esc(n.temp_prompt || "")}</textarea>
           </div>
-          <label class="fld"><span>추가 정보 (extra JSON — temperature, effort 등 메타데이터)</span><textarea id="pg-n-extra" rows="3" class="mono" style="min-height:72px">${esc(JSON.stringify(n.extra || {}, null, 2))}</textarea></label>
+          <label class="fld"><span>추가 정보 (extra JSON)</span><textarea id="pg-n-extra" rows="2" class="mono" style="min-height:58px">${esc(JSON.stringify(n.extra || {}, null, 2))}</textarea></label>
           <div class="fld">
             <div class="row" style="justify-content:space-between"><span>출력 결과 (output)</span>${n.output ? `<button type="button" class="icon" id="pg-n-clrout">비우기</button>` : ""}</div>
-            <textarea id="pg-n-output" rows="6" style="min-height:100px" placeholder="에이전트 실행 결과가 여기에 기록됩니다">${esc(n.output || "")}</textarea>
+            <textarea id="pg-n-output" rows="5" style="min-height:90px" placeholder="실행 결과">${esc(n.output || "")}</textarea>
           </div>
+
+          <details style="border-top:1px solid var(--line);padding-top:6px" ${ct.enabled ? "open" : ""}>
+            <summary style="cursor:pointer;font-size:12px;font-weight:600">📋 출력 계약 (Schema / Assertion)</summary>
+            <div class="g-form" style="margin-top:6px">
+              <label class="row" style="font-size:12px"><input type="checkbox" id="pg-ct-en" ${ct.enabled ? "checked" : ""}><span>계약 검증 활성화</span></label>
+              <label class="row" style="font-size:12px"><input type="checkbox" id="pg-ct-json" ${ct.json_required ? "checked" : ""}><span>유효 JSON 필수</span></label>
+              <label class="fld"><span>필수 JSON 키 (줄바꿈 구분)</span><textarea id="pg-ct-keys" rows="2" class="mono">${esc((ct.json_keys || []).join("\n"))}</textarea></label>
+              <label class="fld"><span>필수 포함 문자열 (줄바꿈 구분)</span><textarea id="pg-ct-inc" rows="2">${esc((ct.must_include || []).join("\n"))}</textarea></label>
+              <label class="fld"><span>금지 문자열 (줄바꿈 구분)</span><textarea id="pg-ct-exc" rows="2">${esc((ct.must_exclude || []).join("\n"))}</textarea></label>
+              <div class="row" style="gap:6px">
+                <label class="fld" style="flex:1"><span>정규식</span><input id="pg-ct-rx" class="mono" value="${esc(ct.regex || "")}"></label>
+                <label class="fld" style="width:76px"><span>최소글자</span><input id="pg-ct-min" type="number" min="0" value="${ct.min_chars || 0}"></label>
+              </div>
+              <div class="row" style="gap:6px">
+                <label class="fld" style="flex:1"><span>실패 시 재시도</span><input id="pg-ct-ret" type="number" min="0" max="5" value="${ct.max_retries || 0}"></label>
+                <label class="fld" style="flex:1"><span>최종 실패 처리</span>
+                  <select id="pg-ct-onfail"><option value="fail" ${ct.on_fail === "fail" ? "selected" : ""}>노드 실패(fail)</option><option value="continue" ${ct.on_fail === "continue" ? "selected" : ""}>계속/분기(continue)</option></select>
+                </label>
+              </div>
+            </div>
+          </details>
+
+          <details style="border-top:1px solid var(--line);padding-top:6px" ${art.kind !== "none" ? "open" : ""}>
+            <summary style="cursor:pointer;font-size:12px;font-weight:600">🔗 산출물 양방향 연결 (Repo 파일 / Spec)</summary>
+            <div class="g-form" style="margin-top:6px">
+              <div class="row" style="gap:6px">
+                <label class="fld" style="flex:1"><span>대상 종류</span>
+                  <select id="pg-art-kind">
+                    <option value="none" ${art.kind === "none" ? "selected" : ""}>연결 안 함</option>
+                    <option value="repo_file" ${art.kind === "repo_file" ? "selected" : ""}>Repo 파일</option>
+                    <option value="spec_query" ${art.kind === "spec_query" ? "selected" : ""}>Spec SQL 조회</option>
+                  </select>
+                </label>
+                <label class="fld" style="flex:1"><span>방향 모드</span>
+                  <select id="pg-art-mode">
+                    <option value="read" ${art.mode === "read" ? "selected" : ""}>읽기 (변경 감지)</option>
+                    <option value="write" ${art.mode === "write" ? "selected" : ""}>쓰기 (출력 반영)</option>
+                    <option value="sync" ${art.mode === "sync" ? "selected" : ""}>양방향 (sync)</option>
+                  </select>
+                </label>
+              </div>
+              <label class="fld"><span>Repo 이름</span><input id="pg-art-repo" class="mono" value="${esc(art.repo || "workspace")}"></label>
+              <label class="fld"><span>상대 경로 또는 Spec SELECT</span><input id="pg-art-path" class="mono" value="${esc(art.path || "")}" placeholder="예: docs/ARCHITECTURE.md"></label>
+              ${art.last_content_hash ? `<div class="pg-hint mono">hash: ${esc(art.last_content_hash.slice(0, 12))}…</div>` : ""}
+            </div>
+          </details>
+
+          <details style="border-top:1px solid var(--line);padding-top:6px">
+            <summary style="cursor:pointer;font-size:12px;font-weight:600" id="pg-ver-sum">🕒 버전 이력 · Diff · 롤백</summary>
+            <div id="pg-ver-box" style="margin-top:6px;display:flex;flex-direction:column;gap:6px">
+              <span class="muted" style="font-size:11.5px">${PG.graphId ? "클릭해 실행 버전 이력을 불러옵니다…" : "그래프를 저장하면 노드별 버전 이력이 기록됩니다."}</span>
+            </div>
+          </details>
         </div>`;
 
       $("#pg-n-run").onclick = run(() => startRun("node", n.id));
       $("#pg-n-del").onclick = removeSelected;
+      $("#pg-n-selfloop").onclick = () => addEdge(n.id, n.id, { is_loop: true, max_iterations: 3, condition: { type: "on_contract_fail", value: "", case_sensitive: false }, label: "자가 순환 개선" });
       if ($("#pg-n-clrrerun")) $("#pg-n-clrrerun").onclick = () => { snapshotUndo(); n.needs_rerun = false; n.rerun_reason = ""; touch(); draw(true); };
       $("#pg-n-completed").onchange = ev => {
         if (!manualSetCompleted(n.id, ev.target.checked)) { ev.target.checked = n.completed; return; }
@@ -1998,6 +2405,7 @@
         copy.last_run_pre_prompts = null;
         copy.needs_rerun = false;
         copy.rerun_reason = "";
+        copy.impact_history = [];
         PG.graph.nodes.push(copy);
         syncGraphRelations();
         PG.sel = { type: "node", id: copy.id };
@@ -2010,12 +2418,7 @@
       $("#pg-n-parent").onchange = ev => { snapshotUndo(); n.parent_group_id = ev.target.value || null; syncGraphRelations(); fitAllAncestorBounds(n.id); touch(); draw(true); };
       $("#pg-n-wrap").onclick = () => wrapEntityInParentGroup(n.id);
       $("#pg-n-prompt").oninput = ev => { snapshotUndoOnce(`npr:${n.id}`); n.prompt = ev.target.value; touch(); draw(false); };
-      $("#pg-n-temp").oninput = ev => {
-        snapshotUndoOnce(`ntmp:${n.id}`);
-        n.temp_prompt = ev.target.value;
-        touch();
-        draw(false);
-      };
+      $("#pg-n-temp").oninput = ev => { snapshotUndoOnce(`ntmp:${n.id}`); n.temp_prompt = ev.target.value; touch(); draw(false); };
       if ($("#pg-n-clrtemp")) $("#pg-n-clrtemp").onclick = () => { snapshotUndo(); n.temp_prompt = ""; touch(); draw(true); };
       $("#pg-n-output").oninput = ev => { snapshotUndoOnce(`nout:${n.id}`); n.output = ev.target.value; touch(); };
       if ($("#pg-n-clrout")) $("#pg-n-clrout").onclick = () => { snapshotUndo(); n.output = ""; touch(); draw(true); };
@@ -2031,6 +2434,59 @@
           toast("extra는 유효한 JSON 객체여야 합니다 (예: {\"effort\":\"high\"}).", true);
         }
       };
+      const lines = v => String(v || "").split("\n").map(x => x.trim()).filter(Boolean);
+      $("#pg-ct-en").onchange = ev => { snapshotUndo(); ct.enabled = ev.target.checked; n.contract = ct; touch(); };
+      $("#pg-ct-json").onchange = ev => { snapshotUndo(); ct.json_required = ev.target.checked; n.contract = ct; touch(); };
+      $("#pg-ct-keys").onchange = ev => { snapshotUndo(); ct.json_keys = lines(ev.target.value); n.contract = ct; touch(); };
+      $("#pg-ct-inc").onchange = ev => { snapshotUndo(); ct.must_include = lines(ev.target.value); n.contract = ct; touch(); };
+      $("#pg-ct-exc").onchange = ev => { snapshotUndo(); ct.must_exclude = lines(ev.target.value); n.contract = ct; touch(); };
+      $("#pg-ct-rx").onchange = ev => { snapshotUndo(); ct.regex = ev.target.value.trim(); n.contract = ct; touch(); };
+      $("#pg-ct-min").onchange = ev => { snapshotUndo(); ct.min_chars = Math.max(0, parseInt(ev.target.value, 10) || 0); n.contract = ct; touch(); };
+      $("#pg-ct-ret").onchange = ev => { snapshotUndo(); ct.max_retries = Math.max(0, Math.min(5, parseInt(ev.target.value, 10) || 0)); n.contract = ct; touch(); };
+      $("#pg-ct-onfail").onchange = ev => { snapshotUndo(); ct.on_fail = ev.target.value; n.contract = ct; touch(); };
+      $("#pg-art-kind").onchange = ev => { snapshotUndo(); art.kind = ev.target.value; n.artifact = art; touch(); };
+      $("#pg-art-mode").onchange = ev => { snapshotUndo(); art.mode = ev.target.value; n.artifact = art; touch(); };
+      $("#pg-art-repo").onchange = ev => { snapshotUndo(); art.repo = ev.target.value.trim(); n.artifact = art; touch(); };
+      $("#pg-art-path").onchange = ev => { snapshotUndo(); art.path = ev.target.value.trim(); n.artifact = art; touch(); };
+      if ($("#pg-ver-sum") && PG.graphId) {
+        $("#pg-ver-sum").onclick = async () => {
+          const box = $("#pg-ver-box");
+          if (!box || box.dataset.loaded) return;
+          box.dataset.loaded = "1";
+          const res = await api("GET", `${WSP()}/prompt-graphs/${PG.graphId}/nodes/${encodeURIComponent(n.id)}/versions`, undefined, { fresh: true }).catch(() => ({ versions: [] }));
+          const vers = res.versions || [];
+          PG.versionCache[n.id] = vers;
+          if (!vers.length) {
+            box.innerHTML = `<span class="muted" style="font-size:11.5px">아직 기록된 실행 버전이 없습니다.</span>`;
+            return;
+          }
+          box.innerHTML = `${vers.map((v, i) => `<div class="pg-chg-item">
+            <div class="top">
+              <span class="name">#${vers.length - i} (iter ${v.iteration || 1}) · ${esc(v.model || "")}</span>
+              <span class="muted" style="font-size:10.5px">${v.duration_ms || 0}ms · ${v.total_tokens || 0}t</span>
+            </div>
+            <div class="pg-chg-reason">${esc((v.output || "").slice(0, 90))}</div>
+            <div class="row" style="gap:4px">
+              <button type="button" class="g" data-pg-ver-diff="${v.version_id}" style="padding:1px 7px;font-size:11px">현재와 Diff</button>
+              <button type="button" class="g" data-pg-ver-chk="${v.version_id}" style="padding:1px 7px;font-size:11px">↩ 출력 롤백</button>
+            </div>
+          </div>`).join("")}<div id="pg-ver-diffbox"></div>`;
+          box.querySelectorAll("[data-pg-ver-diff]").forEach(b => {
+            b.onclick = () => {
+              const v = vers.find(x => String(x.version_id) === b.dataset.pgVerDiff);
+              if (v) $("#pg-ver-diffbox").innerHTML = `<div class="pg-hint" style="margin:4px 0">과거(#${v.version_id}) → 현재 출력 Diff</div>` + renderLineDiff(v.output, n.output);
+            };
+          });
+          box.querySelectorAll("[data-pg-ver-chk]").forEach(b => {
+            b.onclick = run(async () => {
+              const r = await api("POST", `${WSP()}/prompt-graphs/${PG.graphId}/nodes/${encodeURIComponent(n.id)}/checkout`, { version_id: Number(b.dataset.pgVerChk) });
+              PG.graph = ensureArrays(r.graph);
+              toast("선택한 버전의 출력으로 롤백했습니다.");
+              draw(true);
+            });
+          });
+        };
+      }
       document.querySelectorAll("[data-pg-rmdep]").forEach(b => b.onclick = () => removeEdgeByPair(n.id, b.dataset.pgRmdep));
       if ($("#pg-n-adddep")) $("#pg-n-adddep").onchange = ev => { if (ev.target.value) addEdge(n.id, ev.target.value); };
       return;
@@ -2058,37 +2514,38 @@
             <button class="g bad" id="pg-g-del">그룹 해제/삭제</button>
           </div>
           <div class="row">
-            <button type="button" class="g" id="pg-g-wrap-parent" style="flex:1">＋ ⬚ ${tier + 1}-그룹으로 감싸기</button>
-            <button type="button" class="g" id="pg-g-add-child" style="flex:1">＋ 내부 하위 그룹</button>
+            <button type="button" class="g" id="pg-g-wrap-parent" style="flex:1">＋ ⬚ ${tier + 1}-그룹 감싸기</button>
+            <button type="button" class="g" id="pg-g-add-child" style="flex:1">＋ 하위 그룹</button>
           </div>
+          <button type="button" class="g" id="pg-g-savetpl">📦 컴포넌트로 저장 (템플릿 라이브러리)</button>
           ${renderChangeCallout(chg.groups[g.id], "pg-g-clrrerun")}
           <label class="row" style="font-size:12.5px">
             <input type="checkbox" id="pg-g-completed" ${g.completed ? "checked" : ""}>
             <span>실행 완료 여부 (<code>completed</code>: <b>${g.completed ? "완료" : "미완료"}</b>)</span>
           </label>
-          <div class="pg-hint">계층 경로: <b>${ancestors.length ? ancestors.map(a => `${groupTier(a.id)}-그룹(${esc(a.label)})`).join(" › ") + " › " : ""}${tier}-그룹(${esc(g.label)})</b> · 누적 하위 그룹 ${totalSubGroups}개 · 누적 노드 ${totalSubNodes}개</div>
+          <div class="pg-hint">계층: <b>${ancestors.length ? ancestors.map(a => `${groupTier(a.id)}-그룹(${esc(a.label)})`).join(" › ") + " › " : ""}${tier}-그룹(${esc(g.label)})</b> · 하위 그룹 ${totalSubGroups}개 · 노드 ${totalSubNodes}개</div>
           <label class="fld"><span>그룹 ID</span><input id="pg-g-id" class="mono" value="${esc(g.id)}"></label>
           <label class="fld"><span>이름</span><input id="pg-g-label" value="${esc(g.label)}"></label>
-          <label class="fld"><span>프리 프롬프트 (내부의 모든 노드·하위 그룹에 함께 입력됨)</span><textarea id="pg-g-pre" rows="5" style="min-height:100px" placeholder="이 사각형으로 감싼 노드들에 공통 적용할 프리 프롬프트">${esc(g.pre_prompt || "")}</textarea></label>
+          <label class="fld"><span>프리 프롬프트</span><textarea id="pg-g-pre" rows="5" style="min-height:95px" placeholder="공통 프리 프롬프트">${esc(g.pre_prompt || "")}</textarea></label>
           <div class="fld">
             <div class="row" style="justify-content:space-between">
-              <span>⚡ 임시 프리 프롬프트 (temp_pre_prompt · 그룹 완료 후 자동 제거)</span>
+              <span>⚡ 임시 프리 프롬프트 (1회성)</span>
               ${(g.temp_pre_prompt || "").trim() ? `<button type="button" class="icon" id="pg-g-clrtemppre">비우기</button>` : ""}
             </div>
-            <textarea id="pg-g-temppre" rows="3" style="min-height:72px;border-color:${(g.temp_pre_prompt || "").trim() ? "#d97706" : "var(--line)"}" placeholder="의존 그룹 파괴 등으로 전달할 1회성 임시 프리 프롬프트">${esc(g.temp_pre_prompt || "")}</textarea>
+            <textarea id="pg-g-temppre" rows="2" style="min-height:58px;border-color:${(g.temp_pre_prompt || "").trim() ? "#d97706" : "var(--line)"}" placeholder="1회성 임시 프리 프롬프트">${esc(g.temp_pre_prompt || "")}</textarea>
           </div>
-          <label class="fld"><span>상위 그룹 (그룹들의 그룹으로 중첩 가능)</span>
+          <label class="fld"><span>상위 그룹</span>
             <select id="pg-g-parent">
               <option value="">(없음 — 최상위 그룹)</option>
               ${parentOpts.map(p => `<option value="${esc(p.id)}" ${g.parent_group_id === p.id ? "selected" : ""}>${"  ".repeat(groupDepth(p.id))}⬚ ${groupTier(p.id)}-그룹 · ${esc(p.label)} (${esc(p.id)})</option>`).join("")}
             </select>
           </label>
           <div class="fld">
-            <span>의존 대상 (dependencies · 그룹 간 연결 시 선행 그룹 먼저 실행)</span>
+            <span>의존 대상 (dependencies)</span>
             <div class="pg-chips">${(g.dependencies || []).length
               ? g.dependencies.map(d => `<span class="pg-dep-pill"><span>→ ${esc(entityLabel(d))} <span class="muted">(${esc(d)})</span></span><button type="button" data-pg-grmdep="${esc(d)}" title="의존 제거">×</button></span>`).join("")
               : `<span class="muted" style="font-size:12px">의존 대상 없음</span>`}</div>
-            ${depTargets.length ? `<select id="pg-g-adddep"><option value="">＋ 의존 대상(그룹/노드) 추가…</option>${depTargets.map(x => `<option value="${esc(x.id)}">${findGroup(x.id) ? "⬚ 그룹" : "◈ 노드"} · ${esc(x.label)} (${esc(x.id)})</option>`).join("")}</select>` : ""}
+            ${depTargets.length ? `<select id="pg-g-adddep"><option value="">＋ 의존 대상 추가…</option>${depTargets.map(x => `<option value="${esc(x.id)}">${findGroup(x.id) ? "⬚ 그룹" : "◈ 노드"} · ${esc(x.label)} (${esc(x.id)})</option>`).join("")}</select>` : ""}
           </div>
           <div class="fld"><span>직접 포함된 프롬프트 노드 (${directNodes.length})</span>
             <div class="pg-chips">${directNodes.map(n => `<button type="button" class="g" style="padding:2px 8px;font-size:11.5px" data-pg-jump-node="${esc(n.id)}">◈ ${esc(n.label)}</button>`).join("") || `<span class="muted" style="font-size:12px">없음</span>`}</div>
@@ -2102,6 +2559,14 @@
       $("#pg-g-del").onclick = removeSelected;
       $("#pg-g-wrap-parent").onclick = () => wrapEntityInParentGroup(g.id);
       $("#pg-g-add-child").onclick = () => addChildSubgroup(g.id);
+      $("#pg-g-savetpl").onclick = run(async () => {
+        syncGraphRelations();
+        const tname = typeof prompt === "function" ? (prompt("저장할 컴포넌트 이름을 입력하세요:", g.label) || "").trim() : g.label;
+        if (!tname) return;
+        const row = await api("POST", `${WSP()}/prompt-graph-templates`, { name: tname, description: `${tier}-그룹 컴포넌트`, graph: PG.graph, group_id: g.id });
+        PG.templates = [row, ...(PG.templates || [])];
+        toast(`컴포넌트 '${tname}' 저장됨`);
+      });
       if ($("#pg-g-clrrerun")) $("#pg-g-clrrerun").onclick = () => { snapshotUndo(); g.needs_rerun = false; g.rerun_reason = ""; touch(); draw(true); };
       $("#pg-g-completed").onchange = ev => {
         if (!manualSetCompleted(g.id, ev.target.checked)) { ev.target.checked = g.completed; return; }
@@ -2110,12 +2575,7 @@
       $("#pg-g-id").onchange = ev => { if (!renameEntity(g.id, ev.target.value.trim())) ev.target.value = g.id; else draw(true); };
       $("#pg-g-label").oninput = ev => { snapshotUndoOnce(`glbl:${g.id}`); g.label = ev.target.value; touch(); draw(false); };
       $("#pg-g-pre").oninput = ev => { snapshotUndoOnce(`gpre:${g.id}`); g.pre_prompt = ev.target.value; touch(); draw(false); };
-      $("#pg-g-temppre").oninput = ev => {
-        snapshotUndoOnce(`gtmp:${g.id}`);
-        g.temp_pre_prompt = ev.target.value;
-        touch();
-        draw(false);
-      };
+      $("#pg-g-temppre").oninput = ev => { snapshotUndoOnce(`gtmp:${g.id}`); g.temp_pre_prompt = ev.target.value; touch(); draw(false); };
       if ($("#pg-g-clrtemppre")) $("#pg-g-clrtemppre").onclick = () => { snapshotUndo(); g.temp_pre_prompt = ""; touch(); draw(true); };
       $("#pg-g-parent").onchange = ev => { snapshotUndo(); g.parent_group_id = ev.target.value || null; syncGraphRelations(); fitAllAncestorBounds(g.id); touch(); draw(true); };
       document.querySelectorAll("[data-pg-grmdep]").forEach(b => b.onclick = () => removeEdgeByPair(g.id, b.dataset.pgGrmdep));
@@ -2125,17 +2585,23 @@
       return;
     }
 
-    const st = PG.graph.settings || (PG.graph.settings = { parallelism: 4, max_tool_steps: 8, default_model: "" });
+    const st = PG.graph.settings || (PG.graph.settings = { parallelism: 4, max_tool_steps: 8, default_model: "", edge_direction: "dependency", cross_graph_cache: false });
     const maxTier = PG.graph.groups.reduce((m, g) => Math.max(m, groupTier(g.id)), 0);
     bodyEl.innerHTML = `<div class="ide-head">그래프 설정</div>
       <div class="g-form">
-        <div class="muted" style="font-size:12.5px">프롬프트 노드 ${PG.graph.nodes.length}개 · 프리 프롬프트 그룹 ${PG.graph.groups.length}개 (${maxTier ? `최대 ${maxTier}-그룹 계층` : "계층 없음"}) · 의존 화살표 ${PG.graph.edges.length}개</div>
+        <div class="muted" style="font-size:12.5px">노드 ${PG.graph.nodes.length}개 · 그룹 ${PG.graph.groups.length}개 (${maxTier ? `최대 ${maxTier}-그룹` : "계층 없음"}) · 간선 ${PG.graph.edges.length}개</div>
         <div class="row">
           <label class="fld" style="flex:1"><span>최대 병렬 실행</span><input id="pg-s-par" type="number" min="1" max="8" value="${st.parallelism ?? 4}"></label>
           <label class="fld" style="flex:1"><span>MCP 조회 최대 단계</span><input id="pg-s-steps" type="number" min="1" max="16" value="${st.max_tool_steps ?? 8}"></label>
         </div>
-        <label class="fld"><span>기본 실행 모델 (비우면 워크스페이스 설정: ${esc(PG.defaultModel)})</span>
+        <label class="fld"><span>기본 실행 모델 (워크스페이스 기본값: ${esc(PG.defaultModel)})</span>
           <input id="pg-s-model" class="mono" value="${esc(st.default_model || "")}" placeholder="예: mid / cheap / advisor">
+        </label>
+        <label class="fld"><span>전체 화살표 방향</span>
+          <select id="pg-s-edgedir">
+            <option value="dependency" ${!isReversedDir() ? "selected" : ""}>의존 방향 (A → B: A가 B를 의존)</option>
+            <option value="execution" ${isReversedDir() ? "selected" : ""}>실행 방향 (B → A: B 완료 후 A 실행)</option>
+          </select>
         </label>
         <label class="row" style="font-size:12.5px">
           <input type="checkbox" id="pg-s-reuse" ${PG.reuseOutputs ? "checked" : ""}>
@@ -2145,21 +2611,27 @@
           <input type="checkbox" id="pg-s-autorun" ${st.auto_rerun_needs_rerun ? "checked" : ""}>
           <span>에이전트가 '재실행 필요'로 판단한 노드 자동 재실행</span>
         </label>
+        <label class="row" style="font-size:12.5px">
+          <input type="checkbox" id="pg-s-cache" ${st.cross_graph_cache ? "checked" : ""}>
+          <span>크로스-그래프 입력 해시 캐시 활성화</span>
+        </label>
         <div class="pg-hint">
-          • ${isReversedDir()
-            ? `<b>B → A 화살표 (실행 순서 반전 표시 중)</b>: B가 먼저 실행된 후 A가 실행됨을 보여주며, 실제 의미는 "A는 B를 의존한다"(<code>A ← B</code>)와 동일합니다. 연결 시 <b>B → A</b> 순서로 드래그/클릭하세요.`
-            : `<b>A → B 화살표</b>: "A는 B를 의존한다" → <b>B</b>가 먼저 실행되고, 이후 A를 실행하는 에이전트는 MCP 서버(<code>list_dependencies</code>, <code>get_node_info</code>, <code>get_group_info</code>)로 B의 프롬프트·출력·모델·추가 정보·프리 프롬프트를 조회합니다.`}<br>
-          • <b>재실행 필요 판단 (MCP)</b>: B의 프롬프트가 바뀌어도 A가 즉시 오염되지 않으며, B 실행 완료 후 에이전트가 MCP(<code>list_dependents</code>, <code>get_dependent_info</code>, <code>mark_needs_rerun</code>)로 A를 검토해 실제 영향이 있는 대상만 재실행 필요 상태로 지정합니다. (자동 재실행 옵션 켜짐 시 즉시 이어서 실행)<br>
-          • <b>⬚ 프리 프롬프트 사각형</b>: 점선 사각형으로 노드나 다른 그룹을 감싸면 바깥→안쪽 순서대로 프리 프롬프트가 함께 입력되며, 그룹도 서로 의존 연결 및 실행이 가능합니다.<br>
-          • <b>Shift+드래그</b> 또는 <b>⬚ 감싸기</b> 버튼: 원하는 영역을 드래그해 새 프리 프롬프트 그룹 생성<br>
-          • <b>Ctrl+Z</b>/<b>Ctrl+Shift+Z</b>: 실행 취소/다시 · <b>Ctrl+S</b>: 저장 · <b>Delete</b>: 삭제
+          • <b>전체 화살표 방향 전환</b>: 모든 일반·그룹·조건·순환 화살표의 표시/연결 방향을 의존 방향과 실행 방향으로 일괄 전환합니다.<br>
+          • <b>조건부 순환/재귀 & 출력 계약</b>: 간선 속성에서 조건부 순환(<code>is_loop</code>) 및 최대 반복 횟수를, 노드 속성에서 출력 계약(Schema/Assertion)과 산출물 연결을 설정할 수 있습니다.<br>
+          • <b>Shift+드래그</b>: 점선 프리 프롬프트 그룹 생성 · <b>Alt+드래그</b>/<b>🔗 간선 연결</b>: 간선 연결
         </div>
       </div>`;
     $("#pg-s-par").onchange = e => { snapshotUndo(); st.parallelism = Math.max(1, Math.min(8, parseInt(e.target.value, 10) || 4)); touch(); };
     $("#pg-s-steps").onchange = e => { snapshotUndo(); st.max_tool_steps = Math.max(1, Math.min(16, parseInt(e.target.value, 10) || 8)); touch(); };
     $("#pg-s-model").onchange = e => { snapshotUndo(); st.default_model = e.target.value.trim(); touch(); draw(false); };
+    $("#pg-s-edgedir").onchange = e => {
+      snapshotUndo();
+      setEdgeDirection(e.target.value);
+      touch();
+    };
     $("#pg-s-reuse").onchange = e => { PG.reuseOutputs = e.target.checked; };
     $("#pg-s-autorun").onchange = e => { snapshotUndo(); st.auto_rerun_needs_rerun = e.target.checked; touch(); };
+    $("#pg-s-cache").onchange = e => { snapshotUndo(); st.cross_graph_cache = e.target.checked; touch(); };
   }
 
   // ------------------------------------------------------------ run timeline & polling
@@ -2168,7 +2640,15 @@
     group_started: ["⬚", "그룹 실행 시작"],
     group_finished: ["⬚", "그룹 실행 완료"],
     node_started: ["⏳", "노드 실행 시작"],
+    node_cache_hit: ["⚡", "해시 캐시 적중"],
     mcp_tool_call: ["🔌", "MCP 조회"],
+    contract_retry: ["📋", "계약 재시도"],
+    contract_failed: ["⚠", "출력 계약 미충족"],
+    loop_triggered: ["↺", "조건부 순환/재귀 실행"],
+    loop_limit_reached: ["⏹", "순환 최대 반복 도달"],
+    edge_temp_prompt_injected: ["⚡", "간선 임시 프롬프트 주입"],
+    artifact_synced: ["🔗", "산출물 동기화"],
+    impact_reviewed: ["⚑", "영향도 검토 (MCP)"],
     needs_rerun_marked: ["⚑", "재실행 필요 표시 (MCP)"],
     auto_rerun_queued: ["↻", "자동 재실행 추가"],
     node_finished: ["✅", "노드 완료"],
@@ -2246,6 +2726,8 @@
         if ("last_run_pre_prompts" in rn) ln.last_run_pre_prompts = rn.last_run_pre_prompts;
         if (typeof rn.needs_rerun === "boolean") ln.needs_rerun = rn.needs_rerun;
         if (typeof rn.rerun_reason === "string") ln.rerun_reason = rn.rerun_reason;
+        if (Array.isArray(rn.impact_history)) ln.impact_history = rn.impact_history;
+        if (rn.artifact && typeof rn.artifact === "object") ln.artifact = rn.artifact;
       }
     }
     if (data.graph_json?.groups && PG.graph) {
@@ -2333,12 +2815,33 @@
     poll();
   }
 
+  function setEdgeDirection(dir) {
+    const next = dir === "execution" ? "execution" : "dependency";
+    PG.edgeDir = next;
+    PG.pendingLinkFrom = null;
+    if (PG.graph?.settings) PG.graph.settings.edge_direction = next;
+    G.store.set("agdd.pg.edgedir", next);
+    const btn = $("#pg-edge-dir");
+    if (btn) {
+      btn.classList.toggle("on", next === "execution");
+      btn.textContent = next === "execution" ? "⇄ 화살표: 실행 순서 (선행→후속)" : "⇄ 화살표: 의존 방향 (의존→선행)";
+    }
+    draw(true);
+  }
+
   function loadGraph(g, graphId, name) {
     PG.graph = ensureArrays(JSON.parse(JSON.stringify(g || { nodes: [], groups: [], edges: [], settings: {} })));
     syncGraphRelations();
+    if (g?.settings?.edge_direction === "execution" || g?.settings?.edge_direction === "dependency") {
+      PG.edgeDir = g.settings.edge_direction;
+      G.store.set("agdd.pg.edgedir", PG.edgeDir);
+    } else if (PG.graph.settings) {
+      PG.graph.settings.edge_direction = PG.edgeDir;
+    }
     PG.graphId = graphId || "";
     PG.name = name || PG.name;
     PG.sel = null;
+    PG.analytics = null;
     PG.changeSel.clear();
     PG.changeSeen.clear();
     PG.dirty = false;
@@ -2401,7 +2904,11 @@
         <button class="g" id="pg-add-node">＋ 프롬프트 노드</button>
         <button class="g" id="pg-add-group">＋ ⬚ 프리 프롬프트 그룹</button>
         <button class="g ${PG.wrapMode ? "on" : ""}" id="pg-wrap-btn" title="활성화 후 캔버스에서 드래그해 노드/그룹을 점선 사각형으로 감쌉니다">⬚ 드래그로 감싸기</button>
-        <button class="g ${isReversedDir() ? "on" : ""}" id="pg-edge-dir" title="간선 표시 방향 전환 (의존 방향 A→B vs 실행 순서 B→A). 기능이나 저장 데이터는 변하지 않습니다.">${isReversedDir() ? "⇄ 표시: 실행 (B→A)" : "⇄ 표시: 의존 (A→B)"}</button>
+        <button class="g ${PG.linkMode ? "on" : ""}" id="pg-link-btn" title="활성화 후 노드/그룹을 드래그하거나 차례로 클릭해 간선을 연결합니다 (Alt+드래그도 가능)">🔗 간선 연결</button>
+        <button class="g ${isReversedDir() ? "on" : ""}" id="pg-edge-dir" title="전체 간선 화살표 방향 전환 (의존 방향 vs 실행 순서)">${isReversedDir() ? "⇄ 화살표: 실행 순서 (선행→후속)" : "⇄ 화살표: 의존 방향 (의존→선행)"}</button>
+        <button class="g ${PG.showProfileOverlay ? "on" : ""}" id="pg-prof-btn" title="캔버스에 임계 경로·성능 배지 오버레이 표시">📊 프로파일</button>
+        <button class="g" id="pg-auto-layout" title="중첩 N-그룹·간선 방향 기준으로 겹침 없이 자동 정렬">⊞ 자동 정렬</button>
+        <button class="g" id="pg-mcp-manage" title="MCP 서버를 통해 노드·N-그룹·루프를 자동 구성·리팩토링 (후반기·복잡한 그래프에 권장)">🤖 MCP 관리</button>
         <span class="g-sep"></span>
         <select id="pg-preset"><option value="">템플릿 불러오기…</option>${Object.entries(PG.presetInfo).map(([k, v]) => `<option value="${esc(k)}">${esc(v.title)}</option>`).join("")}</select>
         <span class="g-sep"></span>
@@ -2465,24 +2972,144 @@
     };
     $("#pg-wrap-btn").onclick = () => {
       PG.wrapMode = !PG.wrapMode;
+      if (PG.wrapMode) {
+        PG.linkMode = false;
+        PG.pendingLinkFrom = null;
+        $("#pg-link-btn")?.classList.remove("on");
+        $("#pg-stage")?.classList.remove("link-mode");
+      }
       $("#pg-wrap-btn").classList.toggle("on", PG.wrapMode);
       $("#pg-stage")?.classList.toggle("wrap-mode", PG.wrapMode);
       if (PG.wrapMode) toast("캔버스에서 드래그하여 노드나 그룹을 점선 프리 프롬프트 사각형으로 감싸세요.");
     };
-    $("#pg-edge-dir").onclick = () => {
-      PG.edgeDir = isReversedDir() ? "dependency" : "execution";
+    $("#pg-link-btn").onclick = () => {
+      PG.linkMode = !PG.linkMode;
       PG.pendingLinkFrom = null;
-      G.store.set("agdd.pg.edgedir", PG.edgeDir);
-      const btn = $("#pg-edge-dir");
-      if (btn) {
-        btn.classList.toggle("on", isReversedDir());
-        btn.textContent = isReversedDir() ? "⇄ 표시: 실행 (B→A)" : "⇄ 표시: 의존 (A→B)";
+      if (PG.linkMode) {
+        PG.wrapMode = false;
+        $("#pg-wrap-btn")?.classList.remove("on");
+        $("#pg-stage")?.classList.remove("wrap-mode");
       }
+      $("#pg-link-btn").classList.toggle("on", PG.linkMode);
+      $("#pg-stage")?.classList.toggle("link-mode", PG.linkMode);
       draw(true);
-      toast(isReversedDir()
-        ? "간선 표시: 실행 순서 (B → A, 실제로는 A가 B에 의존). B → A 순으로 클릭/드래그하여 연결하세요."
-        : "간선 표시: 의존 방향 (A → B: A는 B를 의존).");
+      if (PG.linkMode) toast(isReversedDir()
+        ? "선행 실행할 노드/그룹에서 후속 노드/그룹으로 드래그하거나 차례로 클릭하세요."
+        : "의존할 노드/그룹에서 대상 노드/그룹으로 드래그하거나 차례로 클릭하세요.");
     };
+    $("#pg-edge-dir").onclick = () => {
+      snapshotUndo();
+      setEdgeDirection(isReversedDir() ? "dependency" : "execution");
+      touch();
+      toast(isReversedDir()
+        ? "전체 화살표 방향: 실행 순서 (선행 노드 → 후속 노드 · 순환 루프 포함)."
+        : "전체 화살표 방향: 의존 방향 (의존 노드 → 선행 노드).");
+    };
+  function openMcpManageModal() {
+    $("#pg-mcp-modal")?.remove();
+    const nc = PG.graph?.nodes?.length || 0;
+    const gc = PG.graph?.groups?.length || 0;
+    const isSmall = nc < 5 && gc < 2;
+    const backdrop = document.createElement("div");
+    backdrop.id = "pg-mcp-modal";
+    backdrop.className = "pg-modal-backdrop";
+    backdrop.innerHTML = `<div class="pg-modal" role="dialog" aria-modal="true" aria-label="MCP 그래프 자동 관리">
+      <div class="pg-modal-hd">
+        <h3>🤖 MCP 서버 기반 그래프 자동 관리 (자동 겹침 방지)</h3>
+        <button type="button" class="icon" id="pg-mm-x" title="닫기">✕</button>
+      </div>
+      <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;overflow:auto">
+        ${isSmall ? `<div class="pg-chg-callout st-modified">
+          <b>💡 초반 소규모 그래프 안내 (현재 노드 ${nc}개 · 그룹 ${gc}개)</b>
+          <span class="pg-hint">노드 수가 적은 초반 단계에서는 캔버스에서 직접 추가·연결하는 편이 빠릅니다. 노드·계층이 커진 후반기 리팩토링에 특히 효과적입니다 (원하시면 바로 실행 가능합니다).</span>
+        </div>` : `<div class="pg-chg-callout st-clean">
+          <b>✓ 후반기/다계층 그래프 관리 준비됨 (노드 ${nc}개 · 그룹 ${gc}개)</b>
+          <span class="pg-hint">모든 MCP 변경 후 자동으로 계층형 레이아웃(<code>auto_layout_graph</code>)을 실행해 그룹·노드·제목이 겹치지 않게 정리합니다.</span>
+        </div>`}
+        <div class="row" style="gap:6px;flex-wrap:wrap">
+          <button type="button" class="g" data-pg-mm-pre="현재 그래프의 연관 노드들을 논리적 1-그룹/2-그룹 계층으로 묶고 겹침 없이 정렬해줘.">⬚ 그룹 계층화</button>
+          <button type="button" class="g" data-pg-mm-pre="출력 계약(contract)과 조건부 순환 루프(최대 3회)를 검증 단계에 추가하고 간선 임시 프롬프트도 채워줘.">↺ 검증·순환 루프 구성</button>
+          <button type="button" class="g" data-pg-mm-pre="현재 그래프의 의존성과 그룹 배치를 점검하고 겹침 없이 깔끔히 재정렬해줘.">⊞ 구조 점검 &amp; 정렬</button>
+        </div>
+        <label class="fld">
+          <span>MCP 관리 에이전트에 전달할 작업 지시</span>
+          <textarea id="pg-mm-inst" rows="4" style="min-height:92px" placeholder="예: 리서치/설계/검증 단계를 중첩 N-그룹으로 정리하고, 검증 실패 시 초안 노드로 되돌아가는 조건부 순환 루프와 간선 임시 프롬프트를 추가해줘."></textarea>
+        </label>
+        <div id="pg-mm-log" class="pg-feed" style="max-height:190px"></div>
+      </div>
+      <div class="pg-modal-ft">
+        <span class="muted" style="font-size:11.5px;margin-right:auto">CLI MCP: <code>python -m irade_agent.agdd.prompt_graph_mcp_cli</code></span>
+        <button type="button" class="g" id="pg-mm-cancel">닫기</button>
+        <button type="button" class="b" id="pg-mm-run">🤖 MCP 에이전트 실행</button>
+      </div>
+    </div>`;
+    document.body.appendChild(backdrop);
+    const close = () => backdrop.remove();
+    $("#pg-mm-x").onclick = close;
+    $("#pg-mm-cancel").onclick = close;
+    backdrop.onclick = ev => { if (ev.target === backdrop) close(); };
+    backdrop.querySelectorAll("[data-pg-mm-pre]").forEach(b => {
+      b.onclick = () => { $("#pg-mm-inst").value = b.dataset.pgMmPre; };
+    });
+    $("#pg-mm-run").onclick = run(async () => {
+      const inst = ($("#pg-mm-inst").value || "").trim();
+      if (!inst) return toast("작업 지시를 입력하세요.", true);
+      const btn = $("#pg-mm-run");
+      btn.disabled = true;
+      btn.textContent = "⏳ MCP 관리 실행 중…";
+      try {
+        syncGraphRelations();
+        const res = await api("POST", `${WSP()}/prompt-graphs/mcp-manage`, {
+          graph: PG.graph,
+          graph_id: PG.graphId || null,
+          instruction: inst,
+          save: false,
+        });
+        if (res.changed && res.graph) {
+          snapshotUndo();
+          PG.graph = ensureArrays(res.graph);
+          PG.fitPending = true;
+          touch();
+          draw(true);
+        }
+        const okLayout = res.layout_report?.ok !== false;
+        const callsHtml = (res.mcp_calls || []).map(c => `<div class="pg-ev mcp"><b>🔌 ${esc(c.tool)}</b> <span class="muted">${esc(JSON.stringify(c.arguments || {}))}</span></div>`).join("");
+        $("#pg-mm-log").innerHTML = `<div class="pg-ev ${okLayout ? "fin" : "bad"}">
+          <b>${okLayout ? "✓ 겹침 없음 검증 통과" : "⚠ 레이아웃 점검 필요"}</b> (${(res.mcp_calls || []).length}회 MCP 호출)
+          <pre>${esc(res.summary || "완료됨")}</pre>
+        </div>${callsHtml}`;
+        toast(`MCP 그래프 관리 완료 (${(res.mcp_calls || []).length}회 호출 · 겹침 0건)`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "🤖 MCP 에이전트 실행";
+      }
+    });
+  }
+
+    $("#pg-prof-btn").onclick = () => {
+      PG.showProfileOverlay = !PG.showProfileOverlay;
+      $("#pg-prof-btn").classList.toggle("on", PG.showProfileOverlay);
+      draw(false);
+    };
+    $("#pg-auto-layout").onclick = run(async () => {
+      syncGraphRelations();
+      const res = await api("POST", `${WSP()}/prompt-graphs/auto-layout`, {
+        graph: PG.graph,
+        graph_id: PG.graphId || null,
+        direction: "auto",
+        save: false,
+      });
+      if (res.graph) {
+        snapshotUndo();
+        PG.graph = ensureArrays(res.graph);
+        PG.fitPending = true;
+        touch();
+        draw(true);
+        const ov = res.layout_report?.overlap_pairs?.length || 0;
+        toast(`자동 정렬 완료 (겹침 ${ov}건)`);
+      }
+    });
+    $("#pg-mcp-manage").onclick = () => openMcpManageModal();
     $("#pg-preset").onchange = e => {
       const k = e.target.value;
       if (!k) return;
@@ -2555,7 +3182,16 @@
         const mod = e.ctrlKey || e.metaKey;
         const code = e.code || "";
         if (e.key === "Escape" && $("#pg-destroy-modal")) { e.preventDefault(); closeDestroyModal(); return; }
-        if (e.key === "Escape" && PG.pendingLinkFrom) { e.preventDefault(); PG.pendingLinkFrom = null; draw(true); return; }
+        if (e.key === "Escape" && (PG.pendingLinkFrom || PG.linkMode || PG.wrapMode)) {
+          e.preventDefault();
+          PG.pendingLinkFrom = null;
+          PG.linkMode = false;
+          PG.wrapMode = false;
+          $("#pg-link-btn")?.classList.remove("on");
+          $("#pg-wrap-btn")?.classList.remove("on");
+          draw(true);
+          return;
+        }
         if (e.key === "Escape" && PG.full) { e.preventDefault(); PG._setFull?.(false); return; }
         if (mod && code === "KeyS") { e.preventDefault(); run(save)(); return; }
         const ae = document.activeElement;
