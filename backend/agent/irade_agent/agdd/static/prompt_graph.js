@@ -71,15 +71,23 @@
 
       /* Dashed Pre-Prompt Group */
       .pg-group { position:absolute; box-sizing:border-box; border:2px dashed color-mix(in srgb,var(--accent) 65%,var(--line));
-        border-radius:12px; background:color-mix(in srgb,var(--accent) 5%, transparent); cursor:grab; }
-      .pg-group.depth-1 { border-color:#8b5cf6; background:color-mix(in srgb,#8b5cf6 6%, transparent); }
-      .pg-group.depth-2 { border-color:#0ea5e9; background:color-mix(in srgb,#0ea5e9 6%, transparent); }
-      .pg-group.depth-3 { border-color:#d97706; background:color-mix(in srgb,#d97706 6%, transparent); }
+        border-radius:12px; background:transparent; cursor:grab; }
+      .pg-group.depth-1 { border-color:#8b5cf6; background:transparent; }
+      .pg-group.depth-2 { border-color:#0ea5e9; background:transparent; }
+      .pg-group.depth-3 { border-color:#d97706; background:transparent; }
       .pg-group.on { box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 35%,transparent); border-style:dashed; }
       .pg-group-hd { display:flex; align-items:center; gap:6px; padding:6px 10px; border-bottom:1px dashed color-mix(in srgb,var(--line) 80%,transparent);
-        font-size:12px; font-weight:600; color:var(--ink); background:color-mix(in srgb,var(--panel) 78%, transparent); border-radius:10px 10px 0 0; }
+        font-size:12px; font-weight:600; color:var(--ink); background:transparent; border-radius:10px 10px 0 0; }
       .pg-group-hd .id { font:10.5px ui-monospace,Menlo,monospace; color:var(--muted); font-weight:400; }
-      .pg-group-hd .pg-mini-run { margin-left:auto; border:1px solid var(--accent); background:var(--panel); color:var(--accent);
+      .pg-hd-acts { margin-left:auto; display:inline-flex; align-items:center; gap:4px; }
+      .pg-group-hd .pg-mini-link { border:1px solid var(--line); background:transparent; color:var(--muted);
+        border-radius:6px; font-size:11px; padding:1px 6px; cursor:crosshair; }
+      .pg-group-hd .pg-mini-link:hover { border-color:var(--accent); color:var(--accent); }
+      .pg-group-hd .pg-mini-link.linking { border-color:var(--warn); background:var(--warn); color:#fff; }
+      .pg-group-hd .pg-mini-wrap { border:1px dashed var(--line); background:transparent; color:var(--muted);
+        border-radius:6px; font-size:11px; padding:1px 6px; cursor:pointer; }
+      .pg-group-hd .pg-mini-wrap:hover { border-color:var(--accent); color:var(--accent); }
+      .pg-group-hd .pg-mini-run { border:1px solid var(--accent); background:transparent; color:var(--accent);
         border-radius:6px; font-size:11px; padding:1px 7px; cursor:pointer; }
       .pg-group-hd .pg-mini-run:hover { background:var(--accent); color:var(--bg); }
       .pg-group-sub { padding:5px 10px; font-size:11px; color:var(--muted); display:flex; flex-direction:column; gap:3px; pointer-events:none; }
@@ -95,7 +103,14 @@
       .pg-node .hd { display:flex; align-items:center; gap:6px; padding:6px 10px; border-radius:8px 8px 0 0;
         background:#2f5d50; color:#fff; font-size:12px; font-weight:600; }
       .pg-node .hd .id { font:10px ui-monospace,Menlo,monospace; opacity:.82; font-weight:400; }
-      .pg-node .hd .pg-mini-run { margin-left:auto; border:1px solid rgba(255,255,255,.5); background:rgba(255,255,255,.15);
+      .pg-node .hd .pg-mini-link { border:1px solid rgba(255,255,255,.45); background:rgba(255,255,255,.12);
+        color:#fff; border-radius:5px; font-size:10.5px; padding:1px 5px; cursor:crosshair; }
+      .pg-node .hd .pg-mini-link:hover { background:rgba(255,255,255,.28); }
+      .pg-node .hd .pg-mini-link.linking { border-color:var(--warn); background:var(--warn); color:#fff; }
+      .pg-node .hd .pg-mini-wrap { border:1px dashed rgba(255,255,255,.45); background:rgba(255,255,255,.1);
+        color:#fff; border-radius:5px; font-size:10.5px; padding:1px 5px; cursor:pointer; }
+      .pg-node .hd .pg-mini-wrap:hover { background:rgba(255,255,255,.28); }
+      .pg-node .hd .pg-mini-run { border:1px solid rgba(255,255,255,.5); background:rgba(255,255,255,.15);
         color:#fff; border-radius:5px; font-size:10.5px; padding:1px 6px; cursor:pointer; }
       .pg-node .hd .pg-mini-run:hover { background:#fff; color:#1d1d1b; }
       .pg-node .bd { padding:6px 10px; font-size:11px; color:var(--muted); line-height:1.35; overflow:hidden; flex:1; display:flex; flex-direction:column; gap:3px; }
@@ -154,12 +169,6 @@
       .pg-modal-comp { padding:12px 14px; display:flex; flex-direction:column; gap:10px; overflow:auto; }
       .pg-modal-ft { display:flex; align-items:center; justify-content:flex-end; gap:8px; padding:10px 16px; border-top:1px solid var(--line); background:var(--bg); flex-wrap:wrap; }
 
-      .pg-port { position:absolute; top:50%; transform:translateY(-50%); width:14px; height:14px; border-radius:50%;
-        background:var(--panel); border:2px solid var(--muted); box-sizing:border-box; z-index:2; }
-      .pg-port.in { left:-8px; }
-      .pg-port.out { right:-8px; cursor:crosshair; border-color:var(--accent); }
-      .pg-port.out:hover { background:var(--accent); }
-      .pg-port.out.linking { background:var(--warn); border-color:var(--warn); box-shadow:0 0 0 4px rgba(245,158,11,.28); }
       .pg-st { position:absolute; right:8px; bottom:5px; font-size:10px; padding:0 6px; border-radius:99px; background:var(--chip); color:var(--muted); }
       .pg-node.s-running { border-color:var(--warn); animation:pgpulse 1.2s ease-in-out infinite; }
       .pg-node.s-running .pg-st { background:var(--warn); color:#fff; }
@@ -312,6 +321,31 @@
 
   function groupDepth(gid, g = PG.graph) {
     return ancestorGroups(gid, g).length;
+  }
+
+  function groupTier(gid, g = PG.graph, seen = new Set()) {
+    if (seen.has(gid)) return 1;
+    const grp = (g?.groups || []).find(x => x.id === gid);
+    if (!grp) return 1;
+    seen.add(gid);
+    const children = (grp.child_group_ids || []).filter(cid => cid !== gid && !seen.has(cid));
+    if (!children.length) {
+      seen.delete(gid);
+      return 1;
+    }
+    let mx = 0;
+    for (const cid of children) {
+      mx = Math.max(mx, groupTier(cid, g, seen));
+    }
+    seen.delete(gid);
+    return mx + 1;
+  }
+
+  function tierColor(tier) {
+    const palette = ["var(--accent)", "#8b5cf6", "#0ea5e9", "#d97706", "#ec4899", "#14b8a6"];
+    if (tier >= 1 && tier <= palette.length) return palette[tier - 1];
+    const hue = ((tier - 1) * 57) % 360;
+    return `hsl(${hue}, 72%, 48%)`;
   }
 
   function subtreeIds(entityId, g = PG.graph) {
@@ -920,25 +954,131 @@
     return true;
   }
 
-  function assignParentByGeometry(entityId) {
+  function shiftGraphIfNeeded(targetMinX, targetMinY, g = PG.graph) {
+    const dx = targetMinX < 20 ? Math.ceil((20 - targetMinX) / 10) * 10 : 0;
+    const dy = targetMinY < 20 ? Math.ceil((20 - targetMinY) / 10) * 10 : 0;
+    if (!dx && !dy) return;
+    for (const n of g.nodes || []) { n.x += dx; n.y += dy; }
+    for (const grp of g.groups || []) { grp.x += dx; grp.y += dy; }
+  }
+
+  function fitGroupBounds(gid, g = PG.graph, seen = new Set()) {
+    if (!gid || seen.has(gid)) return;
+    seen.add(gid);
+    const grp = (g.groups || []).find(x => x.id === gid);
+    if (!grp) return;
+    const children = [
+      ...(grp.node_ids || []).map(id => (g.nodes || []).find(n => n.id === id)),
+      ...(grp.child_group_ids || []).map(id => (g.groups || []).find(x => x.id === id)),
+    ].filter(Boolean);
+    if (children.length) {
+      const PAD_X = 30, PAD_TOP = 94, PAD_BOT = 28;
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const ch of children) {
+        minX = Math.min(minX, ch.x);
+        minY = Math.min(minY, ch.y);
+        maxX = Math.max(maxX, ch.x + (ch.width || 250));
+        maxY = Math.max(maxY, ch.y + (ch.height || 140));
+      }
+      const needX = Math.round((minX - PAD_X) / 10) * 10;
+      const needY = Math.round((minY - PAD_TOP) / 10) * 10;
+      if (needX < 20 || needY < 20) {
+        const sdx = needX < 20 ? Math.ceil((20 - needX) / 10) * 10 : 0;
+        const sdy = needY < 20 ? Math.ceil((20 - needY) / 10) * 10 : 0;
+        shiftGraphIfNeeded(needX, needY, g);
+        minX += sdx; minY += sdy; maxX += sdx; maxY += sdy;
+      }
+      const nx = Math.max(20, Math.round((minX - PAD_X) / 10) * 10);
+      const ny = Math.max(20, Math.round((minY - PAD_TOP) / 10) * 10);
+      const nr = Math.round((maxX + PAD_X) / 10) * 10;
+      const nb = Math.round((maxY + PAD_BOT) / 10) * 10;
+      const oldR = grp.x + (grp.width || 360);
+      const oldB = grp.y + (grp.height || 240);
+      grp.x = Math.min(grp.x, nx);
+      grp.y = Math.min(grp.y, ny);
+      grp.width = Math.max(260, Math.max(oldR, nr) - grp.x);
+      grp.height = Math.max(170, Math.max(oldB, nb) - grp.y);
+    }
+    if (grp.parent_group_id) fitGroupBounds(grp.parent_group_id, g, seen);
+  }
+
+  function fitAllAncestorBounds(entityId, g = PG.graph) {
+    const ent = (g.nodes || []).find(n => n.id === entityId) || (g.groups || []).find(x => x.id === entityId);
+    if (ent?.parent_group_id) fitGroupBounds(ent.parent_group_id, g);
+  }
+
+  function wrapEntityInParentGroup(entityId) {
     const ent = findEntity(entityId);
-    if (!ent) return;
+    if (!ent) return null;
+    snapshotUndo();
+    const oldParent = ent.parent_group_id || null;
     const isGrp = !!findGroup(entityId);
+    const nextTier = isGrp ? groupTier(entityId) + 1 : 1;
+    const id = newId("group");
+    const grp = {
+      id,
+      label: `${nextTier}-그룹 (${ent.label || entityId})`,
+      pre_prompt: "",
+      temp_pre_prompt: "",
+      node_ids: [],
+      child_group_ids: [],
+      parent_group_id: oldParent,
+      dependencies: [],
+      completed: false,
+      x: Math.round((ent.x - 30) / 10) * 10,
+      y: Math.round((ent.y - 94) / 10) * 10,
+      width: Math.max(260, (ent.width || 250) + 60),
+      height: Math.max(170, (ent.height || 140) + 122),
+    };
+    shiftGraphIfNeeded(grp.x, grp.y);
+    grp.x = Math.max(20, grp.x);
+    grp.y = Math.max(20, grp.y);
+    PG.graph.groups.push(grp);
+    ent.parent_group_id = id;
+    syncGraphRelations();
+    fitGroupBounds(id);
+    PG.sel = { type: "group", id };
+    PG.inspTab = "edit";
+    touch();
+    draw(true);
+    toast(`${nextTier}-그룹(${grp.label})으로 감쌌습니다.`);
+    return grp;
+  }
+
+  function addChildSubgroup(parentGid) {
+    const parent = findGroup(parentGid);
+    if (!parent) return null;
+    const existingCount = (parent.child_group_ids || []).length;
+    const childX = parent.x + 30 + existingCount * 40;
+    const childY = parent.y + 94 + existingCount * 24;
+    const child = addPrePromptGroup(childX, childY, 320, 210, {
+      parent_group_id: parentGid,
+      label: `하위 그룹 ${(PG.graph.groups.length || 0) + 1}`,
+    });
+    fitAllAncestorBounds(child.id);
+    draw(true);
+    return child;
+  }
+
+  function assignParentByGeometry(entityId, g = PG.graph) {
+    const ent = (g.nodes || []).find(n => n.id === entityId) || (g.groups || []).find(x => x.id === entityId);
+    if (!ent) return;
+    const isGrp = !!(g.groups || []).find(x => x.id === entityId);
     const cx = ent.x + (ent.width || 250) / 2;
     const cy = ent.y + (ent.height || 140) / 2;
     const myArea = (ent.width || 250) * (ent.height || 140);
-    const forbidden = isGrp ? subtreeIds(entityId) : new Set([entityId]);
+    const forbidden = isGrp ? subtreeIds(entityId, g) : new Set([entityId]);
 
-    const candidates = PG.graph.groups.filter(g => {
-      if (forbidden.has(g.id)) return false;
-      const inside = cx >= g.x && cx <= g.x + g.width && cy >= g.y && cy <= g.y + g.height;
+    const candidates = (g.groups || []).filter(grp => {
+      if (forbidden.has(grp.id)) return false;
+      const inside = cx >= grp.x && cx <= grp.x + grp.width && cy >= grp.y && cy <= grp.y + grp.height;
       if (!inside) return false;
-      if (isGrp && g.width * g.height <= myArea) return false;
+      if (isGrp && grp.width * grp.height <= myArea) return false;
       return true;
     });
-    candidates.sort((a, b) => groupDepth(b.id) - groupDepth(a.id) || (a.width * a.height) - (b.width * b.height));
+    candidates.sort((a, b) => (a.width * a.height) - (b.width * b.height));
     ent.parent_group_id = candidates[0]?.id || null;
-    syncGraphRelations();
+    if (g === PG.graph) syncGraphRelations();
   }
 
   function translateGroupTree(gid, dx, dy) {
@@ -952,22 +1092,48 @@
   }
 
   // ------------------------------------------------------------ rendering
-  function edgePath(a, b) {
-    const aw = a.width || 250, ah = a.height || 140;
-    const bw = b.width || 250, bh = b.height || 140;
-    const x1 = a.x + aw;
-    const y1 = a.y + ah / 2;
-    const x2 = b.x;
-    const y2 = b.y + bh / 2;
-    if (x2 > x1 + 24) {
-      const dx = Math.max(40, (x2 - x1) / 2);
-      return { d: `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`, mx: (x1 + x2) / 2, my: (y1 + y2) / 2 };
+  function rectBorderPoint(box, tx, ty, pad = 0) {
+    const w = box.width || 250;
+    const h = box.height || 140;
+    const cx = box.x + w / 2;
+    const cy = box.y + h / 2;
+    const hw = w / 2 + pad;
+    const hh = h / 2 + pad;
+    const dx = tx - cx;
+    const dy = ty - cy;
+    if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) {
+      return { x: cx + hw, y: cy, nx: 1, ny: 0 };
     }
-    const low = Math.max(a.y + ah, b.y + bh) + 46;
+    const txScale = Math.abs(dx) > 1e-6 ? hw / Math.abs(dx) : Infinity;
+    const tyScale = Math.abs(dy) > 1e-6 ? hh / Math.abs(dy) : Infinity;
+    const t = Math.min(txScale, tyScale);
+    const x = cx + dx * t;
+    const y = cy + dy * t;
+    if (txScale < tyScale) {
+      return { x, y, nx: dx >= 0 ? 1 : -1, ny: 0 };
+    }
+    return { x, y, nx: 0, ny: dy >= 0 ? 1 : -1 };
+  }
+
+  function edgePath(a, b) {
+    const acx = a.x + (a.width || 250) / 2;
+    const acy = a.y + (a.height || 140) / 2;
+    const bcx = b.x + (b.width || 250) / 2;
+    const bcy = b.y + (b.height || 140) / 2;
+    const p1 = rectBorderPoint(a, bcx, bcy, 1);
+    const p2 = rectBorderPoint(b, acx, acy, 3);
+    const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    const bend = Math.min(90, Math.max(24, dist * 0.32));
+    const c1x = p1.x + p1.nx * bend;
+    const c1y = p1.y + p1.ny * bend;
+    const c2x = p2.x + p2.nx * bend;
+    const c2y = p2.y + p2.ny * bend;
+    const mx = 0.125 * p1.x + 0.375 * c1x + 0.375 * c2x + 0.125 * p2.x;
+    const my = 0.125 * p1.y + 0.375 * c1y + 0.375 * c2y + 0.125 * p2.y;
     return {
-      d: `M${x1},${y1} C${x1 + 70},${y1} ${x1 + 70},${low} ${(x1 + x2) / 2},${low} S${x2 - 70},${y2} ${x2},${y2}`,
-      mx: (x1 + x2) / 2,
-      my: low,
+      d: `M${p1.x},${p1.y} C${c1x},${c1y} ${c2x},${c2y} ${p2.x},${p2.y}`,
+      mx,
+      my,
     };
   }
 
@@ -997,20 +1163,25 @@
     // Render groups shallowest -> deepest so inner nested rectangles sit on top
     const sortedGroups = [...PG.graph.groups].sort((a, b) => groupDepth(a.id) - groupDepth(b.id));
     const groupsHtml = sortedGroups.map(g => {
-      const depth = groupDepth(g.id);
-      const depthCls = depth === 0 ? "" : `depth-${((depth - 1) % 3) + 1}`;
+      const tier = groupTier(g.id);
+      const bColor = tierColor(tier);
       const on = PG.sel?.type === "group" && PG.sel.id === g.id;
       const deps = g.dependencies || [];
       const hasTempPre = !!(g.temp_pre_prompt || "").trim();
       const gst = chg.groups[g.id]?.state || (g.completed ? "clean" : "unexecuted");
       const stCls = gst === "modified" ? "st-modified" : gst === "needs_rerun" ? "st-needs-rerun" : "";
-      return `<div class="pg-group ${depthCls} ${stCls} ${on ? "on" : ""}" data-pg-group="${esc(g.id)}"
-        style="left:${g.x}px;top:${g.y}px;width:${g.width}px;height:${g.height}px">
+      const borderStyle = (gst === "modified" || gst === "needs_rerun") ? "" : `border-color:${bColor};`;
+      return `<div class="pg-group ${stCls} ${on ? "on" : ""}" data-pg-group="${esc(g.id)}"
+        style="left:${g.x}px;top:${g.y}px;width:${g.width}px;height:${g.height}px;${borderStyle}">
         <div class="pg-group-hd">
-          <span>⬚</span>
+          <span style="color:${bColor}">⬚</span>
           <span>${esc(g.label)}</span>
-          <span class="id">${esc(g.id)} · L${depth + 1}</span>
-          <button type="button" class="pg-mini-run" data-pg-run-group="${esc(g.id)}" title="이 프리 프롬프트 그룹 실행">▶ 실행</button>
+          <span class="id">${esc(g.id)} · ${tier}-그룹</span>
+          <span class="pg-hd-acts">
+            <button type="button" class="pg-mini-wrap" data-pg-wrap-entity="${esc(g.id)}" title="이 그룹을 감싸는 ${tier + 1}-그룹 생성">＋⬚</button>
+            <button type="button" class="pg-mini-link${PG.pendingLinkFrom === g.id ? " linking" : ""}" data-pg-out="${esc(g.id)}" title="${isReversedDir() ? "드래그 또는 클릭 후 대상 클릭 (B → A: B가 먼저 실행됨)" : "드래그 또는 클릭 후 대상 클릭 (A → B: A는 B를 의존)"}">🔗</button>
+            <button type="button" class="pg-mini-run" data-pg-run-group="${esc(g.id)}" title="이 프리 프롬프트 그룹 실행">▶ 실행</button>
+          </span>
         </div>
         <div class="pg-group-sub">
           <div class="pg-group-pre">${esc(g.pre_prompt ? `프리 프롬프트: ${g.pre_prompt}` : "(프리 프롬프트 미입력)")}</div>
@@ -1022,8 +1193,6 @@
             ${deps.map(d => `<span class="chip dep">의존 → ${esc(entityLabel(d))}</span>`).join("")}
           </div>
         </div>
-        <div class="pg-port in" data-pg-in="${esc(g.id)}" title="${isReversedDir() ? "실행 입력 포트" : "의존 대상 입력 포트"}"></div>
-        <div class="pg-port out${PG.pendingLinkFrom === g.id ? " linking" : ""}" data-pg-out="${esc(g.id)}" title="${isReversedDir() ? "드래그 또는 클릭 후 대상 클릭 (B → A: B가 먼저 실행됨)" : "드래그 또는 클릭 후 대상 클릭 (A → B: A는 B를 의존)"}"></div>
         <div class="pg-resize-handle" data-pg-resize="${esc(g.id)}" title="드래그해 그룹 크기 조절"></div>
       </div>`;
     }).join("");
@@ -1045,7 +1214,11 @@
           <span>◈</span>
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(n.label)}</span>
           <span class="id">${esc(n.id)}</span>
-          <button type="button" class="pg-mini-run" data-pg-run-node="${esc(n.id)}" title="이 프롬프트 노드 실행">▶</button>
+          <span class="pg-hd-acts">
+            <button type="button" class="pg-mini-wrap" data-pg-wrap-entity="${esc(n.id)}" title="1-그룹으로 감싸기">＋⬚</button>
+            <button type="button" class="pg-mini-link${PG.pendingLinkFrom === n.id ? " linking" : ""}" data-pg-out="${esc(n.id)}" title="${isReversedDir() ? "드래그 또는 클릭 후 대상 클릭 (B → A: B가 먼저 실행됨)" : "드래그 또는 클릭 후 대상 클릭 (A → B: A는 B를 의존)"}">🔗</button>
+            <button type="button" class="pg-mini-run" data-pg-run-node="${esc(n.id)}" title="이 프롬프트 노드 실행">▶</button>
+          </span>
         </div>
         <div class="bd">
           <div class="pg-chips">
@@ -1059,8 +1232,6 @@
           <div class="pr">${esc(n.prompt || "(프롬프트 미입력)")}</div>
           ${n.output ? `<div class="out">↳ ${esc(n.output.replace(/\s+/g, " ").slice(0, 90))}</div>` : ""}
         </div>
-        <div class="pg-port in" data-pg-in="${esc(n.id)}" title="${isReversedDir() ? "실행 입력 포트" : "의존 대상 입력 포트"}"></div>
-        <div class="pg-port out${PG.pendingLinkFrom === n.id ? " linking" : ""}" data-pg-out="${esc(n.id)}" title="${isReversedDir() ? "드래그 또는 클릭 후 대상 클릭 (B → A: B가 먼저 실행됨)" : "드래그 또는 클릭 후 대상 클릭 (A → B: A는 B를 의존)"}"></div>
         ${stTxt ? `<span class="pg-st">${esc(stTxt)}</span>` : ""}
       </div>`;
     }).join("");
@@ -1075,8 +1246,7 @@
       const color = on ? "var(--accent)" : isGrp ? "#8b5cf6" : "#0ea5e9";
       const marker = on ? "pg-arr-on" : isGrp ? "pg-arr-grp" : "pg-arr-node";
       return `<path class="pg-edge ${isGrp ? "grp" : ""} ${on ? "on" : ""} ${flowing.has(`${e.from}>${e.to}`) ? "flow" : ""}" d="${p.d}" stroke="${color}" marker-end="url(#${marker})"/>
-        <path class="pg-edge-hit" data-pg-edge="${esc(e.id)}" d="${p.d}"/>
-        <text class="pg-elabel" x="${p.mx}" y="${p.my - 6}" text-anchor="middle">${isReversedDir() ? "실행" : "의존"}</text>`;
+        <path class="pg-edge-hit" data-pg-edge="${esc(e.id)}" d="${p.d}"/>`;
     }).join("");
 
     const markers = [
@@ -1122,12 +1292,10 @@
     });
     const paths = svg.querySelectorAll(".pg-edge:not(#pg-temp)");
     const hits = svg.querySelectorAll(".pg-edge-hit");
-    const lbls = svg.querySelectorAll(".pg-elabel");
     parts.forEach((p, i) => {
       if (!p) return;
       paths[i]?.setAttribute("d", p.d);
       hits[i]?.setAttribute("d", p.d);
-      if (lbls[i]) { lbls[i].setAttribute("x", p.mx); lbls[i].setAttribute("y", p.my - 6); }
     });
   }
 
@@ -1152,6 +1320,12 @@
       if (runGrpBtn) {
         e.stopPropagation();
         run(startRun)("group", runGrpBtn.dataset.pgRunGroup);
+        return;
+      }
+      const wrapEntBtn = e.target.closest("[data-pg-wrap-entity]");
+      if (wrapEntBtn) {
+        e.stopPropagation();
+        wrapEntityInParentGroup(wrapEntBtn.dataset.pgWrapEntity);
         return;
       }
       if (PG.pendingLinkFrom) {
@@ -1180,11 +1354,10 @@
         drag = {
           mode: "link",
           from: ent.id,
+          ent,
           sx: p.x,
           sy: p.y,
           moved: false,
-          x1: ent.x + (ent.width || 250),
-          y1: ent.y + (ent.height || 140) / 2,
         };
         PG.dragging = true;
         return;
@@ -1218,8 +1391,15 @@
         draw(true);
         return;
       }
+      if (PG.wrapMode || e.shiftKey) {
+        board.setPointerCapture(e.pointerId);
+        const p = pt(e);
+        drag = { mode: "wrap", sx: p.x, sy: p.y, cx: p.x, cy: p.y };
+        PG.dragging = true;
+        return;
+      }
       const nodeEl = e.target.closest("[data-pg-node]");
-      if (nodeEl && !PG.wrapMode) {
+      if (nodeEl) {
         const n = findNode(nodeEl.dataset.pgNode);
         PG.sel = { type: "node", id: n.id };
         PG.inspTab = "edit";
@@ -1232,7 +1412,7 @@
         return;
       }
       const grpEl = e.target.closest("[data-pg-group]");
-      if (grpEl && !PG.wrapMode) {
+      if (grpEl) {
         const g = findGroup(grpEl.dataset.pgGroup);
         PG.sel = { type: "group", id: g.id };
         PG.inspTab = "edit";
@@ -1250,14 +1430,6 @@
           moved: false,
           before: JSON.stringify(PG.graph),
         };
-        PG.dragging = true;
-        return;
-      }
-
-      if (PG.wrapMode || e.shiftKey) {
-        board.setPointerCapture(e.pointerId);
-        const p = pt(e);
-        drag = { mode: "wrap", sx: p.x, sy: p.y, cx: p.x, cy: p.y };
         PG.dragging = true;
         return;
       }
@@ -1308,8 +1480,14 @@
       } else if (drag.mode === "link") {
         if (!drag.moved && Math.hypot(p.x - drag.sx, p.y - drag.sy) >= 6) drag.moved = true;
         if (drag.moved) {
-          const dx = Math.max(40, Math.abs(p.x - drag.x1) / 2);
-          $("#pg-temp")?.setAttribute("d", `M${drag.x1},${drag.y1} C${drag.x1 + dx},${drag.y1} ${p.x - dx},${p.y} ${p.x},${p.y}`);
+          const p1 = rectBorderPoint(drag.ent, p.x, p.y, 1);
+          const dist = Math.hypot(p.x - p1.x, p.y - p1.y);
+          const bend = Math.min(80, Math.max(20, dist * 0.32));
+          const c1x = p1.x + p1.nx * bend;
+          const c1y = p1.y + p1.ny * bend;
+          const c2x = p.x - (p.x - p1.x) * 0.25;
+          const c2y = p.y - (p.y - p1.y) * 0.25;
+          $("#pg-temp")?.setAttribute("d", `M${p1.x},${p1.y} C${c1x},${c1y} ${c2x},${c2y} ${p.x},${p.y}`);
         }
       } else if (drag.mode === "wrap") {
         drag.cx = p.x;
@@ -1365,19 +1543,23 @@
         const topGroups = enclosedGroups.filter(g => !g.parent_group_id || !enclosedGroupSet.has(g.parent_group_id));
         const looseNodes = PG.graph.nodes.filter(n => inside(n) && (!n.parent_group_id || !enclosedGroupSet.has(n.parent_group_id)));
 
-        // Determine outer enclosing group if the rectangle is drawn inside a larger group
+        // Determine smallest outer enclosing group if the rectangle is drawn inside larger groups
         const cx = rx + rw / 2, cy = ry + rh / 2;
         const parentCandidates = PG.graph.groups
           .filter(g => !enclosedGroupSet.has(g.id) && cx >= g.x && cx <= g.x + g.width && cy >= g.y && cy <= g.y + g.height && g.width * g.height > rw * rh)
-          .sort((a, b) => groupDepth(b.id) - groupDepth(a.id) || (a.width * a.height) - (b.width * b.height));
+          .sort((a, b) => (a.width * a.height) - (b.width * b.height));
         PG.wrapMode = false;
         const btn = $("#pg-wrap-btn");
         if (btn) btn.classList.remove("on");
-        addPrePromptGroup(rx, ry, rw, rh, {
+        const created = addPrePromptGroup(rx, ry, rw, rh, {
           parent_group_id: parentCandidates[0]?.id || null,
           adoptNodes: looseNodes.map(n => n.id),
           adoptGroups: topGroups.map(g => g.id),
         });
+        if (looseNodes.length || topGroups.length) {
+          fitGroupBounds(created.id);
+          draw(true);
+        }
         return;
       }
 
@@ -1387,9 +1569,10 @@
         } else if (d.mode === "move-group") {
           assignParentByGeometry(d.g.id);
         } else if (d.mode === "resize") {
-          // Re-evaluate direct containment inside/outside the resized group
+          // Re-evaluate containment from largest outer groups inward to keep arbitrarily deep hierarchies intact
+          const byAreaDesc = [...PG.graph.groups].sort((a, b) => (b.width * b.height) - (a.width * a.height));
+          byAreaDesc.forEach(g => { if (g.id !== d.grp.id) assignParentByGeometry(g.id); });
           PG.graph.nodes.forEach(n => assignParentByGeometry(n.id));
-          PG.graph.groups.filter(g => g.id !== d.grp.id).forEach(g => assignParentByGeometry(g.id));
         }
         if (d.before) {
           PG.undo.push(d.before);
@@ -1756,10 +1939,13 @@
             </datalist>
           </label>
           <label class="fld"><span>소속 프리 프롬프트 그룹</span>
-            <select id="pg-n-parent">
-              <option value="">(없음 — 최상위)</option>
-              ${PG.graph.groups.map(g => `<option value="${esc(g.id)}" ${n.parent_group_id === g.id ? "selected" : ""}>${"  ".repeat(groupDepth(g.id))}⬚ ${esc(g.label)} (${esc(g.id)})</option>`).join("")}
-            </select>
+            <div class="row" style="gap:6px">
+              <select id="pg-n-parent" style="flex:1;min-width:0">
+                <option value="">(없음 — 최상위)</option>
+                ${PG.graph.groups.map(g => `<option value="${esc(g.id)}" ${n.parent_group_id === g.id ? "selected" : ""}>${"  ".repeat(groupDepth(g.id))}⬚ ${groupTier(g.id)}-그룹 · ${esc(g.label)} (${esc(g.id)})</option>`).join("")}
+              </select>
+              <button type="button" class="g" id="pg-n-wrap" title="이 노드를 감싸는 새 1-그룹 생성" style="padding:4px 8px;font-size:11.5px;white-space:nowrap">＋ ⬚ 감싸기</button>
+            </div>
           </label>
           ${preList.length ? `<div class="fld"><span>적용되는 프리 프롬프트 (${preList.length}단계 중첩)</span>
             <div class="pg-pre-preview">${preList.map((g, idx) => {
@@ -1821,7 +2007,8 @@
       $("#pg-n-id").onchange = ev => { if (!renameEntity(n.id, ev.target.value.trim())) ev.target.value = n.id; else draw(true); };
       $("#pg-n-label").oninput = ev => { snapshotUndoOnce(`nlbl:${n.id}`); n.label = ev.target.value; touch(); draw(false); };
       $("#pg-n-model").onchange = ev => { snapshotUndo(); n.model = ev.target.value.trim(); touch(); draw(false); };
-      $("#pg-n-parent").onchange = ev => { snapshotUndo(); n.parent_group_id = ev.target.value || null; syncGraphRelations(); touch(); draw(true); };
+      $("#pg-n-parent").onchange = ev => { snapshotUndo(); n.parent_group_id = ev.target.value || null; syncGraphRelations(); fitAllAncestorBounds(n.id); touch(); draw(true); };
+      $("#pg-n-wrap").onclick = () => wrapEntityInParentGroup(n.id);
       $("#pg-n-prompt").oninput = ev => { snapshotUndoOnce(`npr:${n.id}`); n.prompt = ev.target.value; touch(); draw(false); };
       $("#pg-n-temp").oninput = ev => {
         snapshotUndoOnce(`ntmp:${n.id}`);
@@ -1858,18 +2045,28 @@
       const directNodes = (g.node_ids || []).map(id => findNode(id)).filter(Boolean);
       const childGroups = (g.child_group_ids || []).map(id => findGroup(id)).filter(Boolean);
 
-      bodyEl.innerHTML = `<div class="ide-head">⬚ 프리 프롬프트 그룹</div>
+      const tier = groupTier(g.id);
+      const ancestors = ancestorGroups(g.id);
+      const subIds = subtreeIds(g.id);
+      const totalSubGroups = Math.max(0, PG.graph.groups.filter(x => x.id !== g.id && subIds.has(x.id)).length);
+      const totalSubNodes = PG.graph.nodes.filter(x => subIds.has(x.id)).length;
+
+      bodyEl.innerHTML = `<div class="ide-head">⬚ ${tier}-그룹 (프리 프롬프트 그룹)</div>
         <div class="g-form">
           <div class="row">
             <button class="b" id="pg-g-run" style="flex:1">▶ 이 그룹 실행</button>
             <button class="g bad" id="pg-g-del">그룹 해제/삭제</button>
+          </div>
+          <div class="row">
+            <button type="button" class="g" id="pg-g-wrap-parent" style="flex:1">＋ ⬚ ${tier + 1}-그룹으로 감싸기</button>
+            <button type="button" class="g" id="pg-g-add-child" style="flex:1">＋ 내부 하위 그룹</button>
           </div>
           ${renderChangeCallout(chg.groups[g.id], "pg-g-clrrerun")}
           <label class="row" style="font-size:12.5px">
             <input type="checkbox" id="pg-g-completed" ${g.completed ? "checked" : ""}>
             <span>실행 완료 여부 (<code>completed</code>: <b>${g.completed ? "완료" : "미완료"}</b>)</span>
           </label>
-          <div class="pg-hint">프리 프롬프트 그룹은 <b>프리 프롬프트</b>, <b>임시 프리 프롬프트</b>, <b>실행 완료 여부</b>와 <b>내부 노드/하위 그룹 정보</b>를 포함하며, 실행 시 그룹 내부의 미실행·변경된 노드를 실행합니다.</div>
+          <div class="pg-hint">계층 경로: <b>${ancestors.length ? ancestors.map(a => `${groupTier(a.id)}-그룹(${esc(a.label)})`).join(" › ") + " › " : ""}${tier}-그룹(${esc(g.label)})</b> · 누적 하위 그룹 ${totalSubGroups}개 · 누적 노드 ${totalSubNodes}개</div>
           <label class="fld"><span>그룹 ID</span><input id="pg-g-id" class="mono" value="${esc(g.id)}"></label>
           <label class="fld"><span>이름</span><input id="pg-g-label" value="${esc(g.label)}"></label>
           <label class="fld"><span>프리 프롬프트 (내부의 모든 노드·하위 그룹에 함께 입력됨)</span><textarea id="pg-g-pre" rows="5" style="min-height:100px" placeholder="이 사각형으로 감싼 노드들에 공통 적용할 프리 프롬프트">${esc(g.pre_prompt || "")}</textarea></label>
@@ -1883,7 +2080,7 @@
           <label class="fld"><span>상위 그룹 (그룹들의 그룹으로 중첩 가능)</span>
             <select id="pg-g-parent">
               <option value="">(없음 — 최상위 그룹)</option>
-              ${parentOpts.map(p => `<option value="${esc(p.id)}" ${g.parent_group_id === p.id ? "selected" : ""}>${"  ".repeat(groupDepth(p.id))}⬚ ${esc(p.label)} (${esc(p.id)})</option>`).join("")}
+              ${parentOpts.map(p => `<option value="${esc(p.id)}" ${g.parent_group_id === p.id ? "selected" : ""}>${"  ".repeat(groupDepth(p.id))}⬚ ${groupTier(p.id)}-그룹 · ${esc(p.label)} (${esc(p.id)})</option>`).join("")}
             </select>
           </label>
           <div class="fld">
@@ -1903,6 +2100,8 @@
 
       $("#pg-g-run").onclick = run(() => startRun("group", g.id));
       $("#pg-g-del").onclick = removeSelected;
+      $("#pg-g-wrap-parent").onclick = () => wrapEntityInParentGroup(g.id);
+      $("#pg-g-add-child").onclick = () => addChildSubgroup(g.id);
       if ($("#pg-g-clrrerun")) $("#pg-g-clrrerun").onclick = () => { snapshotUndo(); g.needs_rerun = false; g.rerun_reason = ""; touch(); draw(true); };
       $("#pg-g-completed").onchange = ev => {
         if (!manualSetCompleted(g.id, ev.target.checked)) { ev.target.checked = g.completed; return; }
@@ -1918,7 +2117,7 @@
         draw(false);
       };
       if ($("#pg-g-clrtemppre")) $("#pg-g-clrtemppre").onclick = () => { snapshotUndo(); g.temp_pre_prompt = ""; touch(); draw(true); };
-      $("#pg-g-parent").onchange = ev => { snapshotUndo(); g.parent_group_id = ev.target.value || null; syncGraphRelations(); touch(); draw(true); };
+      $("#pg-g-parent").onchange = ev => { snapshotUndo(); g.parent_group_id = ev.target.value || null; syncGraphRelations(); fitAllAncestorBounds(g.id); touch(); draw(true); };
       document.querySelectorAll("[data-pg-grmdep]").forEach(b => b.onclick = () => removeEdgeByPair(g.id, b.dataset.pgGrmdep));
       if ($("#pg-g-adddep")) $("#pg-g-adddep").onchange = ev => { if (ev.target.value) addEdge(g.id, ev.target.value); };
       document.querySelectorAll("[data-pg-jump-node]").forEach(b => b.onclick = () => { PG.sel = { type: "node", id: b.dataset.pgJumpNode }; draw(true); });
@@ -1927,10 +2126,10 @@
     }
 
     const st = PG.graph.settings || (PG.graph.settings = { parallelism: 4, max_tool_steps: 8, default_model: "" });
-    const maxDepth = PG.graph.groups.reduce((m, g) => Math.max(m, groupDepth(g.id) + 1), 0);
+    const maxTier = PG.graph.groups.reduce((m, g) => Math.max(m, groupTier(g.id)), 0);
     bodyEl.innerHTML = `<div class="ide-head">그래프 설정</div>
       <div class="g-form">
-        <div class="muted" style="font-size:12.5px">프롬프트 노드 ${PG.graph.nodes.length}개 · 프리 프롬프트 그룹 ${PG.graph.groups.length}개 (최대 중첩 ${maxDepth}단계) · 의존 화살표 ${PG.graph.edges.length}개</div>
+        <div class="muted" style="font-size:12.5px">프롬프트 노드 ${PG.graph.nodes.length}개 · 프리 프롬프트 그룹 ${PG.graph.groups.length}개 (${maxTier ? `최대 ${maxTier}-그룹 계층` : "계층 없음"}) · 의존 화살표 ${PG.graph.edges.length}개</div>
         <div class="row">
           <label class="fld" style="flex:1"><span>최대 병렬 실행</span><input id="pg-s-par" type="number" min="1" max="8" value="${st.parallelism ?? 4}"></label>
           <label class="fld" style="flex:1"><span>MCP 조회 최대 단계</span><input id="pg-s-steps" type="number" min="1" max="16" value="${st.max_tool_steps ?? 8}"></label>

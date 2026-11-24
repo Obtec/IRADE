@@ -61,9 +61,9 @@ from mcp.server.lowlevel import Server
 from mcp.shared.memory import create_client_server_memory_streams
 from mcp.types import TextContent, Tool
 
-MAX_NODES = 80
-MAX_GROUPS = 40
-MAX_EDGES = 240
+MAX_NODES = 200
+MAX_GROUPS = 200
+MAX_EDGES = 600
 MAX_PROMPT_CHARS = 32000
 MAX_OUTPUT_CHARS = 100000
 MAX_EXTRA_CHARS = 32000
@@ -210,8 +210,8 @@ def validate_prompt_graph(graph: dict[str, Any]) -> dict[str, Any]:
                 "needs_rerun": needs_rerun_val,
                 "rerun_reason": _s(raw.get("rerun_reason"), 1000) if needs_rerun_val else "",
                 "parent_group_id": pgid,
-                "x": _int(raw.get("x", 80), -5000, 15000, 80),
-                "y": _int(raw.get("y", 80), -5000, 15000, 80),
+                "x": _int(raw.get("x", 80), -20000, 50000, 80),
+                "y": _int(raw.get("y", 80), -20000, 50000, 80),
                 "width": _int(raw.get("width", 250), 140, 1200, 250),
                 "height": _int(raw.get("height", 140), 80, 900, 140),
             }
@@ -270,10 +270,10 @@ def validate_prompt_graph(graph: dict[str, Any]) -> dict[str, Any]:
                 "last_run_temp_pre_prompt": last_run_temp_pre_prompt,
                 "needs_rerun": g_needs_rerun,
                 "rerun_reason": _s(raw.get("rerun_reason"), 1000) if g_needs_rerun else "",
-                "x": _int(raw.get("x", 40), -5000, 15000, 40),
-                "y": _int(raw.get("y", 40), -5000, 15000, 40),
-                "width": _int(raw.get("width", 360), 180, 4000, 360),
-                "height": _int(raw.get("height", 240), 120, 3000, 240),
+                "x": _int(raw.get("x", 40), -20000, 50000, 40),
+                "y": _int(raw.get("y", 40), -20000, 50000, 40),
+                "width": _int(raw.get("width", 360), 180, 20000, 360),
+                "height": _int(raw.get("height", 240), 120, 20000, 240),
             }
         )
 
@@ -633,6 +633,21 @@ def _expand_groups(graph: dict[str, Any], group_id: str) -> list[str]:
     return out
 
 
+def group_tier(graph: dict[str, Any], group_id: str, _seen: set[str] | None = None) -> int:
+    """Return bottom-up nesting tier of a group (1 = leaf 1-그룹, 2 = 2-그룹, 3 = 3-그룹, ..., N = N-그룹)."""
+    _, group_by_id = _indexes(graph)
+    if group_id not in group_by_id:
+        return 1
+    seen = _seen if _seen is not None else set()
+    if group_id in seen:
+        return 1
+    seen.add(group_id)
+    children = [cid for cid in group_by_id[group_id].get("child_group_ids", []) if cid in group_by_id and cid not in seen]
+    tier = 1 if not children else 1 + max(group_tier(graph, cid, seen) for cid in children)
+    seen.discard(group_id)
+    return tier
+
+
 def effective_node_dependencies(graph: dict[str, Any]) -> dict[str, set[str]]:
     """Map every prompt node ID -> set of prompt node IDs that must finish before it runs."""
     node_by_id, group_by_id = _indexes(graph)
@@ -894,12 +909,13 @@ def plan_execution(
             raise PromptGraphError(f"unknown target group {target_id!r}")
         target_nodes = expand_nodes(clean, target_id)
         normalized_target_ids = [target_id]
-        target_groups = [target_id]
+        target_groups = _expand_groups(clean, target_id)
     else:
         if not isinstance(target_ids, list) or not target_ids:
             raise PromptGraphError("target_ids must be a non-empty list when target_type is 'subset'")
         seen_tids: set[str] = set()
         seen_tnodes: set[str] = set()
+        seen_tgroups: set[str] = set()
         target_nodes = []
         for raw_tid in target_ids:
             tid = str(raw_tid or "").strip()
@@ -910,7 +926,10 @@ def plan_execution(
             seen_tids.add(tid)
             normalized_target_ids.append(tid)
             if tid in group_by_id:
-                target_groups.append(tid)
+                for gid in _expand_groups(clean, tid):
+                    if gid not in seen_tgroups:
+                        seen_tgroups.add(gid)
+                        target_groups.append(gid)
             for nid in expand_nodes(clean, tid):
                 if nid not in seen_tnodes:
                     seen_tnodes.add(nid)
@@ -1031,6 +1050,7 @@ def _serialize_group_info(
         "needs_rerun": bool(grp.get("needs_rerun", False)),
         "rerun_reason": grp.get("rerun_reason") or "",
         "parent_group_id": grp.get("parent_group_id"),
+        "tier": group_tier(graph, group_id),
         "dependencies": list(grp.get("dependencies") or []),
         "node_ids": list(grp.get("node_ids") or []),
         "child_group_ids": list(grp.get("child_group_ids") or []),
@@ -2566,6 +2586,75 @@ PRESETS: dict[str, dict[str, Any]] = {
         ],
         "settings": {"parallelism": 4, "max_tool_steps": 10, "default_model": ""},
     },
+    "deep_nested_groups": {
+        "nodes": [
+            {
+                "id": "n_leaf",
+                "label": "세부 실행 프롬프트",
+                "prompt": "프로젝트 목표에 대한 구체적 아키텍처와 검증 체크리스트를 작성하세요.",
+                "temp_prompt": "",
+                "output": "",
+                "model": "",
+                "dependencies": [],
+                "extra": {},
+                "completed": False,
+                "parent_group_id": "g_tier1",
+                "x": 140,
+                "y": 310,
+                "width": 250,
+                "height": 145,
+            }
+        ],
+        "groups": [
+            {
+                "id": "g_tier3",
+                "label": "3-그룹 (최상위 정책)",
+                "pre_prompt": "전역 품질 기준과 보안 원칙을 준수하세요.",
+                "temp_pre_prompt": "",
+                "node_ids": [],
+                "child_group_ids": ["g_tier2"],
+                "parent_group_id": None,
+                "dependencies": [],
+                "completed": False,
+                "x": 60,
+                "y": 60,
+                "width": 410,
+                "height": 455,
+            },
+            {
+                "id": "g_tier2",
+                "label": "2-그룹 (도메인 컨텍스트)",
+                "pre_prompt": "도메인 용어와 시스템 경계를 명확히 구분해 서술하세요.",
+                "temp_pre_prompt": "",
+                "node_ids": [],
+                "child_group_ids": ["g_tier1"],
+                "parent_group_id": "g_tier3",
+                "dependencies": [],
+                "completed": False,
+                "x": 85,
+                "y": 150,
+                "width": 360,
+                "height": 340,
+            },
+            {
+                "id": "g_tier1",
+                "label": "1-그룹 (출력 형식)",
+                "pre_prompt": "마크다운 표와 번호 목록으로 정리하세요.",
+                "temp_pre_prompt": "",
+                "node_ids": ["n_leaf"],
+                "child_group_ids": [],
+                "parent_group_id": "g_tier2",
+                "dependencies": [],
+                "completed": False,
+                "x": 110,
+                "y": 235,
+                "width": 310,
+                "height": 235,
+            },
+        ],
+        "edges": [],
+        "settings": {"parallelism": 4, "max_tool_steps": 10, "default_model": ""},
+    },
 }
 
 PRESET_INFO: dict[str, dict[str, str]] = {
@@ -2576,6 +2665,10 @@ PRESET_INFO: dict[str, dict[str, str]] = {
     "nested_groups": {
         "title": "다중 중첩 그룹 간 의존성 (그룹 속 그룹)",
         "desc": "A 그룹(내부 하위그룹 포함) → B 그룹(병렬 노드 포함 하위그룹) 의존 실행 및 MCP 계층 조회",
+    },
+    "deep_nested_groups": {
+        "title": "3계층 프리 프롬프트 그룹 (3-그룹 → 2-그룹 → 1-그룹)",
+        "desc": "1-그룹·2-그룹·3-그룹으로 계속 확장되는 다층 중첩 프리 프롬프트 예제",
     },
 }
 

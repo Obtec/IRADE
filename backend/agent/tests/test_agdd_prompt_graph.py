@@ -47,6 +47,7 @@ from irade_agent.agdd.prompt_graph import (  # noqa: E402
     dependency_scope,
     effective_pre_prompts,
     find_dependents,
+    group_tier,
     plan_execution,
     validate_prompt_graph,
 )
@@ -1176,6 +1177,62 @@ class TestChangeDetectionAndIncrementalExecution(unittest.IsolatedAsyncioTestCas
         self.assertEqual(chg["nodes"]["a1"]["state"], "clean")
         self.assertEqual(chg["groups"]["G_A"]["state"], "clean")
         self.assertEqual(chg["groups"]["G_B"]["state"], "clean")
+
+    async def test_deep_multi_tier_groups_5_levels_execution_and_mcp(self):
+        # 5-tier hierarchy on both sides: G5_A -> ... -> G1_A(a) depends on G5_B -> ... -> G1_B(b)
+        groups = [
+            _group("G5_B", pre_prompt="PRE_B5"),
+            _group("G4_B", pre_prompt="PRE_B4", parent_group_id="G5_B"),
+            _group("G3_B", pre_prompt="PRE_B3", parent_group_id="G4_B"),
+            _group("G2_B", pre_prompt="PRE_B2", parent_group_id="G3_B"),
+            _group("G1_B", pre_prompt="PRE_B1", parent_group_id="G2_B"),
+            _group("G5_A", pre_prompt="PRE_A5"),
+            _group("G4_A", pre_prompt="PRE_A4", parent_group_id="G5_A"),
+            _group("G3_A", pre_prompt="PRE_A3", parent_group_id="G4_A"),
+            _group("G2_A", pre_prompt="PRE_A2", parent_group_id="G3_A"),
+            _group("G1_A", pre_prompt="PRE_A1", parent_group_id="G2_A"),
+        ]
+        nodes = [
+            _node("leaf_b", prompt="work B", parent_group_id="G1_B"),
+            _node("leaf_a", prompt="work A using G5_B", parent_group_id="G1_A"),
+        ]
+        graph = validate_prompt_graph({"nodes": nodes, "groups": groups, "edges": [{"from": "G5_A", "to": "G5_B"}]})
+
+        for tier, gid in [(5, "G5_B"), (4, "G4_B"), (3, "G3_B"), (2, "G2_B"), (1, "G1_B"), (5, "G5_A"), (1, "G1_A")]:
+            self.assertEqual(group_tier(graph, gid), tier)
+
+        seen_sys: dict[str, str] = {}
+        mcp_g5_b: dict = {}
+
+        async def chat_fn(*, model, messages, tools, node, extra):
+            nid = node["id"]
+            seen_sys[nid] = messages[0]["content"]
+            if nid == "leaf_b":
+                return _reply("LEAF_B_OUT")
+            tmsgs = [m for m in messages if m["role"] == "tool"]
+            if not tmsgs:
+                return _reply(tool_calls=[_tool_call("get_group_info", {"group_id": "G5_B", "recursive": True})])
+            nonlocal mcp_g5_b
+            mcp_g5_b = json.loads(tmsgs[0]["content"])
+            return _reply("LEAF_A_OUT")
+
+        res = await PromptGraphRun(graph, chat_fn, target_type="group", target_id="G5_A").run()
+        self.assertEqual(res["status"], "SUCCEEDED")
+        # All 5 pre-prompts appear outermost -> innermost
+        for p_outer, p_inner in [("PRE_A5", "PRE_A4"), ("PRE_A4", "PRE_A3"), ("PRE_A3", "PRE_A2"), ("PRE_A2", "PRE_A1")]:
+            self.assertLess(seen_sys["leaf_a"].index(p_outer), seen_sys["leaf_a"].index(p_inner))
+        # MCP recursive group info traverses all 5 tiers
+        cur = mcp_g5_b
+        for expected_tier in (5, 4, 3, 2, 1):
+            self.assertEqual(cur["tier"], expected_tier)
+            if expected_tier > 1:
+                self.assertEqual(len(cur["child_groups"]), 1)
+                cur = cur["child_groups"][0]
+        self.assertEqual(cur["nodes"][0]["id"], "leaf_b")
+        self.assertEqual(cur["nodes"][0]["output"], "LEAF_B_OUT")
+        # All 5 tiers in both branches became completed=True
+        for g in res["graph"]["groups"]:
+            self.assertTrue(g["completed"])
 
     async def test_subset_partial_execution_runs_only_selected_branches(self):
         graph = validate_prompt_graph(
