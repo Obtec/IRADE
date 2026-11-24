@@ -40,6 +40,9 @@
     redo: PG.redo || [],
     full: !!PG.full,
     zoom: PG.zoom || 1,
+    panX: PG.panX || 0,
+    panY: PG.panY || 0,
+    agent: PG.agent || { turns: [], draft: "", pending: false },
   });
 
   const STATUS_KO = {
@@ -60,15 +63,16 @@
         border:1px solid var(--line); border-bottom:0; border-radius:10px 10px 0 0; background:var(--panel); }
       .pg-wrap { display:grid; grid-template-columns:minmax(0,1fr) 390px; height:calc(100vh - 230px);
         min-height:480px; border:1px solid var(--line); border-radius:0 0 10px 10px; overflow:hidden; background:var(--panel); }
-      .pg-wrap.pg-full { position:fixed; inset:10px; z-index:60; height:auto !important; border-radius:10px;
-        box-shadow:0 12px 48px rgba(0,0,0,.28); }
+      .pg-wrap.pg-full { position:fixed; inset:0; z-index:60; width:auto; height:auto; min-height:0;
+        grid-template-rows:minmax(0,1fr) auto; border-radius:0; }
       .pg-stagebox { position:relative; min-width:0; min-height:0; display:flex; }
-      .pg-stage { flex:1; position:relative; overflow:auto; touch-action:none; user-select:none;
+      .pg-stage { flex:1; position:relative; overflow:hidden; touch-action:none; user-select:none; cursor:grab;
         background:radial-gradient(circle, color-mix(in srgb,var(--line) 85%,transparent) 1px, transparent 1px) 0 0/20px 20px, var(--bg); }
       .pg-stage.wrap-mode { cursor:crosshair; }
       .pg-stage.link-mode { cursor:crosshair; }
       .pg-stage.link-mode .pg-node, .pg-stage.link-mode .pg-group { cursor:crosshair; }
-      .pg-board { position:relative; }
+      .pg-stage.panning { cursor:grabbing; }
+      .pg-board { position:absolute; left:0; top:0; width:0; height:0; transform-origin:0 0; }
       .pg-svg { position:absolute; inset:0; overflow:visible; pointer-events:none; }
       .pg-edge { fill:none; stroke-width:2.2; pointer-events:none; }
       .pg-edge.grp { stroke-dasharray:6 4; }
@@ -103,6 +107,8 @@
       /* Prompt Node */
       .pg-node { position:absolute; box-sizing:border-box; border:1.5px solid var(--line); border-radius:10px;
         background:var(--panel); box-shadow:0 2px 6px rgba(0,0,0,.08); cursor:grab; display:flex; flex-direction:column; overflow:visible; }
+      .pg-node[data-shape="rectangle"] { border-radius:0; }
+      .pg-node[data-shape="ellipse"], .pg-node[data-shape="circle"] { border-radius:50%; }
       .pg-node.on { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 40%,transparent); }
       .pg-node.linking { border-color:var(--warn); box-shadow:0 0 0 3px color-mix(in srgb,var(--warn) 45%,transparent); }
       .pg-node-title { position:absolute; left:50%; bottom:calc(100% + 4px); transform:translateX(-50%); max-width:calc(100% + 48px);
@@ -111,6 +117,8 @@
       .pg-node .bd { padding:6px 10px; font-size:11px; color:var(--muted); line-height:1.35; overflow:hidden; flex:1; display:flex; flex-direction:column; gap:3px; }
       .pg-node .bd .pr { color:var(--ink); overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
       .pg-node .bd .out { color:var(--ok); font-size:10.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .pg-prompt-message { margin:6px 0 10px; padding:8px; max-height:260px; overflow:auto;
+        white-space:pre-wrap; overflow-wrap:anywhere; background:var(--bg); border:1px solid var(--line); border-radius:6px; }
       .pg-chips { display:flex; gap:4px; flex-wrap:wrap; align-items:center; }
       .pg-chips .chip { font-size:10px; padding:0 5px; }
       .pg-chips .chip.dep { border:1px solid color-mix(in srgb,#0ea5e9 45%,var(--line)); color:#0ea5e9; background:transparent; }
@@ -194,8 +202,19 @@
       .pg-pre-preview { background:var(--bg); border:1px dashed var(--line); border-radius:6px; padding:6px 8px; font-size:11.5px; white-space:pre-wrap; max-height:140px; overflow:auto; }
       .pg-dep-pill { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:99px; border:1px solid var(--line); background:var(--bg); font-size:11.5px; }
       .pg-dep-pill button { border:0; background:none; color:var(--bad); cursor:pointer; padding:0; font-size:13px; line-height:1; }
-      .pg-fullbar { display:none; position:absolute; left:12px; top:10px; z-index:40; gap:6px; }
+      .pg-fullbar { display:none; position:absolute; left:12px; right:12px; top:10px; z-index:40; gap:6px; align-items:center; flex-wrap:wrap; pointer-events:none; }
+      .pg-fullbar > * { pointer-events:auto; }
       .pg-wrap.pg-full .pg-fullbar { display:flex; }
+      .pg-agent { display:none; grid-column:1 / -1; border-top:1px solid var(--line); padding:12px 16px; min-width:0; }
+      .pg-wrap.pg-full .pg-agent { display:grid; gap:8px; }
+      .pg-agent-log { display:grid; gap:6px; max-height:min(20vh, 180px); overflow:auto; }
+      .pg-agent-log:empty { display:none; }
+      .pg-agent-turn { font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+      .pg-agent-form { display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; }
+      .pg-agent-form textarea { flex:1 1 300px; min-width:0; max-height:20vh; resize:vertical; }
+      @media (max-width:1100px) {
+        .pg-wrap.pg-full { grid-template-rows:minmax(0,3fr) minmax(0,2fr) auto; }
+      }
     `;
     document.head.appendChild(st);
   }
@@ -600,6 +619,7 @@
     PG.dirty = true;
     const b = $("#pg-save");
     if (b) b.textContent = "저장 *";
+    if ($("#pg-full-save")) $("#pg-full-save").textContent = "저장 *";
     if ($("#pg-undo")) $("#pg-undo").disabled = !PG.undo.length;
     if ($("#pg-redo")) $("#pg-redo").disabled = !PG.redo.length;
   }
@@ -628,13 +648,13 @@
     return `${prefix}_${i}`;
   }
 
-  function addPromptNode(x = 120, y = 100, parentGroupId = null) {
+  function addPromptNode(x = 120, y = 100, parentGroupId = null, prompt = "") {
     snapshotUndo();
     const id = newId("node");
     const n = {
       id,
       label: `프롬프트 ${id.split("_")[1]}`,
-      prompt: "",
+      prompt,
       temp_prompt: "",
       output: "",
       model: "",
@@ -646,6 +666,7 @@
       y: Math.round(y / 10) * 10,
       width: 250,
       height: 145,
+      shape: "rounded",
     };
     PG.graph.nodes.push(n);
     syncGraphRelations();
@@ -1045,8 +1066,8 @@
         shiftGraphIfNeeded(needX, needY, g);
         minX += sdx; minY += sdy; maxX += sdx; maxY += sdy;
       }
-      const nx = Math.max(20, Math.round((minX - PAD_X) / 10) * 10);
-      const ny = Math.max(32, Math.round((minY - PAD_TOP) / 10) * 10);
+      const nx = Math.round((minX - PAD_X) / 10) * 10;
+      const ny = Math.round((minY - PAD_TOP) / 10) * 10;
       const nr = Math.round((maxX + PAD_X) / 10) * 10;
       const nb = Math.round((maxY + PAD_BOT) / 10) * 10;
       const oldR = grp.x + (grp.width || 360);
@@ -1088,8 +1109,6 @@
       height: Math.max(150, (ent.height || 140) + 64),
     };
     shiftGraphIfNeeded(grp.x, grp.y);
-    grp.x = Math.max(20, grp.x);
-    grp.y = Math.max(32, grp.y);
     PG.graph.groups.push(grp);
     ent.parent_group_id = id;
     syncGraphRelations();
@@ -1143,13 +1162,13 @@
     for (const id of sub) {
       const ent = findEntity(id);
       if (!ent) continue;
-      ent.x = Math.max(0, ent.x + dx);
-      ent.y = Math.max(0, ent.y + dy);
+      ent.x = ent.x + dx;
+      ent.y = ent.y + dy;
     }
   }
 
   // ------------------------------------------------------------ rendering
-  function rectBorderPoint(box, tx, ty, pad = 0) {
+  function entityBorderPoint(box, tx, ty, pad = 0) {
     const w = box.width || 250;
     const h = box.height || 140;
     const cx = box.x + w / 2;
@@ -1160,6 +1179,12 @@
     const dy = ty - cy;
     if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) {
       return { x: cx + hw, y: cy, nx: 1, ny: 0 };
+    }
+    if (box.shape === "circle" || box.shape === "ellipse") {
+      const scale = 1 / Math.hypot(dx / hw, dy / hh);
+      const nx = dx / (hw * hw), ny = dy / (hh * hh);
+      const len = Math.hypot(nx, ny);
+      return { x: cx + dx * scale, y: cy + dy * scale, nx: nx / len, ny: ny / len };
     }
     const txScale = Math.abs(dx) > 1e-6 ? hw / Math.abs(dx) : Infinity;
     const tyScale = Math.abs(dy) > 1e-6 ? hh / Math.abs(dy) : Infinity;
@@ -1173,12 +1198,13 @@
   }
 
   function edgePath(a, b, opts = {}) {
+    a = boardBox(a);
+    b = boardBox(b);
     if (a.id === b.id) {
-      const w = a.width || 250;
-      const sx = a.x + w - 22;
-      const sy = a.y;
-      const ex = a.x + w;
-      const ey = a.y + 26;
+      const cx = a.x + (a.width || 250) / 2;
+      const cy = a.y + (a.height || 140) / 2;
+      const { x: sx, y: sy } = entityBorderPoint(a, cx + 1, cy - 1);
+      const { x: ex, y: ey } = entityBorderPoint(a, cx + 1, cy - 0.25, 3);
       return {
         d: `M${sx},${sy} C${sx + 8},${sy - 56} ${ex + 62},${sy - 46} ${ex},${ey}`,
         mx: ex + 26,
@@ -1189,8 +1215,8 @@
     const acy = a.y + (a.height || 140) / 2;
     const bcx = b.x + (b.width || 250) / 2;
     const bcy = b.y + (b.height || 140) / 2;
-    const p1 = rectBorderPoint(a, bcx, bcy, 1);
-    const p2 = rectBorderPoint(b, acx, acy, 3);
+    const p1 = entityBorderPoint(a, bcx, bcy, 1);
+    const p2 = entityBorderPoint(b, acx, acy, 3);
     const dx = p2.x - p1.x;
     const dy = p2.y - p1.y;
     const dist = Math.hypot(dx, dy) || 1;
@@ -1260,9 +1286,26 @@
     const critNodes = new Set(PG.showProfileOverlay ? (PG.run?.result_json?.profile?.critical_path_nodes || []) : []);
 
     const allBoxes = [...PG.graph.nodes, ...PG.graph.groups];
-    const W = Math.max(2400, ...allBoxes.map(b => b.x + (b.width || 300) + 500));
-    const H = Math.max(1500, ...allBoxes.map(b => b.y + (b.height || 200) + 400));
 
+    if (PG.fitPending && stage.clientWidth && stage.clientHeight) {
+      if (allBoxes.length) {
+        const left = Math.min(...allBoxes.map(b => b.x));
+        const top = Math.min(...allBoxes.map(b => b.y));
+        const right = Math.max(...allBoxes.map(b => b.x + (b.width || 250)));
+        const bottom = Math.max(...allBoxes.map(b => b.y + (b.height || 140)));
+        PG.zoom = Math.min(1.15, stage.clientWidth / (right - left + 120), stage.clientHeight / (bottom - top + 120));
+        PG.panX = stage.clientWidth / 2 - (left + (right - left) / 2) * PG.zoom;
+        PG.panY = stage.clientHeight / 2 - (top + (bottom - top) / 2) * PG.zoom;
+      } else {
+        PG.zoom = 1;
+        PG.panX = 0;
+        PG.panY = 0;
+      }
+      PG.fitPending = false;
+    }
+    const center = worldPoint(stage.clientWidth / 2, stage.clientHeight / 2);
+    PG.originX = Number.isFinite(center.x) ? center.x : 0;
+    PG.originY = Number.isFinite(center.y) ? center.y : 0;
     const chg = computeChangeStatus();
 
     // Render groups shallowest -> deepest so inner nested rectangles sit on top
@@ -1276,7 +1319,7 @@
       const stCls = gst === "modified" ? "st-modified" : gst === "needs_rerun" ? "st-needs-rerun" : "";
       const borderStyle = (gst === "modified" || gst === "needs_rerun") ? "" : `border-color:${bColor};`;
       return `<div class="pg-group ${stCls} ${on ? "on" : ""} ${linking ? "linking" : ""}" data-pg-group="${esc(g.id)}"
-        style="left:${g.x}px;top:${g.y}px;width:${g.width}px;height:${g.height}px;${borderStyle}">
+        style="left:${g.x - PG.originX}px;top:${g.y - PG.originY}px;width:${g.width}px;height:${g.height}px;${borderStyle}">
         <div class="pg-group-title">${esc(g.label)}</div>
         <div class="pg-resize-handle" data-pg-resize="${esc(g.id)}" title="드래그해 그룹 크기 조절"></div>
       </div>`;
@@ -1293,8 +1336,8 @@
       const profBadge = PG.showProfileOverlay && s && (s.ms || tok || s.cache_hit)
         ? `<div class="pg-prof-badge">${s.cache_hit ? "CACHE 0ms" : `${s.ms || 0}ms · ${tok}t`}</div>`
         : "";
-      return `<div class="pg-node ${stCls} ${on ? "on" : ""} ${linking ? "linking" : ""} ${isCrit ? "pg-crit" : ""} ${s ? "s-" + esc(s.status) : ""}" data-pg-node="${esc(n.id)}"
-        style="left:${n.x}px;top:${n.y}px;width:${n.width || 250}px;height:${n.height || 145}px">
+      return `<div class="pg-node ${stCls} ${on ? "on" : ""} ${linking ? "linking" : ""} ${isCrit ? "pg-crit" : ""} ${s ? "s-" + esc(s.status) : ""}" data-pg-node="${esc(n.id)}" data-shape="${esc(n.shape || "rounded")}"
+        style="left:${n.x - PG.originX}px;top:${n.y - PG.originY}px;width:${n.width || 250}px;height:${n.height || 145}px">
         <div class="pg-node-title">${esc(n.label)}</div>
         ${profBadge}
       </div>`;
@@ -1325,32 +1368,56 @@
       ["pg-arr-loop", "#f59e0b"],
     ].map(([id, c]) => `<marker id="${id}" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="14" markerHeight="14" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${c}"/></marker>`).join("");
 
-    if (PG.fitPending && stage.clientWidth && allBoxes.length) {
-      const maxX = Math.max(...allBoxes.map(b => b.x + (b.width || 260))) + 80;
-      const maxY = Math.max(...allBoxes.map(b => b.y + (b.height || 160))) + 80;
-      PG.zoom = Math.max(0.35, Math.min(1.15, (stage.clientWidth - 20) / maxX, (stage.clientHeight - 20) / maxY));
-      PG.fitPending = false;
-    }
-    const z = PG.zoom || 1;
-    const zl = $("#pg-zoomlbl");
-    if (zl) zl.textContent = `${Math.round(z * 100)}%`;
     updateInspTabBadges(chg);
 
     stage.classList.toggle("wrap-mode", !!PG.wrapMode);
     stage.classList.toggle("link-mode", !!PG.linkMode);
-    stage.innerHTML = `<div style="width:${W * z}px;height:${H * z}px">
-      <div class="pg-board" id="pg-board" style="width:${W}px;height:${H}px;transform:scale(${z});transform-origin:0 0">
+    stage.innerHTML = `<div class="pg-board" id="pg-board">
         ${groupsHtml}
         ${nodesHtml}
-        <svg class="pg-svg" width="${W}" height="${H}">
+        <svg class="pg-svg" width="1" height="1">
           <defs>${markers}</defs>
           ${edgesHtml}
           <path id="pg-temp" class="pg-edge" stroke="var(--accent)" stroke-dasharray="5 4" d=""/>
         </svg>
         <div id="pg-wrap-box" class="pg-wrap-box"></div>
-      </div>
     </div>`;
+    updateCamera();
     bindBoard();
+  }
+
+  function updateCamera() {
+    const board = $("#pg-board");
+    const x = PG.panX + PG.originX * PG.zoom;
+    const y = PG.panY + PG.originY * PG.zoom;
+    if (board) board.style.transform = `translate(${x}px, ${y}px) scale(${PG.zoom})`;
+    const label = PG.zoom * 100;
+    for (const selector of ["#pg-zoomlbl", "#pg-full-zoomlbl"]) {
+      const el = $(selector);
+      if (el) el.textContent = `${label < 1 || label >= 10000 ? label.toExponential(1) : Math.round(label)}%`;
+    }
+  }
+
+  function zoomAt(factor, x, y) {
+    const stage = $("#pg-stage");
+    if (!stage || PG.dragging) return;
+    x ??= stage.clientWidth / 2;
+    y ??= stage.clientHeight / 2;
+    const zoom = PG.zoom * factor;
+    if (!Number.isFinite(zoom) || zoom <= 0) return;
+    const panX = x - (x - PG.panX) * factor;
+    const panY = y - (y - PG.panY) * factor;
+    if (!Number.isFinite(panX) || !Number.isFinite(panY)) return;
+    Object.assign(PG, { zoom, panX, panY });
+    updateCamera();
+  }
+
+  function worldPoint(x, y) {
+    return { x: (x - PG.panX) / PG.zoom, y: (y - PG.panY) / PG.zoom };
+  }
+
+  function boardBox(box) {
+    return { ...box, x: box.x - PG.originX, y: box.y - PG.originY };
   }
 
   function redrawEdgesOnly() {
@@ -1373,15 +1440,29 @@
 
   function bindBoard() {
     const board = $("#pg-board");
-    if (!board) return;
+    const stage = $("#pg-stage");
+    if (!board || !stage) return;
     let drag = null;
     const pt = e => {
-      const r = board.getBoundingClientRect();
-      const z = PG.zoom || 1;
-      return { x: (e.clientX - r.left) / z, y: (e.clientY - r.top) / z };
+      const r = stage.getBoundingClientRect();
+      return worldPoint(e.clientX - r.left, e.clientY - r.top);
     };
-
-    board.onpointerdown = e => {
+    stage.onwheel = e => {
+      e.preventDefault();
+      const r = stage.getBoundingClientRect();
+      const delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? stage.clientHeight : 1);
+      zoomAt(Math.exp(-Math.max(-500, Math.min(500, delta)) * 0.002), e.clientX - r.left, e.clientY - r.top);
+    };
+    const startPan = e => {
+      e.preventDefault();
+      stage.setPointerCapture(e.pointerId);
+      drag = { mode: "pan", x: e.clientX, y: e.clientY, panX: PG.panX, panY: PG.panY };
+      PG.dragging = true;
+      stage.classList.add("panning");
+    };
+    stage.onpointerdown = e => {
+      if (drag || (e.button !== 0 && e.button !== 1)) return;
+      if (e.button === 1) return startPan(e);
       const runNodeBtn = e.target.closest("[data-pg-run-node]");
       if (runNodeBtn) {
         e.stopPropagation();
@@ -1420,7 +1501,7 @@
       const outPort = e.target.closest("[data-pg-out]");
       if (outPort) {
         e.stopPropagation();
-        board.setPointerCapture(e.pointerId);
+        stage.setPointerCapture(e.pointerId);
         const ent = findEntity(outPort.dataset.pgOut);
         const p = pt(e);
         drag = {
@@ -1439,7 +1520,7 @@
         const linkId = linkEl?.dataset?.pgNode || linkEl?.dataset?.pgGroup;
         if (linkId) {
           e.stopPropagation();
-          board.setPointerCapture(e.pointerId);
+          stage.setPointerCapture(e.pointerId);
           const ent = findEntity(linkId);
           const p = pt(e);
           drag = {
@@ -1457,7 +1538,7 @@
       const resizeHandle = e.target.closest("[data-pg-resize]");
       if (resizeHandle) {
         e.stopPropagation();
-        board.setPointerCapture(e.pointerId);
+        stage.setPointerCapture(e.pointerId);
         const grp = findGroup(resizeHandle.dataset.pgResize);
         const p = pt(e);
         PG.sel = { type: "group", id: grp.id };
@@ -1484,7 +1565,7 @@
         return;
       }
       if (PG.wrapMode || e.shiftKey) {
-        board.setPointerCapture(e.pointerId);
+        stage.setPointerCapture(e.pointerId);
         const p = pt(e);
         drag = { mode: "wrap", sx: p.x, sy: p.y, cx: p.x, cy: p.y };
         PG.dragging = true;
@@ -1497,7 +1578,7 @@
         PG.inspTab = "edit";
         board.querySelectorAll(".pg-node,.pg-group").forEach(x => x.classList.toggle("on", x === nodeEl));
         drawInspector();
-        board.setPointerCapture(e.pointerId);
+        stage.setPointerCapture(e.pointerId);
         const p = pt(e);
         drag = { mode: "move-node", n, el: nodeEl, dx: p.x - n.x, dy: p.y - n.y, moved: false, before: JSON.stringify(PG.graph) };
         PG.dragging = true;
@@ -1510,7 +1591,7 @@
         PG.inspTab = "edit";
         board.querySelectorAll(".pg-node,.pg-group").forEach(x => x.classList.toggle("on", x === grpEl));
         drawInspector();
-        board.setPointerCapture(e.pointerId);
+        stage.setPointerCapture(e.pointerId);
         const p = pt(e);
         drag = {
           mode: "move-group",
@@ -1526,26 +1607,29 @@
         return;
       }
 
-      if (PG.sel || PG.pendingLinkFrom) {
-        PG.sel = null;
-        PG.pendingLinkFrom = null;
-        draw(true);
-      }
+      startPan(e);
     };
 
-    board.onpointermove = e => {
+    stage.onpointermove = e => {
       if (!drag) return;
+      if (drag.mode === "pan") {
+        PG.panX = drag.panX + e.clientX - drag.x;
+        PG.panY = drag.panY + e.clientY - drag.y;
+        drag.moved ||= Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 3;
+        updateCamera();
+        return;
+      }
       const p = pt(e);
       if (drag.mode === "move-node") {
-        drag.n.x = Math.max(0, Math.round((p.x - drag.dx) / 10) * 10);
-        drag.n.y = Math.max(0, Math.round((p.y - drag.dy) / 10) * 10);
-        drag.el.style.left = `${drag.n.x}px`;
-        drag.el.style.top = `${drag.n.y}px`;
+        drag.n.x = Math.round((p.x - drag.dx) / 10) * 10;
+        drag.n.y = Math.round((p.y - drag.dy) / 10) * 10;
+        drag.el.style.left = `${drag.n.x - PG.originX}px`;
+        drag.el.style.top = `${drag.n.y - PG.originY}px`;
         drag.moved = true;
         redrawEdgesOnly();
       } else if (drag.mode === "move-group") {
-        const nx = Math.max(0, Math.round((p.x - drag.dx) / 10) * 10);
-        const ny = Math.max(0, Math.round((p.y - drag.dy) / 10) * 10);
+        const nx = Math.round((p.x - drag.dx) / 10) * 10;
+        const ny = Math.round((p.y - drag.dy) / 10) * 10;
         const ddx = nx - drag.lastX;
         const ddy = ny - drag.lastY;
         if (ddx || ddy) {
@@ -1556,7 +1640,7 @@
           for (const sid of subtreeIds(drag.g.id)) {
             const se = findEntity(sid);
             const sel = board.querySelector(`[data-pg-node="${CSS.escape(sid)}"],[data-pg-group="${CSS.escape(sid)}"]`);
-            if (se && sel) { sel.style.left = `${se.x}px`; sel.style.top = `${se.y}px`; }
+            if (se && sel) { sel.style.left = `${se.x - PG.originX}px`; sel.style.top = `${se.y - PG.originY}px`; }
           }
           redrawEdgesOnly();
         }
@@ -1572,14 +1656,15 @@
       } else if (drag.mode === "link") {
         if (!drag.moved && Math.hypot(p.x - drag.sx, p.y - drag.sy) >= 6) drag.moved = true;
         if (drag.moved) {
-          const p1 = rectBorderPoint(drag.ent, p.x, p.y, 1);
-          const dist = Math.hypot(p.x - p1.x, p.y - p1.y);
+          const target = boardBox(p);
+          const p1 = entityBorderPoint(boardBox(drag.ent), target.x, target.y, 1);
+          const dist = Math.hypot(target.x - p1.x, target.y - p1.y);
           const bend = Math.min(80, Math.max(20, dist * 0.32));
           const c1x = p1.x + p1.nx * bend;
           const c1y = p1.y + p1.ny * bend;
-          const c2x = p.x - (p.x - p1.x) * 0.25;
-          const c2y = p.y - (p.y - p1.y) * 0.25;
-          $("#pg-temp")?.setAttribute("d", `M${p1.x},${p1.y} C${c1x},${c1y} ${c2x},${c2y} ${p.x},${p.y}`);
+          const c2x = target.x - (target.x - p1.x) * 0.25;
+          const c2y = target.y - (target.y - p1.y) * 0.25;
+          $("#pg-temp")?.setAttribute("d", `M${p1.x},${p1.y} C${c1x},${c1y} ${c2x},${c2y} ${target.x},${target.y}`);
         }
       } else if (drag.mode === "wrap") {
         drag.cx = p.x;
@@ -1589,19 +1674,29 @@
           const x = Math.min(drag.sx, drag.cx), y = Math.min(drag.sy, drag.cy);
           const w = Math.abs(drag.cx - drag.sx), h = Math.abs(drag.cy - drag.sy);
           box.style.display = "block";
-          box.style.left = `${x}px`;
-          box.style.top = `${y}px`;
+          box.style.left = `${x - PG.originX}px`;
+          box.style.top = `${y - PG.originY}px`;
           box.style.width = `${w}px`;
           box.style.height = `${h}px`;
         }
       }
     };
 
-    board.onpointerup = e => {
+    stage.onpointerup = e => {
       if (!drag) return;
       const d = drag;
       drag = null;
       PG.dragging = false;
+
+      if (d.mode === "pan") {
+        stage.classList.remove("panning");
+        if (!d.moved && e.button === 0) {
+          PG.sel = null;
+          PG.pendingLinkFrom = null;
+        }
+        draw(true);
+        return;
+      }
 
       if (d.mode === "link") {
         $("#pg-temp")?.setAttribute("d", "");
@@ -1676,8 +1771,14 @@
       draw(true);
     };
 
-    board.onpointercancel = () => { drag = null; PG.dragging = false; draw(); };
-    board.ondblclick = e => {
+    stage.onpointercancel = () => {
+      if (drag?.before) PG.graph = JSON.parse(drag.before);
+      drag = null;
+      PG.dragging = false;
+      stage.classList.remove("panning");
+      draw(true);
+    };
+    stage.ondblclick = e => {
       if (e.target.closest("[data-pg-node]")) return;
       const grpEl = e.target.closest("[data-pg-group]");
       const p = pt(e);
@@ -2140,6 +2241,10 @@
     }
   }
 
+  function renderPromptMessages(messages) {
+    return messages.map(message => `<div><b>${message.role === "system" ? "시스템 메시지" : "사용자 메시지"}</b><pre class="pg-prompt-message">${esc(message.content)}</pre></div>`).join("");
+  }
+
   function drawInspector() {
     const el = $("#pg-insp");
     if (!el || !PG.graph) return;
@@ -2264,6 +2369,12 @@
       const depTargets = [...PG.graph.nodes, ...PG.graph.groups].filter(x => x.id !== n.id && !(n.dependencies || []).includes(x.id));
       const aliases = Object.entries(PG.gateway?.aliases || {});
       const s = nodeState(n.id);
+      const runMatchesGraph = PG.run && (
+        (PG.graphId && PG.run.graph_id === PG.graphId) ||
+        (PG.localPromptRun?.id === PG.run.run_id && PG.localPromptRun?.graph === PG.graph)
+      );
+      const actualPrompt = runMatchesGraph ? s?.initial_prompt : null;
+      const promptView = PG.promptView?.node === n ? PG.promptView : (PG.promptView = { node: n });
       const ct = n.contract || defaultContract();
       const art = n.artifact || defaultArtifact();
 
@@ -2285,6 +2396,20 @@
           ${s ? `<div class="pg-hint">실행 상태: <b>${esc(STATUS_KO[s.status] || s.status)}</b>${s.model ? ` · 모델 <code>${esc(s.model)}</code>` : ""}${s.mcp_calls ? ` · MCP 조회 ${s.mcp_calls}회` : ""}${s.error ? `<div class="bad">${esc(s.error)}</div>` : ""}</div>` : ""}
           <label class="fld"><span>노드 ID</span><input id="pg-n-id" class="mono" value="${esc(n.id)}"></label>
           <label class="fld"><span>이름</span><input id="pg-n-label" value="${esc(n.label)}"></label>
+          <label class="fld"><span>모양</span>
+            <select id="pg-n-shape">
+              ${Object.entries({ rounded: "둥근 사각형", rectangle: "사각형", ellipse: "타원", circle: "원" }).map(([shape, label]) =>
+                `<option value="${shape}" ${(n.shape || "rounded") === shape ? "selected" : ""}>${label}</option>`).join("")}
+            </select>
+          </label>
+          <div class="row">
+            <label class="fld" style="flex:1;min-width:0"><span>${n.shape === "circle" ? "지름" : "너비"}</span>
+              <input id="pg-n-width" type="number" min="140" max="${n.shape === "circle" ? 900 : 1200}" value="${n.width || 250}" style="width:100%">
+            </label>
+            ${n.shape === "circle" ? "" : `<label class="fld" style="flex:1;min-width:0"><span>높이</span>
+              <input id="pg-n-height" type="number" min="80" max="900" value="${n.height || 140}" style="width:100%">
+            </label>`}
+          </div>
           <label class="fld"><span>실행할 모델 (비우면 기본값: ${esc(PG.graph.settings?.default_model || PG.defaultModel)})</span>
             <input id="pg-n-model" class="mono" list="pg-model-list" value="${esc(n.model || "")}" placeholder="예: cheap / mid / advisor">
             <datalist id="pg-model-list">
@@ -2316,6 +2441,19 @@
             ${depTargets.length ? `<select id="pg-n-adddep"><option value="">＋ 의존 대상 추가…</option>${depTargets.map(x => `<option value="${esc(x.id)}">${findGroup(x.id) ? "⬚ 그룹" : "◈ 노드"} · ${esc(x.label)} (${esc(x.id)})</option>`).join("")}</select>` : ""}
           </div>
           <label class="fld"><span>프롬프트</span><textarea id="pg-n-prompt" rows="5" style="min-height:95px" placeholder="에이전트가 실행할 프롬프트">${esc(n.prompt || "")}</textarea></label>
+          <details id="pg-n-prompt-details" ${promptView.open ? "open" : ""}>
+            <summary>에이전트에 전달되는 프롬프트</summary>
+            <div class="g-form">
+              <button class="g" type="button" id="pg-n-preview">현재 설정 미리보기</button>
+              <div id="pg-n-preview-result">
+                ${promptView.messages ? `<b>조회 시점의 미리보기</b>${renderPromptMessages(promptView.messages)}` : ""}
+              </div>
+              ${actualPrompt ? `<b>선택한 실행의 실제 최초 요청 · 반복 ${esc(actualPrompt.iteration)}</b>
+                ${renderPromptMessages(actualPrompt.messages)}`
+                : `<div class="pg-hint">실제 모델 요청이 기록되면 이곳에 표시됩니다.</div>`}
+              <div class="pg-hint">미리보기는 현재 노드와 그룹 설정을 사용합니다. 간선의 임시 지시, 산출물, 반복 피드백은 실행 시 추가될 수 있습니다. 이후 MCP 조회 내역은 실행 타임라인에서 확인할 수 있습니다.</div>
+            </div>
+          </details>
           <div class="fld">
             <div class="row" style="justify-content:space-between">
               <span>⚡ 임시 프롬프트 (1회성)</span>
@@ -2384,6 +2522,38 @@
         </div>`;
 
       $("#pg-n-run").onclick = run(() => startRun("node", n.id));
+      const promptDetails = $("#pg-n-prompt-details");
+      promptDetails.ontoggle = () => { promptView.open = promptDetails.open; };
+      $("#pg-n-preview").onclick = run(async () => {
+        const graph = PG.graph;
+        syncGraphRelations();
+        const result = await api("POST", `${WSP()}/prompt-graphs/preview-node`, {
+          graph, node_id: n.id,
+        }, { noInvalidate: true });
+        if (PG.graph !== graph || PG.promptView !== promptView || PG.sel?.id !== n.id) return;
+        promptView.messages = result.messages;
+        const target = $("#pg-n-preview-result");
+        if (target) target.innerHTML = `<b>조회 시점의 미리보기</b>${renderPromptMessages(result.messages)}`;
+      });
+      $("#pg-n-shape").onchange = ev => {
+        snapshotUndo();
+        n.shape = ev.target.value;
+        if (n.shape === "circle") n.height = n.width = Math.min(n.width || 250, 900);
+        touch();
+        draw(true);
+      };
+      for (const dimension of ["width", "height"]) {
+        const input = $(`#pg-n-${dimension}`);
+        if (!input) continue;
+        input.onchange = () => {
+          snapshotUndo();
+          const value = Math.round(input.valueAsNumber || n[dimension]);
+          n[dimension] = Math.max(Number(input.min), Math.min(Number(input.max), value));
+          if (n.shape === "circle") n.height = n.width;
+          touch();
+          draw(true);
+        };
+      }
       $("#pg-n-del").onclick = removeSelected;
       $("#pg-n-selfloop").onclick = () => addEdge(n.id, n.id, { is_loop: true, max_iterations: 3, condition: { type: "on_contract_fail", value: "", case_sensitive: false }, label: "자가 순환 개선" });
       if ($("#pg-n-clrrerun")) $("#pg-n-clrrerun").onclick = () => { snapshotUndo(); n.needs_rerun = false; n.rerun_reason = ""; touch(); draw(true); };
@@ -2793,8 +2963,10 @@
       payload.target_ids = targetIds;
     }
     const res = await api("POST", `${WSP()}/prompt-graph-runs`, payload, { noInvalidate: true });
+    PG.localPromptRun = { id: res.run_id, graph: payload.graph };
     PG.run = {
       run_id: res.run_id,
+      graph_id: payload.graph_id,
       status: "RUNNING",
       target_type: targetType,
       target_id: res.target_id || targetId,
@@ -2864,6 +3036,88 @@
     G.render();
   }
 
+  function drawAgent() {
+    const log = $("#pg-agent-log");
+    if (!log) return;
+    log.innerHTML = PG.agent.turns.map(turn => `<div class="pg-agent-turn"><b>${turn.role === "user" ? "나" : "에이전트"}</b> ${esc(turn.content)}</div>`).join("");
+    log.scrollTop = log.scrollHeight;
+    $("#pg-agent-send").disabled = PG.agent.pending;
+    $("#pg-agent-add").disabled = PG.agent.pending;
+    $("#pg-agent-status").textContent = PG.agent.pending ? "MCP로 그래프를 확인하는 중…" : "";
+  }
+
+  function bindAgent() {
+    const input = $("#pg-agent-prompt");
+    if (!input) return;
+    input.value = PG.agent.draft;
+    input.oninput = () => { PG.agent.draft = input.value; };
+    const readPrompt = () => input.value.trim();
+    const clearPrompt = () => { input.value = ""; PG.agent.draft = ""; };
+    $("#pg-agent-add").onclick = () => {
+      const prompt = readPrompt();
+      if (!prompt || PG.agent.pending) return;
+      const stage = $("#pg-stage");
+      const p = worldPoint(stage.clientWidth / 2, stage.clientHeight / 2);
+      addPromptNode(p.x - 125, p.y - 70, null, prompt);
+      clearPrompt();
+    };
+    $("#pg-agent-form").onsubmit = run(async event => {
+      event.preventDefault();
+      const instruction = readPrompt();
+      const agent = PG.agent;
+      if (!instruction || agent.pending) return;
+      syncGraphRelations();
+      const graph = PG.graph;
+      const source = JSON.stringify(graph);
+      const history = agent.turns.slice(-8);
+      agent.turns = [...history, { role: "user", content: instruction }];
+      agent.pending = true;
+      clearPrompt();
+      drawAgent();
+      try {
+        const res = await api("POST", `${WSP()}/prompt-graphs/mcp-manage`, {
+          graph: JSON.parse(source),
+          instruction,
+          history,
+          save: false,
+        }, { noInvalidate: true });
+        if (PG.agent !== agent) return;
+        if (res.changed && (PG.graph !== graph || JSON.stringify(PG.graph) !== source || PG.dragging)) {
+          throw new Error("요청 이후 그래프가 바뀌었습니다. 최신 그래프에서 다시 요청하세요.");
+        }
+        if (res.changed && res.graph) {
+          snapshotUndo();
+          PG.graph = ensureArrays(res.graph);
+          PG.fitPending = true;
+          touch();
+          draw(true);
+        }
+        const count = res.mcp_calls?.length || 0;
+        agent.turns.push({ role: "assistant", content: `${res.summary || "요청을 처리했습니다."}${count ? `\nMCP 호출 ${count}회` : ""}` });
+      } catch (err) {
+        if (PG.agent === agent) {
+          agent.turns = history;
+          if (!agent.draft) {
+            agent.draft = instruction;
+            const currentInput = $("#pg-agent-prompt");
+            if (currentInput) currentInput.value = instruction;
+          }
+        }
+        throw err;
+      } finally {
+        agent.pending = false;
+        if (PG.agent === agent) drawAgent();
+      }
+    });
+    input.onkeydown = event => {
+      if (event.key === "Enter" && !event.isComposing && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        $("#pg-agent-form").requestSubmit();
+      }
+    };
+    drawAgent();
+  }
+
   // ------------------------------------------------------------ view entry
   G.VIEWS.pgraph = async function promptGraphView() {
     const res = await api("GET", `${WSP()}/prompt-graphs`, undefined, { fresh: true });
@@ -2875,6 +3129,7 @@
     PG.defaultModel = res.default_model || "mid";
 
     if (PG.graph && PG.wsKey !== G.getWS()) {
+      PG.agent = { turns: [], draft: "", pending: false };
       PG.graph = null; PG.run = null; PG.graphId = ""; PG.sel = null; PG.dirty = false;
       PG.undo = []; PG.redo = []; PG.flashes = [];
       clearTimeout(PG.poll);
@@ -2883,7 +3138,7 @@
     if (!PG.graph) {
       const saved = PG.graphs.find(x => x.graph_id === PG.graphId) || PG.graphs[0];
       if (saved) loadGraph(saved.graph_json, saved.graph_id, saved.name);
-      else loadGraph(PG.presets.nested_groups || PG.presets.basic_dependency, "", "다중 그룹 프롬프트 그래프");
+      else loadGraph(null, "", "새 프롬프트 그래프");
     }
 
     const opt = (v, cur, lbl) => `<option value="${esc(v)}" ${String(v) === String(cur ?? "") ? "selected" : ""}>${esc(lbl)}</option>`;
@@ -2908,7 +3163,7 @@
         <button class="g ${isReversedDir() ? "on" : ""}" id="pg-edge-dir" title="전체 간선 화살표 방향 전환 (의존 방향 vs 실행 순서)">${isReversedDir() ? "⇄ 화살표: 실행 순서 (선행→후속)" : "⇄ 화살표: 의존 방향 (의존→선행)"}</button>
         <button class="g ${PG.showProfileOverlay ? "on" : ""}" id="pg-prof-btn" title="캔버스에 임계 경로·성능 배지 오버레이 표시">📊 프로파일</button>
         <button class="g" id="pg-auto-layout" title="중첩 N-그룹·간선 방향 기준으로 겹침 없이 자동 정렬">⊞ 자동 정렬</button>
-        <button class="g" id="pg-mcp-manage" title="MCP 서버를 통해 노드·N-그룹·루프를 자동 구성·리팩토링 (후반기·복잡한 그래프에 권장)">🤖 MCP 관리</button>
+        <button class="g" id="pg-mcp-manage" title="MCP 서버를 통해 노드·그룹·의존 관계를 구성하고 편집">🤖 MCP 관리</button>
         <span class="g-sep"></span>
         <select id="pg-preset"><option value="">템플릿 불러오기…</option>${Object.entries(PG.presetInfo).map(([k, v]) => `<option value="${esc(k)}">${esc(v.title)}</option>`).join("")}</select>
         <span class="g-sep"></span>
@@ -2916,7 +3171,7 @@
         <button class="g" id="pg-redo" title="다시 실행 (Ctrl+Shift+Z)" ${PG.redo.length ? "" : "disabled"}>↷</button>
         <button class="g" id="pg-zout">−</button><span class="mono muted" id="pg-zoomlbl" style="min-width:38px;text-align:center">100%</span><button class="g" id="pg-zin">＋</button>
         <button class="g" id="pg-fit">맞춤</button>
-        <button class="g ${PG.full ? "on" : ""}" id="pg-full">⛶</button>
+        <button class="g ${PG.full ? "on" : ""}" id="pg-full" aria-label="전체 화면" ${PG.json ? "disabled" : ""}>⛶</button>
         <span class="g-sep"></span>
         <button class="g" id="pg-validate">DAG 검증</button>
         <button class="g ${PG.json ? "on" : ""}" id="pg-json">{ } JSON</button>
@@ -2925,8 +3180,29 @@
 
       <div class="pg-wrap ${PG.full ? "pg-full" : ""}" id="pg-wrap">
         ${PG.json ? `<div class="g-jsonbox"><textarea id="pg-raw" spellcheck="false">${esc(JSON.stringify(PG.graph, null, 2))}</textarea><div class="row" style="padding:8px"><button class="b" id="pg-apply-json">JSON 적용</button></div></div>`
-          : `<div class="pg-stagebox"><div class="pg-fullbar"><button class="g" id="pg-full-x">⛶ 닫기</button><button class="b" id="pg-run-all2">▶ 전체 실행</button></div><div id="pg-stage" class="pg-stage"></div></div>`}
+          : `<div class="pg-stagebox">
+            <div class="pg-fullbar">
+              <button class="g" id="pg-full-x">전체 화면 닫기</button>
+              <button class="g" id="pg-full-save">${PG.dirty ? "저장 *" : "저장"}</button>
+              <button class="g" id="pg-full-zout" aria-label="축소">−</button>
+              <span class="mono muted" id="pg-full-zoomlbl"></span>
+              <button class="g" id="pg-full-zin" aria-label="확대">＋</button>
+              <button class="g" id="pg-full-fit">맞춤</button>
+              <button class="b" id="pg-run-all2">▶ 전체 실행</button>
+            </div>
+            <div id="pg-stage" class="pg-stage" aria-label="프롬프트 그래프 캔버스" title="빈 곳 드래그로 이동 · 휠로 확대/축소"></div>
+          </div>`}
         <div id="pg-insp" class="pg-insp"></div>
+        ${PG.json ? "" : `<section class="pg-agent" aria-label="캔버스 에이전트">
+          <div class="pg-agent-log" id="pg-agent-log" role="log" aria-live="polite"></div>
+          <form class="pg-agent-form" id="pg-agent-form">
+            <textarea id="pg-agent-prompt" rows="2" maxlength="32000" aria-label="작업 프롬프트"
+              placeholder="간단한 작업은 노드로 추가하고, 여러 단계의 작업은 에이전트에게 구성을 요청하세요."></textarea>
+            <button type="button" class="g" id="pg-agent-add">노드로 추가</button>
+            <button type="submit" class="b" id="pg-agent-send">에이전트에게 요청</button>
+          </form>
+          <span class="pg-hint" id="pg-agent-status" role="status"></span>
+        </section>`}
       </div>
 
       <div class="pg-run">
@@ -2949,8 +3225,9 @@
       if (PG.dirty && !confirm("저장하지 않은 변경 사항이 있습니다. 계속할까요?")) { e.target.value = PG.graphId; return; }
       const item = PG.graphs.find(x => x.graph_id === e.target.value);
       PG.undo = []; PG.redo = []; PG.run = null;
+      PG.agent = { turns: [], draft: "", pending: false };
       if (item) loadGraph(item.graph_json, item.graph_id, item.name);
-      else loadGraph(PG.presets.basic_dependency, "", "새 프롬프트 그래프");
+      else loadGraph(null, "", "새 프롬프트 그래프");
       G.render();
     };
     $("#pg-name").oninput = () => { PG.name = $("#pg-name").value; touch(); };
@@ -2959,16 +3236,17 @@
       if (!confirm(`프롬프트 그래프 '${PG.name}'을(를) 삭제할까요?`)) return;
       await api("DELETE", `${WSP()}/prompt-graphs/${PG.graphId}`);
       PG.graph = null; PG.graphId = ""; PG.run = null; PG.undo = []; PG.redo = [];
+      PG.agent = { turns: [], draft: "", pending: false };
       G.render();
     });
 
     $("#pg-add-node").onclick = () => {
-      const st = $("#pg-stage");
-      addPromptNode(((st?.scrollLeft || 0) + 140) / (PG.zoom || 1), ((st?.scrollTop || 0) + 100) / (PG.zoom || 1));
+      const p = worldPoint(140, 100);
+      addPromptNode(p.x, p.y);
     };
     $("#pg-add-group").onclick = () => {
-      const st = $("#pg-stage");
-      addPrePromptGroup(((st?.scrollLeft || 0) + 90) / (PG.zoom || 1), ((st?.scrollTop || 0) + 70) / (PG.zoom || 1));
+      const p = worldPoint(90, 70);
+      addPrePromptGroup(p.x, p.y);
     };
     $("#pg-wrap-btn").onclick = () => {
       PG.wrapMode = !PG.wrapMode;
@@ -3007,9 +3285,6 @@
     };
   function openMcpManageModal() {
     $("#pg-mcp-modal")?.remove();
-    const nc = PG.graph?.nodes?.length || 0;
-    const gc = PG.graph?.groups?.length || 0;
-    const isSmall = nc < 5 && gc < 2;
     const backdrop = document.createElement("div");
     backdrop.id = "pg-mcp-modal";
     backdrop.className = "pg-modal-backdrop";
@@ -3019,13 +3294,6 @@
         <button type="button" class="icon" id="pg-mm-x" title="닫기">✕</button>
       </div>
       <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;overflow:auto">
-        ${isSmall ? `<div class="pg-chg-callout st-modified">
-          <b>💡 초반 소규모 그래프 안내 (현재 노드 ${nc}개 · 그룹 ${gc}개)</b>
-          <span class="pg-hint">노드 수가 적은 초반 단계에서는 캔버스에서 직접 추가·연결하는 편이 빠릅니다. 노드·계층이 커진 후반기 리팩토링에 특히 효과적입니다 (원하시면 바로 실행 가능합니다).</span>
-        </div>` : `<div class="pg-chg-callout st-clean">
-          <b>✓ 후반기/다계층 그래프 관리 준비됨 (노드 ${nc}개 · 그룹 ${gc}개)</b>
-          <span class="pg-hint">모든 MCP 변경 후 자동으로 계층형 레이아웃(<code>auto_layout_graph</code>)을 실행해 그룹·노드·제목이 겹치지 않게 정리합니다.</span>
-        </div>`}
         <div class="row" style="gap:6px;flex-wrap:wrap">
           <button type="button" class="g" data-pg-mm-pre="현재 그래프의 연관 노드들을 논리적 1-그룹/2-그룹 계층으로 묶고 겹침 없이 정렬해줘.">⬚ 그룹 계층화</button>
           <button type="button" class="g" data-pg-mm-pre="출력 계약(contract)과 조건부 순환 루프(최대 3회)를 검증 단계에 추가하고 간선 임시 프롬프트도 채워줘.">↺ 검증·순환 루프 구성</button>
@@ -3114,6 +3382,7 @@
       const k = e.target.value;
       if (!k) return;
       if ((PG.dirty || PG.graph.nodes.length > 0) && !confirm("현재 캔버스를 선택한 템플릿으로 교체할까요?")) { e.target.value = ""; return; }
+      PG.agent = { turns: [], draft: "", pending: false };
       snapshotUndo();
       const u = PG.undo, r = PG.redo;
       loadGraph(PG.presets[k], PG.graphId, PG.name);
@@ -3122,22 +3391,36 @@
       G.render();
     };
 
+    const wrap = $("#pg-wrap");
     const setFull = on => {
       PG.full = on;
-      $("#pg-wrap")?.classList.toggle("pg-full", on);
+      wrap.classList.toggle("pg-full", on);
       $("#pg-full")?.classList.toggle("on", on);
-      PG.fitPending = true;
-      setTimeout(() => draw(), 30);
+      if (!on && document.fullscreenElement === wrap) document.exitFullscreen().catch(() => {});
+      requestAnimationFrame(() => { if (wrap.isConnected) draw(); });
+    };
+    wrap.onfullscreenchange = () => {
+      if (wrap.isConnected && PG.full && document.fullscreenElement !== wrap) setFull(false);
     };
     PG._setFull = setFull;
     $("#pg-undo").onclick = performUndo;
     $("#pg-redo").onclick = performRedo;
-    $("#pg-full").onclick = () => setFull(!PG.full);
+    $("#pg-full").onclick = () => {
+      setFull(true);
+      if (wrap.requestFullscreen) wrap.requestFullscreen().catch(() => {});
+    };
     if ($("#pg-full-x")) $("#pg-full-x").onclick = () => setFull(false);
-    const zoomTo = z => { PG.zoom = Math.max(0.3, Math.min(1.6, Math.round(z * 10) / 10)); draw(); };
-    $("#pg-zin").onclick = () => zoomTo((PG.zoom || 1) + 0.1);
-    $("#pg-zout").onclick = () => zoomTo((PG.zoom || 1) - 0.1);
-    $("#pg-fit").onclick = () => { PG.fitPending = true; draw(); };
+    $("#pg-zin").onclick = () => zoomAt(1.2);
+    $("#pg-zout").onclick = () => zoomAt(1 / 1.2);
+    const fit = () => { PG.fitPending = true; draw(); };
+    $("#pg-fit").onclick = fit;
+    if ($("#pg-full-fit")) {
+      $("#pg-full-zin").onclick = () => zoomAt(1.2);
+      $("#pg-full-zout").onclick = () => zoomAt(1 / 1.2);
+      $("#pg-full-fit").onclick = fit;
+      $("#pg-full-save").onclick = run(save);
+      bindAgent();
+    }
 
     $("#pg-validate").onclick = run(async () => {
       syncGraphRelations();
@@ -3165,7 +3448,7 @@
     });
 
     $("#pg-run-all").onclick = run(() => startRun("all", null));
-    if ($("#pg-run-all2")) $("#pg-run-all2").onclick = run(() => { setFull(false); return startRun("all", null); });
+    if ($("#pg-run-all2")) $("#pg-run-all2").onclick = run(() => startRun("all", null));
     $("#pg-run-all3").onclick = run(() => startRun("all", null));
     $("#pg-history").onchange = run(async e => {
       if (!e.target.value) return;

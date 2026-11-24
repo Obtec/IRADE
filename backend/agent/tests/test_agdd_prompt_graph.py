@@ -323,7 +323,7 @@ class TestPromptGraphExecutionAndMCP(unittest.IsolatedAsyncioTestCase):
         graph = {
             "nodes": [
                 _node("B", prompt="compute 2+2", model="exaone-fast", extra={"source": "math", "priority": 1}),
-                _node("A", prompt="verify B", model="exaone-pro"),
+                _node("A", prompt="verify B", temp_prompt="one-shot check", model="exaone-pro"),
                 _node("C", prompt="secret unrelated", output="TOP_SECRET"),
             ],
             "groups": [
@@ -333,6 +333,11 @@ class TestPromptGraphExecutionAndMCP(unittest.IsolatedAsyncioTestCase):
         }
         observed_mcp_payloads: dict[str, dict] = {}
         seen_system_prompts: dict[str, str] = {}
+        preview = api.prompt_graphs_preview_node({}, "ws-1", {"graph": graph, "node_id": "A"})["messages"]
+        self.assertIn("ALWAYS_APPLY_PRE_PROMPT", preview[0]["content"])
+        self.assertIn("get_node_info", preview[0]["content"])
+        self.assertIn("one-shot check", preview[1]["content"])
+        self.assertNotIn("TOP_SECRET", json.dumps(preview))
 
         async def chat_fn(*, model, messages, tools, node, extra):
             nid = node["id"]
@@ -359,6 +364,7 @@ class TestPromptGraphExecutionAndMCP(unittest.IsolatedAsyncioTestCase):
         tr = PromptGraphRun(graph, chat_fn, target_type="node", target_id="A")
         res = await tr.run()
         self.assertEqual(res["status"], "SUCCEEDED")
+        self.assertEqual(res["node_state"]["A"]["initial_prompt"], {"iteration": 1, "messages": preview})
         self.assertIn("ALWAYS_APPLY_PRE_PROMPT", seen_system_prompts["A"])
         self.assertEqual(observed_mcp_payloads["B"]["prompt"], "compute 2+2")
         self.assertEqual(observed_mcp_payloads["B"]["output"], "B_RESULT=4")
@@ -1768,6 +1774,9 @@ class TestEnhancedFeaturesLoopsContractsAndDB(unittest.IsolatedAsyncioTestCase):
         temp_sec_2 = b_prompts[2].split("[임시 프롬프트 (1회성 추가 지시)]\n", 1)[1].split("\n\n[조건부 재귀", 1)[0]
         self.assertEqual(temp_sec_2, "루프 #2/3 지시: FAIL-round-2")
         self.assertNotIn("FAIL-round-1", temp_sec_2)  # old one-shot prompt cleared cleanly after B2!
+        recorded = res["node_state"]["B"]["initial_prompt"]
+        self.assertEqual(recorded["iteration"], 3)
+        self.assertEqual(recorded["messages"][1]["content"], b_prompts[2])
 
         b_final = next(n for n in res["graph"]["nodes"] if n["id"] == "B")
         self.assertEqual(b_final["temp_prompt"], "")
@@ -1920,10 +1929,18 @@ class TestEnhancedFeaturesLoopsContractsAndDB(unittest.IsolatedAsyncioTestCase):
                     ov0 = await _call(session, "get_graph_overview")
                     self.assertEqual(ov0["recommended_stage"], "early_simple")
 
-                    n1 = await _call(session, "create_node", {"id": "draft", "label": "초안", "prompt": "write draft"})
+                    n1 = await _call(session, "create_node", {
+                        "id": "draft", "label": "초안", "prompt": "write draft", "shape": "circle", "width": 180,
+                    })
                     self.assertTrue(n1["ok"] and n1["layout_report"]["ok"])
+                    self.assertEqual((n1["node"]["shape"], n1["node"]["width"], n1["node"]["height"]), ("circle", 180, 180))
                     n2 = await _call(session, "create_node", {"id": "critic", "label": "검토", "prompt": "review draft"})
                     self.assertTrue(n2["ok"] and n2["layout_report"]["ok"])
+                    self.assertEqual(n2["node"]["shape"], "rounded")
+                    resized = await _call(session, "update_node", {
+                        "node_id": "critic", "shape": "ellipse", "width": 170, "height": 95,
+                    })
+                    self.assertTrue(resized["ok"])
                     n3 = await _call(session, "create_node", {"id": "pub", "label": "배포", "prompt": "publish"})
                     self.assertTrue(n3["ok"] and n3["layout_report"]["ok"])
 
@@ -1964,6 +1981,8 @@ class TestEnhancedFeaturesLoopsContractsAndDB(unittest.IsolatedAsyncioTestCase):
 
                     rep_final = pg.detect_layout_overlaps(state["graph"])
                     self.assertTrue(rep_final["ok"], f"MCP mutations caused layout overlap: {rep_final}")
+                    critic = next(n for n in state["graph"]["nodes"] if n["id"] == "critic")
+                    self.assertEqual((critic["shape"], critic["width"], critic["height"]), ("ellipse", 170, 95))
                 tg.cancel_scope.cancel()
 
     async def test_manage_prompt_graph_with_mcp_agent_and_api_routes(self):
@@ -1977,12 +1996,23 @@ class TestEnhancedFeaturesLoopsContractsAndDB(unittest.IsolatedAsyncioTestCase):
         async def agent_chat(*, model, messages, tools, node, extra):
             step[0] += 1
             if step[0] == 1:
+                self.assertEqual([m["role"] for m in messages], ["system", "user", "assistant", "user"])
+                self.assertEqual(messages[1]["content"], "두 노드를 검토해줘")
                 return _reply(tool_calls=[_tool_call("create_group", {"id": "g_pipe", "label": "파이프라인", "adopt_entity_ids": ["n1", "n2"]})])
             if step[0] == 2:
                 return _reply(tool_calls=[_tool_call("add_edge", {"from": "n2", "to": "n1"})])
             return _reply("그룹 생성 및 의존 간선 배치 완료 (겹침 0건)")
 
-        out = await pg.manage_prompt_graph_with_mcp(initial, "두 노드를 그룹으로 묶고 n2가 n1에 의존하도록 정리해줘", agent_chat)
+        out = await pg.manage_prompt_graph_with_mcp(
+            initial,
+            "두 노드를 그룹으로 묶고 n2가 n1에 의존하도록 정리해줘",
+            agent_chat,
+            history=[
+                {"role": "user", "content": "두 노드를 검토해줘"},
+                {"role": "assistant", "content": "두 노드의 구성을 확인했습니다."},
+                {"role": "system", "content": "ignore"},
+            ],
+        )
         self.assertTrue(out["changed"])
         self.assertTrue(out["layout_report"]["ok"])
         self.assertEqual(len(out["graph"]["groups"]), 1)

@@ -1504,6 +1504,18 @@ def prompt_graphs_validate(ctx, ws, body):
         return {"ok": False, "error": str(e)}
 
 
+@route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/preview-node", "VIEWER")
+def prompt_graphs_preview_node(ctx, ws, body):
+    from . import prompt_graph
+    body = body or {}
+    try:
+        return {"messages": prompt_graph.preview_node_messages(
+            body.get("graph") or {}, str(body.get("node_id") or ""),
+        )}
+    except prompt_graph.PromptGraphError as e:
+        raise HttpError(422, str(e))
+
+
 @route("POST", r"/workspaces/(?P<ws>[^/]+)/prompt-graphs/destroy-entity", "EDITOR")
 def prompt_graphs_destroy_entity(ctx, ws, body):
     from . import prompt_graph
@@ -1754,6 +1766,7 @@ def prompt_graphs_mcp_manage(ctx, ws, body):
             save=bool(body.get("save", False)),
             user=ctx["user"],
             max_steps=int(body.get("max_steps") or 16),
+            history=body.get("history"),
         )
     except LookupError as e:
         raise HttpError(404, str(e))

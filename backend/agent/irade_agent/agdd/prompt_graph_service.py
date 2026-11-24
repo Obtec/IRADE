@@ -888,6 +888,7 @@ def mcp_manage_graph(
     save: bool = False,
     user=None,
     max_steps: int = 16,
+    history: Any = None,
 ) -> dict[str, Any]:
     gname, src_graph = _load_or_use_graph(ws, graph_id, graph)
     default_model = (src_graph.get("settings") or {}).get("default_model") or workspace_default_model(ws)
@@ -895,7 +896,7 @@ def mcp_manage_graph(
 
     async def _run():
         try:
-            return await manage_prompt_graph_with_mcp(src_graph, instruction, chat_fn, max_steps=max_steps)
+            return await manage_prompt_graph_with_mcp(src_graph, instruction, chat_fn, max_steps=max_steps, history=history)
         finally:
             await chat_fn.aclose()
 

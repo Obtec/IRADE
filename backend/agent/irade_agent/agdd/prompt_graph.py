@@ -70,6 +70,8 @@ MAX_PROMPT_CHARS = 32000
 MAX_OUTPUT_CHARS = 100000
 MAX_EXTRA_CHARS = 32000
 MAX_TOOL_RESULT_CHARS = 120000
+NODE_SHAPES = ("rounded", "rectangle", "ellipse", "circle")
+MAX_CANVAS_COORD = 2**53 - 1
 
 _ID_RX = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,39}")
 _MODEL_RX = re.compile(r"[A-Za-z0-9._:/\[\]-]{1,80}")
@@ -99,7 +101,7 @@ def _s(value: Any, limit: int, default: str = "") -> str:
 def _int(value: Any, lo: int, hi: int, default: int) -> int:
     try:
         return max(lo, min(hi, int(round(float(value)))))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -316,12 +318,17 @@ def validate_prompt_graph(graph: dict[str, Any]) -> dict[str, Any]:
                 "needs_rerun": needs_rerun_val,
                 "rerun_reason": _s(raw.get("rerun_reason"), 1000) if needs_rerun_val else "",
                 "parent_group_id": pgid,
-                "x": _int(raw.get("x", 80), -20000, 50000, 80),
-                "y": _int(raw.get("y", 80), -20000, 50000, 80),
+                "x": _int(raw.get("x", 80), -MAX_CANVAS_COORD, MAX_CANVAS_COORD, 80),
+                "y": _int(raw.get("y", 80), -MAX_CANVAS_COORD, MAX_CANVAS_COORD, 80),
+                "shape": raw.get("shape") if raw.get("shape") in NODE_SHAPES else "rounded",
                 "width": _int(raw.get("width", 250), 140, 1200, 250),
                 "height": _int(raw.get("height", 140), 80, 900, 140),
             }
         )
+
+    for node in nodes:
+        if node["shape"] == "circle":
+            node["width"] = node["height"] = min(node["width"], 900)
 
     claimed_node_lists: dict[str, list[str]] = {}
     claimed_group_lists: dict[str, list[str]] = {}
@@ -376,8 +383,8 @@ def validate_prompt_graph(graph: dict[str, Any]) -> dict[str, Any]:
                 "last_run_temp_pre_prompt": last_run_temp_pre_prompt,
                 "needs_rerun": g_needs_rerun,
                 "rerun_reason": _s(raw.get("rerun_reason"), 1000) if g_needs_rerun else "",
-                "x": _int(raw.get("x", 40), -20000, 50000, 40),
-                "y": _int(raw.get("y", 40), -20000, 50000, 40),
+                "x": _int(raw.get("x", 40), -MAX_CANVAS_COORD, MAX_CANVAS_COORD, 40),
+                "y": _int(raw.get("y", 40), -MAX_CANVAS_COORD, MAX_CANVAS_COORD, 40),
                 "width": _int(raw.get("width", 360), 180, 20000, 360),
                 "height": _int(raw.get("height", 240), 120, 20000, 240),
             }
@@ -1691,8 +1698,10 @@ def auto_layout_graph(
             sib_sizes[cgid] = _layout_container(cgid)
         for nid in child_nids:
             n = node_by_id[nid]
-            nw = max(220, _snap(n.get("width") or 250)) if preserve_sizes else 250
-            nh = max(120, _snap(n.get("height") or 140)) if preserve_sizes else 140
+            nw = n["width"] if preserve_sizes else 250
+            nh = n["height"] if preserve_sizes else 140
+            if n["shape"] == "circle":
+                nh = nw
             n["width"], n["height"] = nw, nh
             sib_sizes[nid] = (nw, nh)
 
@@ -2132,6 +2141,13 @@ def _build_node_messages(
         {"role": "system", "content": "\n".join(sys_parts)},
         {"role": "user", "content": "\n".join(user_parts)},
     ]
+
+
+def preview_node_messages(graph: dict[str, Any], node_id: str) -> list[dict[str, Any]]:
+    clean = validate_prompt_graph(graph)
+    scope = dependency_scope(clean, node_id)
+    node = next(node for node in clean["nodes"] if node["id"] == node_id)
+    return _build_node_messages(clean, node, scope)
 
 
 def _extract_choice_message(completion: Any) -> tuple[str, list[dict[str, Any]], str | None, dict[str, Any]]:
@@ -2786,6 +2802,9 @@ MCP_ADMIN_TOOLS = [
             "extra": {"type": "object", "description": "Optional extra metadata"},
             "contract": {"type": "object", "description": "Optional output contract rules"},
             "artifact": {"type": "object", "description": "Optional repo_file/spec_query artifact binding"},
+            "shape": {"type": "string", "enum": list(NODE_SHAPES)},
+            "width": {"type": "integer", "description": "Node width or circle diameter"},
+            "height": {"type": "integer", "description": "Node height for non-circular shapes"},
         },
         ["label"],
     ),
@@ -2794,6 +2813,9 @@ MCP_ADMIN_TOOLS = [
         "Update an existing prompt node's fields safely and maintain overlap-free layout.",
         {
             "node_id": {"type": "string", "description": "Target node ID"},
+            "shape": {"type": "string", "enum": list(NODE_SHAPES)},
+            "width": {"type": "integer", "description": "Node width or circle diameter"},
+            "height": {"type": "integer", "description": "Node height for non-circular shapes"},
             "label": {"type": "string"},
             "prompt": {"type": "string"},
             "temp_prompt": {"type": "string"},
@@ -2985,7 +3007,7 @@ def make_prompt_graph_admin_mcp_server(
                 "counts": {"nodes": nc, "groups": gc, "edges": ec, "max_group_tier": max_tier},
                 "recommended_stage": stage,
                 "stage_note": (
-                    "초반 소규모 그래프입니다. 직접 캔버스 편집이 빠를 수 있으나 필요시 MCP 관리도 사용할 수 있습니다."
+                    "단일 작업은 프롬프트 노드 하나에 두고, 독립 단계와 선행 산출물이 생기면 의존성으로 연결하세요."
                     if stage == "early_simple"
                     else "후반기/다계층 그래프에 적합합니다. 자동 레이아웃이 겹침 없이 정돈된 배치를 유지합니다."
                 ),
@@ -3011,6 +3033,9 @@ def make_prompt_graph_admin_mcp_server(
                         "dependencies": list(n.get("dependencies") or []),
                         "x": n.get("x"),
                         "y": n.get("y"),
+                        "shape": n.get("shape", "rounded"),
+                        "width": n.get("width"),
+                        "height": n.get("height"),
                     }
                     for n in cur.get("nodes") or []
                 ],
@@ -3075,8 +3100,9 @@ def make_prompt_graph_admin_mcp_server(
                     "artifact": args.get("artifact") or {},
                     "x": 80,
                     "y": 80,
-                    "width": 250,
-                    "height": 140,
+                    "shape": args.get("shape"),
+                    "width": args.get("width", 250),
+                    "height": args.get("height", 140),
                 }
                 cur.setdefault("nodes", []).append(node_obj)
                 final_g, report = _commit(cur)
@@ -3088,7 +3114,7 @@ def make_prompt_graph_admin_mcp_server(
                 target = next((n for n in cur.get("nodes") or [] if n.get("id") == nid), None)
                 if target is None:
                     raise PromptGraphError(f"unknown node {nid!r}")
-                for k in ("label", "prompt", "temp_prompt", "model", "parent_group_id", "extra", "contract", "artifact", "completed", "needs_rerun", "rerun_reason"):
+                for k in ("label", "prompt", "temp_prompt", "model", "parent_group_id", "extra", "contract", "artifact", "completed", "needs_rerun", "rerun_reason", "shape", "width", "height"):
                     if k in args:
                         target[k] = args[k]
                 final_g, report = _commit(cur)
@@ -3259,6 +3285,7 @@ async def manage_prompt_graph_with_mcp(
     chat_fn: Callable[..., Any],
     *,
     max_steps: int = 16,
+    history: Any = None,
     on_mcp_call: Callable[[dict[str, Any]], Awaitable[None] | None] | None = None,
 ) -> dict[str, Any]:
     """Run an agent connected to the real Admin MCP Server to construct/refactor a graph cleanly without overlaps."""
@@ -3282,12 +3309,21 @@ async def manage_prompt_graph_with_mcp(
                 "당신은 IRADE Prompt Dependency Graph 설계·리팩토링 에이전트입니다.\n"
                 "연결된 MCP 도구를 사용해 노드, 중첩 N-그룹(1-그룹/2-그룹/…), 의존/조건/순환 간선, 간선 임시 프롬프트, 출력 계약을 구성·정리하세요.\n"
                 "모든 변경은 서버가 자동 검증 및 겹침 없는 계층형 자동 레이아웃(auto_layout_graph)을 수행합니다.\n"
-                "초반 소규모 작업보다는 다수 노드/그룹 구조화, 순환/검증 루프 추가, 의존성 리팩토링에 최적화되어 있으며,\n"
+                "단일 작업은 사용자의 실행 프롬프트를 보존하는 노드 하나로 구성하세요. 독립 단계나 선행 산출물이 필요한 작업은 단계별 노드와 의존성으로 분리하고, 여러 노드에 공통으로 적용할 규칙은 프리 프롬프트 그룹에 두세요.\n"
                 "작업 시작 전 `get_graph_overview` 또는 `list_entities`로 현재 상태를 파악한 뒤 필요한 도구만 호출하고 마지막에 요약을 한국어로 답하세요."
             ),
         },
-        {"role": "user", "content": str(instruction or "").strip() or "현재 그래프의 그룹·간선·레이아웃을 점검하고 깔끔하게 정리하세요."},
     ]
+    if isinstance(history, list):
+        for turn in history[-8:]:
+            if isinstance(turn, dict) and turn.get("role") in ("user", "assistant"):
+                content = _s(turn.get("content"), 4000).strip()
+                if content:
+                    messages.append({"role": turn["role"], "content": content})
+    messages.append({
+        "role": "user",
+        "content": _s(instruction, MAX_PROMPT_CHARS).strip() or "현재 그래프의 그룹·간선·레이아웃을 점검하고 깔끔하게 정리하세요.",
+    })
 
     mcp_calls: list[dict[str, Any]] = []
     total_usage: dict[str, int] = {}
@@ -3361,7 +3397,7 @@ async def manage_prompt_graph_with_mcp(
                             }
                         )
                 else:
-                    summary = messages[-1].get("content") or "MCP 그래프 관리 단계가 완료되었습니다."
+                    summary = "MCP 요청 단계 한도에 도달했습니다. 캔버스에 반영된 변경을 확인하고 남은 작업을 요청하세요."
             tg.cancel_scope.cancel()
 
     final_g = auto_layout_graph(state["graph"]) if state["changed"] else state["graph"]
@@ -3454,6 +3490,7 @@ class PromptGraphRun:
         self._lock = threading.RLock()
         self._seq = 0
         self.node_state: dict[str, dict[str, Any]] = {}
+        self._initial_prompts: dict[str, dict[str, Any]] = {}
         run_set = set(self.plan["run_nodes"])
         required_set = set(self.plan["required_nodes"])
         for n in self.graph["nodes"]:
@@ -3490,9 +3527,13 @@ class PromptGraphRun:
             }
         self.on_event(ev)
 
-    def snapshot(self) -> dict[str, dict[str, Any]]:
+    def snapshot(self, *, include_prompts: bool = True) -> dict[str, dict[str, Any]]:
         with self._lock:
-            return deepcopy(self.node_state)
+            state = deepcopy(self.node_state)
+            if include_prompts:
+                for nid, prompt in self._initial_prompts.items():
+                    state[nid]["initial_prompt"] = deepcopy(prompt)
+            return state
 
     def graph_snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -4095,11 +4136,24 @@ class PromptGraphRun:
                         meta={"attempt": ev.get("attempt"), "errors": ev.get("errors") or []},
                     )
 
+                first_call = True
+
+                def _chat_with_capture(**kwargs: Any) -> Any:
+                    nonlocal first_call
+                    if first_call:
+                        with self._lock:
+                            self._initial_prompts[nid] = {
+                                "iteration": iter_no,
+                                "messages": deepcopy(kwargs["messages"]),
+                            }
+                        first_call = False
+                    return self.chat_fn(**kwargs)
+
                 res = await execute_prompt_node_with_mcp(
                     self.graph_snapshot,
                     nid,
-                    self.chat_fn,
-                    state_accessor=self.snapshot,
+                    _chat_with_capture,
+                    state_accessor=lambda: self.snapshot(include_prompts=False),
                     on_mcp_call=_on_mcp,
                     loop_feedback=pending_fb,
                     artifact_context=artifact_context,
@@ -4194,7 +4248,7 @@ class PromptGraphRun:
                         self.chat_fn,
                         prev_output=prev_output,
                         new_output=output_str,
-                        state_accessor=self.snapshot,
+                        state_accessor=lambda: self.snapshot(include_prompts=False),
                         on_mark_needs_rerun=_on_mark,
                         on_record_impact=_on_record,
                         on_mcp_call=_on_mcp,
@@ -4519,7 +4573,7 @@ class PromptGraphRun:
         else:
             status = "SUCCEEDED"
 
-        profile = compute_run_profile(self.graph_snapshot(), self.snapshot())
+        profile = compute_run_profile(self.graph_snapshot(), self.snapshot(include_prompts=False))
         self._emit(
             "run_finished",
             node=self.plan["target_id"],
